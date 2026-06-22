@@ -1,0 +1,17 @@
+.DS_Store
+.env
+/node_modules/
+
+# React Router
+/.react-router/
+/build/
+
+/generated/
+
+# Prisma SQLite
+*.db
+*.db-journal
+prisma/dev.db
+prisma/dev.db-journal
+prisma/*.db
+prisma/*.db-journal
