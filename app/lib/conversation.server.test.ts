@@ -97,15 +97,15 @@ describe('processIncomingMessage', () => {
     expect(events[0].reason).toBe('requested_human')
   })
 
-  it('escalates with no_knowledge_match when nothing useful is found', async () => {
+  it('does not force handoff just because the base had no match', async () => {
     const result = await processIncomingMessage({
       tenantSlug: 'dgc',
       message: 'xyzzy plimplom qwerty zzxx',
       contactId: TEST_CONTACT_ID,
     })
 
-    expect(result.needsHuman).toBe(true)
-    expect(result.handoffReason).toBe('no_knowledge_match')
+    // Sem gatilho de segurança, a IA decide — não escala cegamente por falta de match.
+    expect(result.needsHuman).toBe(false)
   })
 
   it('rejects an empty message', async () => {

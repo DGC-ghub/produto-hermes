@@ -19,6 +19,7 @@ model Tenant {
 
   conversations Conversation[]
   leads         Lead[]
+  tickets       Ticket[]
 }
 
 model Conversation {
@@ -74,4 +75,22 @@ model HandoffEvent {
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
+}
+
+// Chamado aberto por um contato. O isolamento de privacidade é por (tenantId, contactId):
+// o balcão só lê/escreve chamados do próprio contato; o LLM nunca vê os de outros.
+model Ticket {
+  id          String   @id @default(cuid())
+  tenantId    String
+  contactId   String
+  subject     String
+  description String
+  category    String?
+  status      String   @default("aberto") // aberto | em_andamento | resolvido
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, contactId])
 }
