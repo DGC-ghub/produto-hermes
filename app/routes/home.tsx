@@ -18,7 +18,7 @@ const WORKS = [
   'Dashboard read-only',
 ]
 
-const DEMOS = ['DGC Hub', 'ResolveTech Assistência (Demo)']
+const DEMOS = ['DGC Hub', 'ResolveTech Assistência (Demo)', 'Prestacon Contabilidade']
 
 const OUT_OF_SCOPE = [
   'WhatsApp real',

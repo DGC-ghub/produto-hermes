@@ -8,6 +8,7 @@ export type TenantInput = {
 export const INITIAL_TENANTS = [
   { slug: 'dgc', name: 'DGC Hub' },
   { slug: 'assistencia-tecnica-demo', name: 'ResolveTech Assistência (Demo)' },
+  { slug: 'prestacon', name: 'Prestacon Contabilidade' },
 ] as const
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
