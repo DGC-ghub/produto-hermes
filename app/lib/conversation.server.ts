@@ -1,6 +1,7 @@
 import { db } from '../db.server'
 import { decideHandoff } from './handoff'
 import { loadKnowledgeBase } from './knowledge.server'
+import { extractLeadPatch } from './lead'
 import { composeAssistantResponse } from './response'
 import { retrieveRelevantChunks } from './retrieval'
 import { ensureTenant, INITIAL_TENANTS } from './tenants.server'
@@ -86,6 +87,18 @@ export async function processIncomingMessage(
   const userMessage = await db.message.create({
     data: { conversationId, role: 'user', content: message },
   })
+
+  // Extrai sinais de lead da mensagem e cria/atualiza o Lead da conversa.
+  // upsert porque Lead.conversationId é @unique; só campos detectados entram no
+  // patch, então uma mensagem nova sem bairro/urgência não apaga o que já existia.
+  const leadPatch = extractLeadPatch(message)
+  if (Object.keys(leadPatch).length > 0) {
+    await db.lead.upsert({
+      where: { conversationId },
+      create: { tenantId: tenant.id, conversationId, ...leadPatch, stage: 'novo' },
+      update: { ...leadPatch },
+    })
+  }
 
   const docs = await loadKnowledgeBase(input.tenantSlug)
   const retrieved = retrieveRelevantChunks(message, docs)

@@ -127,4 +127,42 @@ describe('processIncomingMessage', () => {
       }),
     ).rejects.toThrow('Unknown tenant')
   })
+
+  it('extracts a lead from a message with signals', async () => {
+    const result = await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Minha geladeira parou hoje no Jardim América',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    const lead = await db.lead.findUnique({ where: { conversationId: result.conversationId } })
+    expect(lead).not.toBeNull()
+    expect(lead?.urgency).toBe('alta')
+    expect(lead?.neighborhood).toBe('Jardim América')
+    expect(lead?.need?.toLowerCase()).toContain('geladeira')
+    expect(lead?.stage).toBe('novo')
+  })
+
+  it('updates the existing lead on a second message without duplicating or clobbering', async () => {
+    const first = await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Minha geladeira parou hoje no Jardim América',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Na verdade é o fogão',
+      conversationId: first.conversationId,
+      contactId: TEST_CONTACT_ID,
+    })
+
+    const leads = await db.lead.findMany({ where: { conversationId: first.conversationId } })
+    expect(leads.length).toBe(1)
+    // need acompanha a mensagem mais recente...
+    expect(leads[0].need?.toLowerCase()).toContain('fogão')
+    // ...mas bairro/urgência anteriores não são apagados por uma mensagem sem esses sinais.
+    expect(leads[0].neighborhood).toBe('Jardim América')
+    expect(leads[0].urgency).toBe('alta')
+  })
 })
