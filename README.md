@@ -1,33 +1,79 @@
 # Produto Hermes
 
-Produto próprio da DGC Hub: atendimento no WhatsApp por IA para pequenos negócios.
+## O que é
 
-## Estado atual
+Produto próprio da **DGC Hub**: um **MVP simulado** de atendimento com IA para
+WhatsApp, voltado a pequenos negócios.
 
-Este repositório ainda está em fase de planejamento técnico. O próximo passo é implementar o **MVP simulado**, antes de integrar com WhatsApp real.
+**Ainda não há WhatsApp real.** Por enquanto é um simulador local: você digita
+como se fosse o cliente e vê o Hermes responder, escalar para humano e gerar
+leads — tudo persistido em SQLite local.
 
-## Documentos
+## O que já funciona
 
-- `docs/briefing.md` — briefing inicial do produto.
-- `docs/regra-de-negocio.md` — regra de negócio e decisões abertas.
-- `docs/roadmap.md` — roadmap macro.
-- `docs/plano-tecnico-mvp-simulado.md` — plano técnico detalhado para implementação do MVP simulado.
+- `/demo/chat` — simulador de conversa (o lado do cliente).
+- `/dashboard` — painel read-only (o lado da empresa/DGC).
+- Knowledge base por empresa (memória em `knowledge/<empresa>/`).
+- Retrieval simples (busca determinística de trechos relevantes).
+- Handoff humano (escala para pessoa quando precisa).
+- Extração simples de lead (necessidade, urgência, bairro).
+- Persistência em SQLite (conversas, mensagens, leads, eventos de handoff).
 
-## Decisão de escopo
+## Como rodar localmente
 
-Não começar como SaaS completo.
-
-Começar como:
-
-```text
-Demo dogfood da DGC
-  -> demo vertical assistência técnica/serviço residencial
-  -> conteúdo/portfólio
-  -> piloto
-  -> WhatsApp oficial
-  -> SaaS completo
+```bash
+npm install
+cp .env.example .env
+npx prisma migrate dev
+npm run dev
 ```
 
-## Próximo passo
+O banco local usa SQLite em `dev.db` e é ignorado pelo git.
 
-Implementar `docs/plano-tecnico-mvp-simulado.md` usando o template `DGC-ghub/dgc-template-ts`.
+## Rotas principais
+
+```text
+/           home do produto
+/demo/chat  simulador de conversa
+/dashboard  painel read-only
+```
+
+## Escopo do MVP simulado
+
+É um app **local e de demonstração**, feito para validar o fluxo comercial e
+técnico (conversa → resposta → handoff → lead → painel) **antes** de integrar o
+WhatsApp oficial. Não é produção.
+
+## Fora de escopo por enquanto
+
+- WhatsApp real / API da Meta
+- Autenticação / produção
+- Dados reais de clientes
+- CRM completo
+- Campanhas
+- Billing / SaaS completo
+
+## Segurança
+
+As dívidas de segurança conhecidas estão registradas em
+[`docs/SECURITY-BACKLOG.md`](docs/SECURITY-BACKLOG.md).
+
+**Não usar com dados reais antes de implementar autenticação, autorização por
+tenant e identidade confiável do canal.**
+
+## Documentos úteis
+
+- `docs/plano-tecnico-mvp-simulado.md` — plano técnico do MVP.
+- `docs/SECURITY-BACKLOG.md` — dívidas de segurança e regra de corte.
+- `docs/prompts/` — prompts travados de cada task.
+- `knowledge/dgc/` — base de conhecimento da DGC Hub.
+- `knowledge/assistencia-tecnica-demo/` — base da empresa demo (ResolveTech).
+
+## Validações
+
+```bash
+npm run typecheck
+npm test
+npm run lint
+npm run build
+```
