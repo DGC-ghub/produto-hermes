@@ -30,13 +30,22 @@ function includesAny(value: string, phrases: string[]): boolean {
  *
  * Precedência: requested_human > sensitive_topic > no_knowledge_match > sem handoff.
  */
-export function decideHandoff(input: { message: string; retrievedCount: number }): HandoffDecision {
+export function decideHandoff(input: {
+  message: string
+  retrievedCount: number
+  extraSensitiveTriggers?: string[]
+}): HandoffDecision {
   const message = normalizeText(input.message)
 
   if (includesAny(message, REQUESTED_HUMAN_PHRASES)) {
     return { needsHuman: true, reason: 'requested_human' }
   }
-  if (includesAny(message, SENSITIVE_PHRASES)) {
+  // Gatilhos sensíveis globais + os declarados no TenantConfig (escalationPolicy).
+  const sensitive =
+    input.extraSensitiveTriggers && input.extraSensitiveTriggers.length > 0
+      ? [...SENSITIVE_PHRASES, ...input.extraSensitiveTriggers.map(normalizeText)]
+      : SENSITIVE_PHRASES
+  if (includesAny(message, sensitive)) {
     return { needsHuman: true, reason: 'sensitive_topic' }
   }
   if (input.retrievedCount <= 0) {

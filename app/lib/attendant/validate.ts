@@ -5,8 +5,8 @@ import {
   LEAD_PATCH_KEYS,
 } from './types'
 
-// Promessas que o atendente nunca pode fazer (regra de negócio do produto).
-// Frases compostas para evitar falso-positivo com palavras soltas.
+// Promessas que o atendente nunca pode fazer (regra de negócio GLOBAL, igual para
+// todos). O TenantConfig pode somar mais via policy.extraForbiddenClaims.
 const FORBIDDEN_CLAIMS = [
   '100% garantido',
   'garantia total',
@@ -31,6 +31,12 @@ const MAX_LEAD_VALUE_LENGTH = 120
 const MAX_SUBJECT_LENGTH = 200
 const MAX_DESCRIPTION_LENGTH = 2000
 const MAX_CATEGORY_LENGTH = 80
+
+// Regras do tenant aplicadas determinísticamente pelo balcão (vêm do TenantConfig).
+export type TenantPolicy = {
+  extraForbiddenClaims?: string[]
+  allowedTools?: string[]
+}
 
 export type ValidationResult = { ok: true; value: AttendantOutput } | { ok: false; reason: string }
 
@@ -62,9 +68,13 @@ function validateLeadPatch(raw: unknown): AttendantLeadPatch | null | 'invalid' 
   return patch
 }
 
-// Ação inválida ou ausente vira null (descartada) — não invalida a resposta inteira.
-function validateAction(raw: unknown): AttendantAction | null {
+// Ação inválida, ausente, ou de uma tool NÃO habilitada para o tenant vira null
+// (descartada) — não invalida a resposta inteira.
+function validateAction(raw: unknown, allowedTools?: string[]): AttendantAction | null {
   if (!isPlainObject(raw) || raw.type !== 'abrir_chamado') {
+    return null
+  }
+  if (allowedTools && !allowedTools.includes('abrir_chamado')) {
     return null
   }
   const { subject, description, category } = raw
@@ -87,11 +97,11 @@ function validateAction(raw: unknown): AttendantAction | null {
 
 /**
  * Valida (camada determinística) a saída do atendente antes de salvar/enviar.
- * Função pura. Rejeita objeto malformado, vazamento de segredo, promessa
- * proibida, handoff incoerente ou confidence fora de [0,1]. Ação inválida é
- * apenas descartada (vira null).
+ * Função pura. Aplica os guard-rails globais + os do tenant (policy). Rejeita
+ * objeto malformado, vazamento de segredo, promessa proibida, handoff incoerente
+ * ou confidence fora de [0,1]. Ação inválida/não-habilitada é descartada (null).
  */
-export function validateAttendantOutput(raw: unknown): ValidationResult {
+export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): ValidationResult {
   if (!isPlainObject(raw)) {
     return { ok: false, reason: 'nao_e_objeto' }
   }
@@ -113,7 +123,11 @@ export function validateAttendantOutput(raw: unknown): ValidationResult {
     }
   }
   const normalizedReply = normalize(reply)
-  for (const claim of FORBIDDEN_CLAIMS) {
+  const forbidden =
+    policy?.extraForbiddenClaims && policy.extraForbiddenClaims.length > 0
+      ? [...FORBIDDEN_CLAIMS, ...policy.extraForbiddenClaims]
+      : FORBIDDEN_CLAIMS
+  for (const claim of forbidden) {
     if (normalizedReply.includes(normalize(claim))) {
       return { ok: false, reason: 'reply_promessa_proibida' }
     }
@@ -151,7 +165,7 @@ export function validateAttendantOutput(raw: unknown): ValidationResult {
       handoffReason: needsHuman ? handoffReason : null,
       leadPatch: patch,
       confidence,
-      action: validateAction(action),
+      action: validateAction(action, policy?.allowedTools),
     },
   }
 }

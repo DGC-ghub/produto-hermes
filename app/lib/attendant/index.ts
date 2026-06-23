@@ -1,6 +1,6 @@
 import { mockProvider } from './providers/mock'
 import type { AttendantInput, AttendantOutput, AttendantProvider } from './types'
-import { validateAttendantOutput } from './validate'
+import { type TenantPolicy, validateAttendantOutput } from './validate'
 
 const SAFE_FALLBACK_REPLY =
   'Vou marcar para uma pessoa do time te ajudar com segurança. Pode me dar mais contexto enquanto isso?'
@@ -30,15 +30,15 @@ export async function resolveProvider(): Promise<AttendantProvider> {
 }
 
 /**
- * Ponto de entrada do cérebro atendente. Escolhe o provider por env, chama-o e
- * SEMPRE valida a saída antes de devolver. Em qualquer falha devolve um fallback
- * seguro que escala para humano.
+ * Ponto de entrada do cérebro atendente. Escolhe o provider, chama-o e SEMPRE
+ * valida a saída (aplicando a policy do tenant) antes de devolver. Em qualquer
+ * falha devolve um fallback seguro que escala para humano.
  */
 export async function generateAttendantReply(
   input: AttendantInput,
-  provider?: AttendantProvider,
+  opts: { provider?: AttendantProvider; policy?: TenantPolicy } = {},
 ): Promise<AttendantOutput> {
-  const active = provider ?? (await resolveProvider())
+  const active = opts.provider ?? (await resolveProvider())
 
   let raw: AttendantOutput
   try {
@@ -47,7 +47,7 @@ export async function generateAttendantReply(
     return safeFallback('provider_error')
   }
 
-  const result = validateAttendantOutput(raw)
+  const result = validateAttendantOutput(raw, opts.policy)
   return result.ok ? result.value : safeFallback('validacao_falhou')
 }
 

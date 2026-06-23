@@ -1,8 +1,9 @@
 import { db } from '../db.server'
 import { generateAttendantReply } from './attendant'
-import { companyRulesFor } from './attendant/rules'
+import { buildCompanyRules } from './attendant/rules'
+import { loadTenantConfig, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { decideHandoff } from './handoff'
-import { loadKnowledgeBase } from './knowledge.server'
+import { loadKnowledgeFromSource } from './knowledge.server'
 import { extractLeadPatch } from './lead'
 import { retrieveRelevantChunks } from './retrieval'
 import { ensureTenant, INITIAL_TENANTS } from './tenants.server'
@@ -32,25 +33,32 @@ export type ProcessIncomingMessageResult = {
   sources: ProcessIncomingMessageSource[]
 }
 
-// Resposta segura usada quando a camada determinística escala (pedido de humano,
-// tema sensível ou base sem match): não arrisca a fala do atendente.
-const SAFE_HANDOFF_REPLY =
-  'Vou marcar para uma pessoa do time te ajudar com segurança. Pode me dar mais contexto enquanto isso?'
-
 const HISTORY_LIMIT = 12
 
 function findTenantInput(slug: string) {
   return INITIAL_TENANTS.find((tenant) => tenant.slug === slug)
 }
 
+// Carrega o TenantConfig com fallback SEGURO: se o config faltar ou estiver
+// inválido, degrada para um default conservador (sem ações, escala humano),
+// nunca para comportamento solto.
+function loadConfigSafe(slug: string): TenantConfig {
+  try {
+    return loadTenantConfig(slug)
+  } catch (error) {
+    console.error(
+      `[hermes] TenantConfig inválido/ausente para "${slug}" — usando default seguro`,
+      error,
+    )
+    return safeDefaultConfig(slug)
+  }
+}
+
 /**
- * Orquestra o "balcão" do Hermes para uma mensagem recebida:
- * garante tenant e conversa, salva a mensagem do usuário, monta o contexto
- * (histórico, lead, base), chama o atendente IA (já validado), aplica a camada
- * de segurança determinística, persiste tudo e cria HandoffEvent quando preciso.
- *
- * O "cérebro" agora é plugável (ver `app/lib/attendant`): o provider ativo é
- * escolhido por env (ATTENDANT_PROVIDER). Este orquestrador não sabe qual é.
+ * Orquestra o "balcão" do Hermes para uma mensagem recebida. O comportamento é
+ * código único; o que muda por empresa vem do TenantConfig (regras, base, tools,
+ * guard-rails, escalação) — aplicado determinísticamente aqui, nunca confiado ao
+ * prompt. O "cérebro" (atendente IA) é plugável (ver `app/lib/attendant`).
  *
  * Server-side — usa o banco. Não importar em componente React.
  */
@@ -68,6 +76,7 @@ export async function processIncomingMessage(
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
   const tenant = await ensureTenant(tenantInput)
+  const config = loadConfigSafe(input.tenantSlug)
 
   // Conversa: reutiliza a informada (validando dono) ou cria uma nova.
   let conversationId: string
@@ -94,8 +103,7 @@ export async function processIncomingMessage(
     contactId = created.contactId
   }
 
-  // Histórico ANTES de salvar a mensagem nova: vira a "memória" daquele contato
-  // que o atendente recebe (últimas N mensagens, em ordem cronológica).
+  // Histórico ANTES de salvar a mensagem nova: a "memória" daquele contato.
   const priorMessages = await db.message.findMany({
     where: { conversationId },
     orderBy: { createdAt: 'desc' },
@@ -114,8 +122,7 @@ export async function processIncomingMessage(
     data: { conversationId, role: 'user', content: message },
   })
 
-  // Lead determinístico (barato e confiável): extrai sinais da mensagem e faz
-  // upsert. Mantido como base; o atendente pode enriquecer depois.
+  // Lead determinístico (barato e confiável); o atendente pode enriquecer depois.
   const detPatch = extractLeadPatch(message)
   if (Object.keys(detPatch).length > 0) {
     await db.lead.upsert({
@@ -136,32 +143,46 @@ export async function processIncomingMessage(
   })
   const myTickets = ticketRows.map((row) => ({ subject: row.subject, status: row.status }))
 
-  const docs = await loadKnowledgeBase(input.tenantSlug)
+  // Contexto, regras e tools derivados do TenantConfig.
+  const companyRules = buildCompanyRules(config)
+  const enabledTools = config.tools.filter((tool) => tool.enabled).map((tool) => tool.name)
+  const docs = await loadKnowledgeFromSource(config.knowledge.sourceDir)
   const retrieved = retrieveRelevantChunks(message, docs)
-  const guard = decideHandoff({ message, retrievedCount: retrieved.length })
-
-  // O cérebro: atendente IA plugável. A saída já vem validada (fallback seguro
-  // se o provider falhar ou devolver algo inválido).
-  const decision = await generateAttendantReply({
-    tenant: { slug: tenant.slug, name: tenant.name },
-    companyRules: companyRulesFor(input.tenantSlug),
-    knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
-    history,
-    lead: currentLead
-      ? {
-          name: currentLead.name,
-          phone: currentLead.phone,
-          neighborhood: currentLead.neighborhood,
-          need: currentLead.need,
-          urgency: currentLead.urgency,
-        }
-      : null,
-    myTickets,
+  const guard = decideHandoff({
     message,
+    retrievedCount: retrieved.length,
+    extraSensitiveTriggers: config.escalationPolicy.triggers,
   })
 
-  // Enriquecimento de lead sugerido pelo atendente (tem precedência sobre o
-  // determinístico onde os campos se sobrepõem).
+  // O cérebro: atendente IA plugável. A saída já vem validada (com a policy do
+  // tenant) e com fallback seguro se o provider falhar.
+  const decision = await generateAttendantReply(
+    {
+      tenant: { slug: tenant.slug, name: config.businessProfile.name },
+      companyRules,
+      knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
+      history,
+      lead: currentLead
+        ? {
+            name: currentLead.name,
+            phone: currentLead.phone,
+            neighborhood: currentLead.neighborhood,
+            need: currentLead.need,
+            urgency: currentLead.urgency,
+          }
+        : null,
+      myTickets,
+      message,
+    },
+    {
+      policy: {
+        extraForbiddenClaims: config.guardrails.neverPromise,
+        allowedTools: enabledTools,
+      },
+    },
+  )
+
+  // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
   if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
     await db.lead.upsert({
       where: { conversationId },
@@ -170,8 +191,8 @@ export async function processIncomingMessage(
     })
   }
 
-  // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco).
-  // O chamado é criado para ESTE contato (contactId do canal, não da mensagem).
+  // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
+  // validador já garantiu que a ação é de uma tool habilitada para este tenant.
   if (decision.action?.type === 'abrir_chamado') {
     await db.ticket.create({
       data: {
@@ -185,8 +206,7 @@ export async function processIncomingMessage(
   }
 
   // Camada de segurança determinística: só pedido explícito de humano e tema
-  // sensível forçam a resposta segura. "Base sem match" NÃO força mais handoff —
-  // a IA tem contexto além da base (chamados, histórico) e decide sozinha.
+  // sensível forçam a resposta segura (com a mensagem de escalação do tenant).
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
   const useSafeReply = guardForcesSafe
   const needsHuman = guardForcesSafe || decision.needsHuman
@@ -195,7 +215,7 @@ export async function processIncomingMessage(
       ? guard.reason
       : (decision.handoffReason ?? 'unknown')
     : undefined
-  const reply = useSafeReply ? SAFE_HANDOFF_REPLY : decision.reply
+  const reply = useSafeReply ? config.escalationPolicy.humanMessage : decision.reply
   const confidence = useSafeReply ? 0 : decision.confidence
   const sources: ProcessIncomingMessageSource[] = useSafeReply
     ? []
