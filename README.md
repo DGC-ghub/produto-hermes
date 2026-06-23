@@ -1,23 +1,24 @@
-# Produto Hermes
+# Hermes
 
-## O que é
+> **IA operacional para WhatsApp de pequenos negócios.** O dono descreve como a empresa
+> funciona; a IA atende, qualifica, agenda, registra e chama um humano quando precisa —
+> **sem ninguém desenhar fluxo.** Visão completa em [`docs/produto.md`](docs/produto.md).
 
-Produto próprio da **DGC Hub**: um **MVP simulado** de atendimento com IA para
-WhatsApp, voltado a pequenos negócios.
+Produto próprio da **DGC Hub**. Callbell *organiza* o atendimento, Devzapp *automatiza funil*
+— o Hermes **opera** o atendimento por IA.
 
-**Ainda não há WhatsApp real.** Por enquanto é um simulador local: você digita
-como se fosse o cliente e vê o Hermes responder, escalar para humano e gerar
-leads — tudo persistido em SQLite local.
+## Estado atual
 
-## O que já funciona
+Atendente de IA real rodando em ambiente **local/demo** (ainda **sem WhatsApp real**):
 
-- `/demo/chat` — simulador de conversa (o lado do cliente).
-- `/dashboard` — painel read-only (o lado da empresa/DGC).
-- Knowledge base por empresa (memória em `knowledge/<empresa>/`).
-- Retrieval simples (busca determinística de trechos relevantes).
-- Handoff humano (escala para pessoa quando precisa).
-- Extração simples de lead (necessidade, urgência, bairro).
-- Persistência em SQLite (conversas, mensagens, leads, eventos de handoff).
+- **Cérebro IA plugável** — provider por env (`mock` | `claude_cli`); o `claude_cli` usa o
+  Claude CLI logado, em modo headless e com coleira (sem ferramentas).
+- **TenantConfig** — um motor, N configs: cada empresa é um `config/tenants/<slug>.json`
+  (perfil, regras, objetivos, tools, guard-rails). O comportamento é código único.
+- **Ações com isolamento** — a IA propõe (ex.: abrir chamado), o balcão valida e executa;
+  cada contato só vê os próprios dados.
+- **Handoff, leads e guard-rails** aplicados determinísticamente no balcão (nunca no prompt).
+- Empresas demo: `dgc`, `assistencia-tecnica-demo`, `prestacon`.
 
 ## Como rodar localmente
 
@@ -28,46 +29,30 @@ npx prisma migrate dev
 npm run dev
 ```
 
-O banco local usa SQLite em `dev.db` e é ignorado pelo git.
+Banco em SQLite (`dev.db`, ignorado pelo git). O cérebro usa o provider `mock` por padrão;
+para IA real, defina `ATTENDANT_PROVIDER=claude_cli` (requer o Claude CLI logado na máquina).
 
-## Rotas principais
+## Rotas
 
 ```text
-/           home do produto
-/demo/chat  simulador de conversa
-/dashboard  painel read-only
+/           home
+/demo/chat  simulador de conversa (lado do cliente)
+/dashboard  painel read-only (lado da empresa)
 ```
 
-## Escopo do MVP simulado
+## Documentos
 
-É um app **local e de demonstração**, feito para validar o fluxo comercial e
-técnico (conversa → resposta → handoff → lead → painel) **antes** de integrar o
-WhatsApp oficial. Não é produção.
-
-## Fora de escopo por enquanto
-
-- WhatsApp real / API da Meta
-- Autenticação / produção
-- Dados reais de clientes
-- CRM completo
-- Campanhas
-- Billing / SaaS completo
+- [`docs/produto.md`](docs/produto.md) — **spec de produto** (visão, categoria, roadmap).
+- `docs/plano-fase-2-hermes-atendente.md` — o cérebro IA plugável.
+- `docs/plano-demo-prestacon.md` — a demo com ações (chamados / agenda).
+- `docs/plano-tenant-config.md` — o motor da parametrização.
+- `docs/SECURITY-BACKLOG.md` — dívidas de segurança e regra de corte.
 
 ## Segurança
 
-As dívidas de segurança conhecidas estão registradas em
-[`docs/SECURITY-BACKLOG.md`](docs/SECURITY-BACKLOG.md).
-
-**Não usar com dados reais antes de implementar autenticação, autorização por
-tenant e identidade confiável do canal.**
-
-## Documentos úteis
-
-- `docs/plano-tecnico-mvp-simulado.md` — plano técnico do MVP.
-- `docs/SECURITY-BACKLOG.md` — dívidas de segurança e regra de corte.
-- `docs/prompts/` — prompts travados de cada task.
-- `knowledge/dgc/` — base de conhecimento da DGC Hub.
-- `knowledge/assistencia-tecnica-demo/` — base da empresa demo (ResolveTech).
+App **local/demo — não é produção.** Sem WhatsApp real e sem dados reais de cliente. Antes de
+qualquer uso real: autenticação, autorização por tenant e identidade confiável do canal.
+Detalhes em [`docs/SECURITY-BACKLOG.md`](docs/SECURITY-BACKLOG.md).
 
 ## Validações
 
