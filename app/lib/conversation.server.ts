@@ -145,7 +145,9 @@ export async function processIncomingMessage(
 
   // Contexto, regras e tools derivados do TenantConfig.
   const companyRules = buildCompanyRules(config)
-  const enabledTools = config.tools.filter((tool) => tool.enabled).map((tool) => tool.name)
+  const enabledTools = config.tools
+    .filter((tool) => tool.enabled)
+    .map((tool) => ({ name: tool.name, limits: tool.limits }))
   const docs = await loadKnowledgeFromSource(config.knowledge.sourceDir)
   const retrieved = retrieveRelevantChunks(message, docs)
   const guard = decideHandoff({
@@ -177,7 +179,7 @@ export async function processIncomingMessage(
     {
       policy: {
         extraForbiddenClaims: config.guardrails.neverPromise,
-        allowedTools: enabledTools,
+        tools: enabledTools,
       },
     },
   )

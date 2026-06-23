@@ -90,4 +90,49 @@ describe('validateAttendantOutput', () => {
       expect(result.value.action).toBeNull()
     }
   })
+
+  it('descarta ação de tool não habilitada para o tenant', () => {
+    const action = { type: 'abrir_chamado', subject: 's', description: 'd' }
+    const result = validateAttendantOutput({ ...good, action }, { tools: [] })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action).toBeNull()
+    }
+  })
+
+  it('descarta ação com categoria fora de allowedCategories', () => {
+    const action = { type: 'abrir_chamado', subject: 's', description: 'd', category: 'xpto' }
+    const policy = {
+      tools: [{ name: 'abrir_chamado', limits: { allowedCategories: ['documento', 'guia'] } }],
+    }
+    const result = validateAttendantOutput({ ...good, action }, policy)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action).toBeNull()
+    }
+  })
+
+  it('aceita ação com categoria dentro de allowedCategories', () => {
+    const action = { type: 'abrir_chamado', subject: 's', description: 'd', category: 'guia' }
+    const policy = {
+      tools: [{ name: 'abrir_chamado', limits: { allowedCategories: ['documento', 'guia'] } }],
+    }
+    const result = validateAttendantOutput({ ...good, action }, policy)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action?.category).toBe('guia')
+    }
+  })
+
+  it('descarta ação faltando um campo obrigatório (requiredFields)', () => {
+    const action = { type: 'abrir_chamado', subject: 's', description: 'd' }
+    const policy = {
+      tools: [{ name: 'abrir_chamado', limits: { requiredFields: ['category'] } }],
+    }
+    const result = validateAttendantOutput({ ...good, action }, policy)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action).toBeNull()
+    }
+  })
 })

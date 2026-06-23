@@ -32,10 +32,20 @@ const MAX_SUBJECT_LENGTH = 200
 const MAX_DESCRIPTION_LENGTH = 2000
 const MAX_CATEGORY_LENGTH = 80
 
+// Limites de uma tool habilitada (vêm do TenantConfig). O balcão honra estes
+// limites no validador — a IA não os corrige nem contorna.
+export type ToolPolicy = {
+  name: string
+  limits?: {
+    requiredFields?: string[]
+    allowedCategories?: string[]
+  }
+}
+
 // Regras do tenant aplicadas determinísticamente pelo balcão (vêm do TenantConfig).
 export type TenantPolicy = {
   extraForbiddenClaims?: string[]
-  allowedTools?: string[]
+  tools?: ToolPolicy[]
 }
 
 export type ValidationResult = { ok: true; value: AttendantOutput } | { ok: false; reason: string }
@@ -68,15 +78,18 @@ function validateLeadPatch(raw: unknown): AttendantLeadPatch | null | 'invalid' 
   return patch
 }
 
-// Ação inválida, ausente, ou de uma tool NÃO habilitada para o tenant vira null
-// (descartada) — não invalida a resposta inteira.
-function validateAction(raw: unknown, allowedTools?: string[]): AttendantAction | null {
+// Ação inválida, ausente, de tool não habilitada, ou que viola os limites da tool
+// (allowedCategories / requiredFields) vira null (descartada) — nunca invalida a
+// resposta inteira. A IA propõe; o balcão honra o contrato declarado no config.
+function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | null {
   if (!isPlainObject(raw) || raw.type !== 'abrir_chamado') {
     return null
   }
-  if (allowedTools && !allowedTools.includes('abrir_chamado')) {
-    return null
+  const toolPolicy = tools?.find((tool) => tool.name === 'abrir_chamado')
+  if (tools && !toolPolicy) {
+    return null // tool não habilitada para este tenant
   }
+
   const { subject, description, category } = raw
   if (typeof subject !== 'string' || subject.trim().length === 0) {
     return null
@@ -84,13 +97,38 @@ function validateAction(raw: unknown, allowedTools?: string[]): AttendantAction 
   if (typeof description !== 'string' || description.trim().length === 0) {
     return null
   }
+  const cat =
+    typeof category === 'string' && category.trim().length > 0 ? category.trim() : undefined
+
+  const limits = toolPolicy?.limits
+  // allowedCategories: se uma categoria foi fornecida, ela precisa estar na lista.
+  if (limits?.allowedCategories && limits.allowedCategories.length > 0 && cat) {
+    if (!limits.allowedCategories.includes(cat)) {
+      return null
+    }
+  }
+  // requiredFields: cada campo obrigatório precisa estar presente e não-vazio.
+  if (limits?.requiredFields && limits.requiredFields.length > 0) {
+    const fields: Record<string, string | undefined> = {
+      subject: subject.trim(),
+      description: description.trim(),
+      category: cat,
+    }
+    for (const field of limits.requiredFields) {
+      const value = fields[field]
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        return null
+      }
+    }
+  }
+
   const action: AttendantAction = {
     type: 'abrir_chamado',
     subject: subject.trim().slice(0, MAX_SUBJECT_LENGTH),
     description: description.trim().slice(0, MAX_DESCRIPTION_LENGTH),
   }
-  if (typeof category === 'string' && category.trim().length > 0) {
-    action.category = category.trim().slice(0, MAX_CATEGORY_LENGTH)
+  if (cat) {
+    action.category = cat.slice(0, MAX_CATEGORY_LENGTH)
   }
   return action
 }
@@ -99,7 +137,8 @@ function validateAction(raw: unknown, allowedTools?: string[]): AttendantAction 
  * Valida (camada determinística) a saída do atendente antes de salvar/enviar.
  * Função pura. Aplica os guard-rails globais + os do tenant (policy). Rejeita
  * objeto malformado, vazamento de segredo, promessa proibida, handoff incoerente
- * ou confidence fora de [0,1]. Ação inválida/não-habilitada é descartada (null).
+ * ou confidence fora de [0,1]. Ação inválida/não-habilitada/que viola limites é
+ * descartada (vira null), sem invalidar a resposta.
  */
 export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): ValidationResult {
   if (!isPlainObject(raw)) {
@@ -165,7 +204,7 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
       handoffReason: needsHuman ? handoffReason : null,
       leadPatch: patch,
       confidence,
-      action: validateAction(action, policy?.allowedTools),
+      action: validateAction(action, policy?.tools),
     },
   }
 }

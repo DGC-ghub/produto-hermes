@@ -70,13 +70,13 @@ describe('generateAttendantReply', () => {
     }
     const semTool = await generateAttendantReply(baseInput, {
       provider: ticketProvider,
-      policy: { allowedTools: [] },
+      policy: { tools: [] },
     })
     expect(semTool.action).toBeNull()
 
     const comTool = await generateAttendantReply(baseInput, {
       provider: ticketProvider,
-      policy: { allowedTools: ['abrir_chamado'] },
+      policy: { tools: [{ name: 'abrir_chamado' }] },
     })
     expect(comTool.action?.type).toBe('abrir_chamado')
   })
