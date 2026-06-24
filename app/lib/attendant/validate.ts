@@ -58,24 +58,32 @@ function normalize(value: string): string {
   return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 }
 
-function validateLeadPatch(raw: unknown): AttendantLeadPatch | null | 'invalid' {
-  if (raw === null || raw === undefined) {
-    return null
-  }
+// Sanitiza o leadPatch: mantém só as chaves permitidas com valor de texto, truncando
+// valores longos. Campos extras ou inválidos são IGNORADOS — nunca invalidam a resposta
+// inteira (o lead é enriquecimento, não o conteúdo principal).
+function sanitizeLeadPatch(raw: unknown): AttendantLeadPatch | null {
   if (!isPlainObject(raw)) {
-    return 'invalid'
+    return null
   }
   const patch: AttendantLeadPatch = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (!(LEAD_PATCH_KEYS as readonly string[]).includes(key)) {
-      return 'invalid'
+    if (
+      (LEAD_PATCH_KEYS as readonly string[]).includes(key) &&
+      typeof value === 'string' &&
+      value.trim().length > 0
+    ) {
+      patch[key as keyof AttendantLeadPatch] = value.trim().slice(0, MAX_LEAD_VALUE_LENGTH)
     }
-    if (typeof value !== 'string' || value.length > MAX_LEAD_VALUE_LENGTH) {
-      return 'invalid'
-    }
-    patch[key as keyof AttendantLeadPatch] = value
   }
-  return patch
+  return Object.keys(patch).length > 0 ? patch : null
+}
+
+// Confidence é informativo: clampa para [0,1] em vez de rejeitar a resposta.
+function clampConfidence(value: unknown): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 0.5
+  }
+  return Math.min(1, Math.max(0, value))
 }
 
 // Ação inválida, ausente, de tool não habilitada, ou que viola os limites da tool
@@ -136,9 +144,10 @@ function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | n
 /**
  * Valida (camada determinística) a saída do atendente antes de salvar/enviar.
  * Função pura. Aplica os guard-rails globais + os do tenant (policy). Rejeita
- * objeto malformado, vazamento de segredo, promessa proibida, handoff incoerente
- * ou confidence fora de [0,1]. Ação inválida/não-habilitada/que viola limites é
- * descartada (vira null), sem invalidar a resposta.
+ * objeto malformado, reply vazio/longo/com código, vazamento de segredo, promessa
+ * proibida ou handoff incoerente. Campos de enriquecimento são saneados em vez de
+ * rejeitar a resposta: leadPatch perde chaves inválidas, confidence é clampado em
+ * [0,1], e ação inválida/não-habilitada/que viola limites vira null.
  */
 export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): ValidationResult {
   if (!isPlainObject(raw)) {
@@ -182,28 +191,14 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
     return { ok: false, reason: 'handoff_sem_motivo' }
   }
 
-  const patch = validateLeadPatch(leadPatch)
-  if (patch === 'invalid') {
-    return { ok: false, reason: 'leadPatch_invalido' }
-  }
-
-  if (
-    typeof confidence !== 'number' ||
-    Number.isNaN(confidence) ||
-    confidence < 0 ||
-    confidence > 1
-  ) {
-    return { ok: false, reason: 'confidence_invalido' }
-  }
-
   return {
     ok: true,
     value: {
       reply: reply.trim(),
       needsHuman,
       handoffReason: needsHuman ? handoffReason : null,
-      leadPatch: patch,
-      confidence,
+      leadPatch: sanitizeLeadPatch(leadPatch),
+      confidence: clampConfidence(confidence),
       action: validateAction(action, policy?.tools),
     },
   }

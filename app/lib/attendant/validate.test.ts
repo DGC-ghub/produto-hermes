@@ -58,14 +58,33 @@ describe('validateAttendantOutput', () => {
     }
   })
 
-  it('rejeita chave de lead não permitida', () => {
-    expect(validateAttendantOutput({ ...good, leadPatch: { foo: 'bar' } }).ok).toBe(false)
+  it('ignora chave de lead não permitida sem perder a resposta', () => {
+    const result = validateAttendantOutput({
+      ...good,
+      leadPatch: { foo: 'bar', need: 'troca de tela' },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.leadPatch).toEqual({ need: 'troca de tela' })
+    }
   })
 
-  it('rejeita confidence fora de [0,1]', () => {
-    expect(validateAttendantOutput({ ...good, confidence: 1.5 }).ok).toBe(false)
-    expect(validateAttendantOutput({ ...good, confidence: -0.1 }).ok).toBe(false)
-    expect(validateAttendantOutput({ ...good, confidence: Number.NaN }).ok).toBe(false)
+  it('clampa confidence fora de [0,1] sem perder a resposta', () => {
+    const high = validateAttendantOutput({ ...good, confidence: 1.5 })
+    expect(high.ok).toBe(true)
+    if (high.ok) {
+      expect(high.value.confidence).toBe(1)
+    }
+    const low = validateAttendantOutput({ ...good, confidence: -0.1 })
+    expect(low.ok).toBe(true)
+    if (low.ok) {
+      expect(low.value.confidence).toBe(0)
+    }
+    const nan = validateAttendantOutput({ ...good, confidence: Number.NaN })
+    expect(nan.ok).toBe(true)
+    if (nan.ok) {
+      expect(nan.value.confidence).toBe(0.5)
+    }
   })
 
   it('aceita action abrir_chamado válida', () => {
