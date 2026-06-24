@@ -18,6 +18,8 @@ Atendente de IA real rodando em ambiente **local/demo** (ainda **sem WhatsApp re
 - **Ações com isolamento** — a IA propõe (ex.: abrir chamado), o balcão valida e executa;
   cada contato só vê os próprios dados.
 - **Handoff, leads e guard-rails** aplicados determinísticamente no balcão (nunca no prompt).
+- **Transcrição de áudio local** (faster-whisper) — voz → texto converge no mesmo fluxo do
+  atendente; motor isolado, sem reusar o agente pessoal da máquina.
 - Empresas demo: `dgc`, `assistencia-tecnica-demo`, `prestacon`.
 
 ## Como rodar localmente
@@ -31,6 +33,12 @@ npm run dev
 
 Banco em SQLite (`dev.db`, ignorado pelo git). O cérebro usa o provider `mock` por padrão;
 para IA real, defina `ATTENDANT_PROVIDER=claude_cli` (requer o Claude CLI logado na máquina).
+
+Para transcrição de áudio (opcional), crie o venv isolado uma vez:
+
+```bash
+bash scripts/setup-transcribe.sh   # requer uv + ffmpeg; venv não é versionado
+```
 
 ## Rotas
 

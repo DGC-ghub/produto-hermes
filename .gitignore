@@ -15,3 +15,11 @@ prisma/dev.db
 prisma/dev.db-journal
 prisma/*.db
 prisma/*.db-journal
+
+# Transcrição de áudio (faster-whisper) — venv local e fixtures de áudio não versionados
+/.venv-transcribe/
+/tmp-audio/
+*.wav
+*.mp3
+*.ogg
+*.m4a
