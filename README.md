@@ -18,6 +18,11 @@ Atendente de IA real rodando em ambiente **local/demo** (ainda **sem WhatsApp re
 - **Ações com isolamento** — a IA propõe (ex.: abrir chamado), o balcão valida e executa;
   cada contato só vê os próprios dados.
 - **Handoff, leads e guard-rails** aplicados determinísticamente no balcão (nunca no prompt).
+- **Memória do cliente** — reconhece o contato que volta pelo número (continua a conversa
+  ativa, consolida lead e histórico) em vez de tratar cada retorno como novo.
+- **Dossiê + tela `/atendente`** — fila de encaminhamentos priorizada com a ficha completa do
+  cliente; o humano assume com contexto. Protegida por **gate de operador** (senha).
+- **Tickets com dedup** — reforço do mesmo pedido não abre chamado duplicado.
 - **Transcrição de áudio local** (faster-whisper) — voz → texto converge no mesmo fluxo do
   atendente; motor isolado, sem reusar o agente pessoal da máquina.
 - Empresas demo: `dgc`, `assistencia-tecnica-demo`, `prestacon`.
@@ -45,7 +50,9 @@ bash scripts/setup-transcribe.sh   # requer uv + ffmpeg; venv não é versionado
 ```text
 /           home
 /demo/chat  simulador de conversa (lado do cliente)
-/dashboard  painel read-only (lado da empresa)
+/atendente  central do atendente: fila + dossiê do cliente (exige login)
+/dashboard  painel read-only (exige login)
+/login      acesso do operador
 ```
 
 ## Documentos
@@ -58,9 +65,10 @@ bash scripts/setup-transcribe.sh   # requer uv + ffmpeg; venv não é versionado
 
 ## Segurança
 
-App **local/demo — não é produção.** Sem WhatsApp real e sem dados reais de cliente. Antes de
-qualquer uso real: autenticação, autorização por tenant e identidade confiável do canal.
-Detalhes em [`docs/SECURITY-BACKLOG.md`](docs/SECURITY-BACKLOG.md).
+App **local/demo — não é produção.** Sem WhatsApp real e sem dados reais de cliente. As telas
+internas (`/atendente`, `/dashboard`) já exigem **login de operador**; ainda falta autorização
+por tenant (o operador vê todos) e identidade confiável do canal. Detalhes e regra de corte em
+[`docs/SECURITY-BACKLOG.md`](docs/SECURITY-BACKLOG.md).
 
 ## Validações
 

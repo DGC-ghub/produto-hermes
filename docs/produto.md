@@ -9,6 +9,30 @@ A IA que **opera** o atendimento de WhatsApp de pequenos negócios: o dono descr
 empresa funciona, e a IA atende, qualifica, agenda, registra e chama um humano quando
 precisa — **sem ninguém desenhar fluxo**.
 
+## O gol (a meta concreta)
+
+> Definido com base nas conversas dos sócios (Gabriel "Caetano" + sócio). Resolve a tensão
+> "entrar simples" vs "SaaS completo": **as duas coisas, em camadas**.
+
+**A cunha (o que vende primeiro):** o **módulo Atendente de WhatsApp** funcionando ponta a
+ponta e vendável sozinho — atende, qualifica, registra lead, abre chamado e **encaminha pro
+humano já com a ficha do cliente (dossiê)**. Dor aguda, ROI óbvio (cada lead perdido = R$ na
+mesa), demo de 2 minutos. Não se vende "SaaS de gestão completo" (porta difícil de entrar);
+vende-se um **funcionário digital de atendimento**.
+
+**A plataforma (o que retém e expande):** SaaS **modular multi-tenant** — login único, cada
+cliente paga pelos módulos que usa (atendente → nota fiscal → financeiro → gestão). Os demais
+módulos são **upsell** depois da confiança. A **auth/isolamento por tenant centralizado** é o
+que transforma N projetos avulsos em **uma plataforma** — e o isolamento entre empresas **é**
+o produto (vazar dado entre clientes quebra a promessa central).
+
+**Como medir o gol:** primeiro **cliente pagante do módulo atendente** (validação de tração).
+Tração — não deck — destrava a captação com o anjo investidor. Preço abaixo do mercado +
+tráfego pago como canal de aquisição.
+
+**Norte técnico (a tese que sustenta tudo):** um motor, N configs · a IA propõe, o balcão
+executa · guard-rails determinísticos · coleira (texto puro, poder no catálogo de ações).
+
 ## A categoria (e por que é nova)
 
 | Ferramenta | O que faz | Quem trabalha |
@@ -40,12 +64,13 @@ tools habilitadas) e sobe documentos (knowledge base). A IA decide a conversa de
 ## Os módulos (priorizados — não os 7 de uma vez)
 
 **Núcleo (o que vende):**
-- Cérebro IA (atende, entende, decide) — *em construção*
+- Cérebro IA (atende, entende, decide) — *funcional (Claude CLI)*
 - Parametrização por empresa (`TenantConfig`) — *fundação pronta*
-- Inbox: conversas, status, assumir/devolver, resumo automático
-- Leads automáticos + handoff humano
-- Tickets / agendamento (as "mãos" da IA)
-- Dashboard de resultado
+- Memória do cliente (reconhece quem volta) — *pronto*
+- Central do atendente: fila + dossiê do cliente (`/atendente`) — *1ª versão; falta resumo automático e assumir/devolver*
+- Leads automáticos + handoff humano — *pronto*
+- Tickets / agendamento (as "mãos" da IA) — *tickets com dedup prontos; agendamento via tool*
+- Dashboard de resultado — *read-only*
 
 **Depois (quando o núcleo vender):**
 - CRM + funil automático (a IA move o lead; o humano corrige)
@@ -77,11 +102,17 @@ não-oficial. Referência de mercado: Callbell e Devzapp — para se diferenciar
 ## Estado atual (o que já roda)
 
 - Cérebro IA plugável via **Claude CLI** (headless, com coleira), validação determinística,
-  fallback seguro, handoff.
-- Demo **Prestacon** (contabilidade): responde da base, abre/consulta chamados, com
-  **isolamento por contato provado** (cliente B não vê o chamado do A).
-- **TenantConfig** plugado no fluxo: um motor, N configs.
-- Branch `feat/atendente-ia`.
+  fallback seguro, handoff. Isolamento por contato provado (cliente B não vê o chamado do A).
+- **Memória do cliente:** reconhece o contato que volta pelo número (continua a conversa
+  ativa, consolida lead e histórico) em vez de tratar cada retorno como novo.
+- **Dossiê + tela `/atendente`:** fila de encaminhamentos priorizada (alta/média/baixa) com a
+  ficha completa do cliente (dados + chamados + conversa + motivo) — o "copiloto" do humano.
+- **Gate de operador:** `/atendente` e `/dashboard` protegidos por senha (MVP de auth; o
+  isolamento por tenant do operador é a próxima fase — ver `SECURITY-BACKLOG.md`).
+- **Tickets com dedup:** a IA abre chamado; reforço do mesmo pedido não duplica.
+- **TenantConfig** plugado: um motor, N configs. Tenants demo: `dgc`,
+  `assistencia-tecnica-demo`, `prestacon`. Transcrição de áudio local (faster-whisper).
+- Branch `feat/atendente-ia`. ~151 testes verdes (typecheck/lint limpos).
 
 ## MVP vendável (o recorte para piloto)
 

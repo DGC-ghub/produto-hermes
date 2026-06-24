@@ -20,6 +20,29 @@ Você (IA: Claude Code / Codex) deve seguir estes padrões ao gerar ou alterar c
 
 > Arquivos `*.server.ts` rodam só no servidor. Não importe `~/db.server` num componente.
 
+## O motor do atendente (mapa rápido)
+O fluxo de uma mensagem recebida vive em `app/lib/conversation.server.ts`
+(`processIncomingMessage`): resolve a identidade do contato (reusa a conversa ativa por
+`contactId`), monta contexto/regras do `TenantConfig`, chama o cérebro e persiste. Peças:
+- `app/lib/attendant/` — o "cérebro" plugável. Provider por env `ATTENDANT_PROVIDER`
+  (`mock` | `claude_cli`); a saída é **sempre validada** antes de usar (fallback seguro escala
+  para humano).
+- `app/lib/dossier.server.ts` — ficha consolidada do contato (`composeDossier`, puro) + a fila
+  (`getHandoffQueue`). Alimenta a tela `/atendente`.
+- `app/lib/ticket.ts` — dedup de chamados por similaridade de assunto (puro).
+- `app/lib/handoff.ts` · `lead.ts` · `retrieval.ts` · `knowledge.server.ts` — guard-rails de
+  escalação, lead determinístico, RAG lexical, base de conhecimento.
+- Config por empresa: `config/tenants/<slug>.json` + base em `knowledge/<slug>/`.
+
+Princípio: **a IA propõe (JSON), o balcão valida e executa.** A IA nunca toca o banco.
+Guard-rails são determinísticos, no código — nunca confiados ao prompt.
+
+## Telas internas e segredos
+- Rotas internas (`/atendente`, `/dashboard`) exigem `await requireOperator(request)` no
+  `loader` (gate em `app/lib/auth.server.ts`; login em `/login`).
+- Env: `OPERATOR_PASSWORD` + `SESSION_SECRET` (gate), `ATTENDANT_PROVIDER`/`CLAUDE_MODEL`
+  (cérebro). Em dev o `.env` é carregado no servidor pelo `vite.config.ts`. Veja `.env.example`.
+
 ## Como adicionar uma funcionalidade (o padrão)
 1. Precisa guardar dado novo? Adicione um `model` em `prisma/schema.prisma` e rode `npx prisma migrate dev --name <nome>`.
 2. Crie a rota em `app/routes/<nome>.tsx` com `loader`/`action` usando `db` de `~/db.server`.
