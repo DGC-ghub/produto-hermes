@@ -7,6 +7,11 @@ import type { AttendantInput, AttendantOutput, AttendantProvider } from '../type
 const MODEL = process.env.CLAUDE_MODEL ?? 'sonnet'
 const TIMEOUT_MS = Number(process.env.ATTENDANT_TIMEOUT_MS ?? 30000)
 
+// A saída crua do modelo pode conter PII do cliente (nome/telefone que ele ecoa no
+// reply/leadPatch). Por padrão NÃO a logamos — só o tamanho. O conteúdo cru fica
+// atrás de ATTENDANT_DEBUG=1, para diagnóstico pontual, nunca em produção.
+const DEBUG = process.env.ATTENDANT_DEBUG === '1'
+
 /**
  * Monta o pacote de contexto enviado ao Claude. A mensagem do cliente é
  * delimitada e marcada como DADO (nunca instrução) — 1ª camada anti-injection.
@@ -118,7 +123,9 @@ export const claudeCliProvider: AttendantProvider = {
       return output
     } catch (error) {
       console.error(
-        `[claude_cli] JSON inválido em ${Date.now() - start}ms. Saída crua: ${stdout.slice(0, 400)}`,
+        `[claude_cli] JSON inválido em ${Date.now() - start}ms (saída de ${stdout.length} chars)${
+          DEBUG ? `. Saída crua: ${stdout.slice(0, 400)}` : ''
+        }`,
       )
       throw error
     }
