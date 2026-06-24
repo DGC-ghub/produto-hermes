@@ -1,8 +1,10 @@
 import { Link } from 'react-router'
+import { requireOperator } from '../lib/auth.server'
 import { getDashboardData } from '../lib/dashboard.server'
 import type { Route } from './+types/dashboard'
 
-export async function loader() {
+export async function loader({ request }: Route.LoaderArgs) {
+  await requireOperator(request)
   return getDashboardData()
 }
 
