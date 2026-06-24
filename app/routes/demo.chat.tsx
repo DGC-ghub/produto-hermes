@@ -1,4 +1,5 @@
-import { Form, Link, redirect } from 'react-router'
+import { useEffect, useRef } from 'react'
+import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
 import { db } from '../db.server'
 import { processIncomingMessage } from '../lib/conversation.server'
 import { ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
@@ -94,34 +95,67 @@ export async function action({ request }: Route.ActionArgs) {
     return redirect(`/demo/chat?tenant=${tenantSlug}${back}`)
   }
 
-  const result = await processIncomingMessage({
-    tenantSlug,
-    message,
-    conversationId: conversationIdRaw ? String(conversationIdRaw) : undefined,
-    contactId: contactIdRaw ? String(contactIdRaw) : undefined,
-  })
-
-  return redirect(`/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}`)
+  try {
+    const result = await processIncomingMessage({
+      tenantSlug,
+      message,
+      conversationId: conversationIdRaw ? String(conversationIdRaw) : undefined,
+      contactId: contactIdRaw ? String(contactIdRaw) : undefined,
+    })
+    return redirect(
+      `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}`,
+    )
+  } catch (error) {
+    console.error('[demo.chat] erro ao processar mensagem', error)
+    return { error: 'Não consegui processar a mensagem agora. Tente de novo em instantes.' }
+  }
 }
 
 export function meta(_args: Route.MetaArgs) {
   return [
-    { title: 'Produto Hermes — Simulador' },
-    { name: 'description', content: 'Simulador de atendimento por IA (MVP simulado).' },
+    { title: 'Hermes — Simulador' },
+    { name: 'description', content: 'Simulador de atendimento por IA (ambiente de teste).' },
   ]
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
   const { tenantSlug, tenants, conversations, selectedConversationId, selectedStatus, messages } =
     loaderData
+  const navigation = useNavigation()
+  const actionData = useActionData<typeof action>()
   const needsHuman = selectedStatus === 'needs_human'
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Feedback de envio (optimistic UI): enquanto a action roda (~13s), mostra a mensagem
+  // do cliente na hora + "digitando", e trava os controles para não duplicar o envio.
+  const pendingValue = navigation.formData?.get('message')
+  const pendingText =
+    typeof pendingValue === 'string' && pendingValue.trim().length > 0 ? pendingValue : null
+  // Trava textarea/botão durante todo o round-trip (action + revalidação do loader).
+  const sending = navigation.state !== 'idle' && pendingText !== null
+  // A bolha otimista + "digitando" aparece só na fase de submit: durante a revalidação
+  // a mensagem já volta persistida do loader, então não piscamos uma cópia duplicada.
+  const pendingMessage = navigation.state === 'submitting' ? pendingText : null
+  // Remonta o formulário quando uma nova mensagem é persistida, limpando o textarea
+  // não-controlado — senão o texto enviado fica preso no campo e convida a reenviar.
+  const formKey = messages.at(-1)?.id ?? 'novo'
+
+  // Devolve o foco ao campo ao fim do envio (o disabled remove o foco) — fluxo contínuo.
+  useEffect(() => {
+    if (!sending) {
+      textareaRef.current?.focus()
+    }
+  }, [sending])
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 p-6">
       <header className="space-y-1">
-        <h1 className="text-2xl font-bold">Produto Hermes — Simulador</h1>
-        <p className="text-sm text-amber-700">MVP simulado — sem WhatsApp real ainda.</p>
+        <h1 className="text-2xl font-bold">Hermes — Simulador</h1>
+        <p className="text-sm text-gray-500">
+          Você é o cliente: digite como se fosse no WhatsApp. Ambiente de teste — ainda sem WhatsApp
+          real.
+        </p>
       </header>
 
       <section className="space-y-2">
@@ -183,28 +217,48 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
         </div>
 
         <div className="min-h-32 space-y-3 rounded border border-gray-200 bg-gray-50 p-3">
-          {messages.length === 0 ? (
+          {messages.length === 0 && !sending ? (
             <p className="text-sm text-gray-500">
               Digite uma mensagem como se fosse o cliente no WhatsApp.
             </p>
           ) : (
-            messages.map((m) => (
-              <div
-                key={m.id}
-                className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-                  m.role === 'user'
-                    ? 'ml-auto bg-blue-600 text-white'
-                    : 'mr-auto bg-white text-gray-800 shadow-sm'
-                }`}
-              >
-                <p className="whitespace-pre-wrap">{m.content}</p>
-                {m.role === 'assistant' && m.confidence != null && (
-                  <p className="mt-1 text-xs opacity-70">confiança: {m.confidence.toFixed(2)}</p>
-                )}
-              </div>
-            ))
+            <>
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+                    m.role === 'user'
+                      ? 'ml-auto bg-blue-600 text-white'
+                      : 'mr-auto bg-white text-gray-800 shadow-sm'
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap">{m.content}</p>
+                  {m.role === 'assistant' && m.confidence != null && (
+                    <p className="mt-1 text-xs opacity-70">confiança: {m.confidence.toFixed(2)}</p>
+                  )}
+                </div>
+              ))}
+
+              {pendingMessage && (
+                <>
+                  <div className="ml-auto max-w-[80%] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white opacity-70">
+                    <p className="whitespace-pre-wrap">{pendingMessage}</p>
+                  </div>
+                  <div className="mr-auto flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-gray-500 shadow-sm">
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-gray-400" />
+                    Hermes está digitando…
+                  </div>
+                </>
+              )}
+            </>
           )}
         </div>
+
+        {actionData?.error && (
+          <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {actionData.error}
+          </div>
+        )}
 
         {lastAssistant && lastAssistant.sources.length > 0 && (
           <div className="rounded border border-gray-200 bg-white p-3 text-xs text-gray-600">
@@ -220,23 +274,40 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
         )}
       </section>
 
-      <Form method="post" className="space-y-2">
+      <Form
+        key={formKey}
+        method="post"
+        className="space-y-2"
+        onSubmit={(event) => {
+          const value = String(new FormData(event.currentTarget).get('message') ?? '')
+          if (value.trim().length === 0) {
+            event.preventDefault()
+          }
+        }}
+      >
         <input type="hidden" name="tenantSlug" value={tenantSlug} />
         {selectedConversationId && (
           <input type="hidden" name="conversationId" value={selectedConversationId} />
         )}
         <textarea
+          ref={textareaRef}
           name="message"
           required
           rows={3}
+          disabled={sending}
           placeholder="Mensagem do cliente..."
-          className="w-full rounded border border-gray-300 p-2 text-sm"
+          className={`w-full rounded border border-gray-300 p-2 text-sm ${
+            sending ? 'opacity-60' : ''
+          }`}
         />
         <button
           type="submit"
-          className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+          disabled={sending}
+          className={`rounded px-4 py-2 text-sm font-semibold text-white ${
+            sending ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600'
+          }`}
         >
-          Enviar
+          {sending ? 'Enviando…' : 'Enviar'}
         </button>
       </Form>
     </main>
