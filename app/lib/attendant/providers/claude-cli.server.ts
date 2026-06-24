@@ -101,7 +101,26 @@ function runClaude(prompt: string): Promise<string> {
 export const claudeCliProvider: AttendantProvider = {
   name: 'claude_cli',
   async generate(input: AttendantInput): Promise<AttendantOutput> {
-    const stdout = await runClaude(buildPrompt(input))
-    return parseClaudeJson(stdout) as AttendantOutput
+    const start = Date.now()
+    let stdout: string
+    try {
+      stdout = await runClaude(buildPrompt(input))
+    } catch (error) {
+      console.error(
+        `[claude_cli] erro em ${Date.now() - start}ms:`,
+        error instanceof Error ? error.message : error,
+      )
+      throw error
+    }
+    try {
+      const output = parseClaudeJson(stdout) as AttendantOutput
+      console.log(`[claude_cli] ok em ${Date.now() - start}ms`)
+      return output
+    } catch (error) {
+      console.error(
+        `[claude_cli] JSON inválido em ${Date.now() - start}ms. Saída crua: ${stdout.slice(0, 400)}`,
+      )
+      throw error
+    }
   },
 }

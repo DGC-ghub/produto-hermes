@@ -43,12 +43,20 @@ export async function generateAttendantReply(
   let raw: AttendantOutput
   try {
     raw = await active.generate(input)
-  } catch {
+  } catch (error) {
+    console.error(
+      '[attendant] provider falhou -> fallback seguro:',
+      error instanceof Error ? error.message : error,
+    )
     return safeFallback('provider_error')
   }
 
   const result = validateAttendantOutput(raw, opts.policy)
-  return result.ok ? result.value : safeFallback('validacao_falhou')
+  if (!result.ok) {
+    console.warn(`[attendant] validação recusou a resposta (${result.reason}) -> fallback seguro`)
+    return safeFallback('validacao_falhou')
+  }
+  return result.value
 }
 
 export type { AttendantInput, AttendantOutput, AttendantProvider } from './types'
