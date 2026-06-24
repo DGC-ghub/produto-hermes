@@ -210,9 +210,13 @@ export async function processIncomingMessage(
   // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
   // continuam gerando chamados distintos).
   if (decision.action?.type === 'abrir_chamado') {
-    const openSubjects = ticketRows
-      .filter((row) => row.status === 'aberto' || row.status === 'em_andamento')
-      .map((row) => row.subject)
+    // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
+    // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
+    const openTickets = await db.ticket.findMany({
+      where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
+      select: { subject: true },
+    })
+    const openSubjects = openTickets.map((row) => row.subject)
     if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
       await db.ticket.create({
         data: {
@@ -256,11 +260,16 @@ export async function processIncomingMessage(
     },
   })
 
+  // Marca atividade na conversa (e o status, quando escala). Sem tocar o updatedAt
+  // aqui, ele só avançaria no handoff — e a resolução de identidade (reusar a
+  // conversa ativa do contato), a ordem da fila do atendente e a "conversa ativa"
+  // do dossiê leriam um timestamp congelado, pegando a conversa errada quando o
+  // contato tem mais de uma não-fechada.
+  await db.conversation.update({
+    where: { id: conversationId },
+    data: needsHuman ? { status: 'needs_human' } : { updatedAt: new Date() },
+  })
   if (needsHuman) {
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { status: 'needs_human' },
-    })
     await db.handoffEvent.create({
       data: { conversationId, reason: handoffReason ?? 'unknown', message },
     })

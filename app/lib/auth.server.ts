@@ -8,7 +8,11 @@ import { createCookieSessionStorage, redirect } from 'react-router'
 
 const sessionSecret = process.env.SESSION_SECRET
 if (!sessionSecret) {
-  // Sem segredo a sessão não é confiável; avisamos alto e usamos um valor de dev.
+  // Sem segredo a sessão é forjável (qualquer um assina `operator: true`). Em
+  // produção isso é inaceitável: falha fechado. Em dev, avisa e segue com um valor fixo.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SESSION_SECRET é obrigatório em produção (assina o cookie do operador).')
+  }
   console.warn('[auth] SESSION_SECRET ausente — usando segredo de dev. Defina em produção.')
 }
 

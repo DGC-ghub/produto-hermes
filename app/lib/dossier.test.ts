@@ -92,6 +92,13 @@ describe('composeDossier', () => {
     expect(d.headline).toContain('Contato 5511999')
   })
 
+  it('uses an explicit openTicketCount over deriving it from tickets', () => {
+    const d = composeDossier(baseInput({ tickets: [], openTicketCount: 3 }))
+    expect(d.openTicketCount).toBe(3)
+    expect(d.headline).toContain('3 chamados abertos')
+    expect(d.priority).toBe('media')
+  })
+
   it('pluralizes the open-ticket count', () => {
     const d = composeDossier(
       baseInput({

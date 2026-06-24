@@ -46,6 +46,9 @@ export type ComposeDossierInput = {
   handoffReason: string | null
   lead: DossierLead | null
   tickets: DossierTicket[]
+  // Quando só a CONTAGEM de abertos é conhecida (ex.: a fila, que não carrega o
+  // detalhe dos chamados), passe-a aqui. Se ausente, é derivada de `tickets`.
+  openTicketCount?: number
   recentMessages: DossierMessage[]
 }
 
@@ -64,7 +67,8 @@ function truncate(value: string, max: number): string {
  * a `headline` de uma linha e a `priority` para ordenar a fila.
  */
 export function composeDossier(input: ComposeDossierInput): ContactDossier {
-  const openTicketCount = input.tickets.filter((t) => OPEN_TICKET_STATUSES.has(t.status)).length
+  const openTicketCount =
+    input.openTicketCount ?? input.tickets.filter((t) => OPEN_TICKET_STATUSES.has(t.status)).length
   const isUrgent = input.lead?.urgency === 'alta'
 
   // Prioridade: pedido de humano / tema sensível ou urgência alta -> alta;
@@ -236,13 +240,9 @@ export async function getHandoffQueue(): Promise<HandoffQueueItem[]> {
               stage: conversation.lead.stage,
             }
           : null,
-        // tickets entram só pela contagem aqui (a fila não precisa do detalhe).
-        tickets: Array.from({ length: openTicketCount }, () => ({
-          subject: '',
-          status: 'aberto',
-          category: null,
-          createdAt: '',
-        })),
+        // A fila não precisa do detalhe dos chamados, só da contagem de abertos.
+        tickets: [],
+        openTicketCount,
         recentMessages: [],
       })
       return {

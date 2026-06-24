@@ -249,4 +249,45 @@ describe('processIncomingMessage', () => {
     const tickets = await db.ticket.findMany({ where: { contactId: TEST_CONTACT_ID } })
     expect(tickets.length).toBe(2)
   })
+
+  // Identidade robusta: com mais de uma conversa aberta do mesmo contato (resíduo
+  // de antes desta resolução), o retorno continua na de ATIVIDADE mais recente —
+  // não simplesmente na criada por último. Cobre o bug do updatedAt congelado.
+  it('reuses the conversation with the most recent activity, not just the newest', async () => {
+    const tenant = await db.tenant.findUnique({ where: { slug: 'dgc' } })
+    const convA = await db.conversation.create({
+      data: {
+        tenantId: tenant?.id ?? '',
+        contactId: TEST_CONTACT_ID,
+        channel: 'simulator',
+        status: 'open',
+      },
+    })
+    // convB é criada depois (createdAt maior) — sem o toque no updatedAt, ela
+    // "ganharia" a ordenação mesmo sem nenhuma atividade.
+    await db.conversation.create({
+      data: {
+        tenantId: tenant?.id ?? '',
+        contactId: TEST_CONTACT_ID,
+        channel: 'simulator',
+        status: 'open',
+      },
+    })
+
+    // Atividade recente na conversa A.
+    await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Mensagem ativa na conversa A',
+      conversationId: convA.id,
+      contactId: TEST_CONTACT_ID,
+    })
+
+    // Retorno sem conversationId deve continuar em A (atividade mais recente).
+    const back = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Voltei',
+      contactId: TEST_CONTACT_ID,
+    })
+    expect(back.conversationId).toBe(convA.id)
+  })
 })
