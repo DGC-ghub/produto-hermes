@@ -7,6 +7,7 @@ const TEST_CONTACT_ID = 'test-task-10'
 // Limpa apenas o que foi criado pelos testes (contactId controlado). Nunca apaga
 // tenants reais nem conversas de outros contatos.
 afterEach(async () => {
+  await db.ticket.deleteMany({ where: { contactId: TEST_CONTACT_ID } })
   const conversations = await db.conversation.findMany({
     where: { contactId: TEST_CONTACT_ID },
     select: { id: true },
@@ -164,5 +165,88 @@ describe('processIncomingMessage', () => {
     // ...mas bairro/urgência anteriores não são apagados por uma mensagem sem esses sinais.
     expect(leads[0].neighborhood).toBe('Jardim América')
     expect(leads[0].urgency).toBe('alta')
+  })
+
+  // Identidade do contato: o caso do "lead que volta". No WhatsApp a mensagem chega
+  // só com o número (contactId) e SEM conversationId — o motor deve reconhecer o
+  // contato e continuar a conversa ativa, não criar uma nova a cada retorno.
+  it('recognizes a returning contact (no conversationId) and continues the same conversation', async () => {
+    const first = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Oi, quero saber sobre automações',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    // Retorno: mesmo contato, SEM conversationId (como chegaria do WhatsApp).
+    const back = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Voltei pra continuar nossa conversa',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    expect(back.conversationId).toBe(first.conversationId)
+
+    const messages = await db.message.findMany({ where: { conversationId: first.conversationId } })
+    expect(messages.length).toBe(4)
+  })
+
+  it('keeps a single conversation and lead per contact across returns', async () => {
+    const first = await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Minha geladeira parou no Jardim América',
+      contactId: TEST_CONTACT_ID,
+    })
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Voltei, alguma novidade?',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    const tenant = await db.tenant.findUnique({ where: { slug: 'assistencia-tecnica-demo' } })
+    const conversations = await db.conversation.findMany({
+      where: { tenantId: tenant?.id, contactId: TEST_CONTACT_ID },
+      select: { id: true },
+    })
+    expect(conversations.length).toBe(1)
+
+    const leads = await db.lead.findMany({
+      where: { conversationId: { in: conversations.map((c) => c.id) } },
+    })
+    expect(leads.length).toBe(1)
+    expect(first.conversationId).toBe(conversations[0].id)
+  })
+
+  // Dedup de chamados: reforçar o MESMO pedido não deve abrir um segundo chamado.
+  it('does not open a duplicate ticket when the customer repeats the same request', async () => {
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Quero abrir um chamado: geladeira parada',
+      contactId: TEST_CONTACT_ID,
+    })
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Pode abrir o chamado, minha geladeira parada continua',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    const tickets = await db.ticket.findMany({ where: { contactId: TEST_CONTACT_ID } })
+    expect(tickets.length).toBe(1)
+  })
+
+  // ...mas dois problemas DISTINTOS continuam virando dois chamados.
+  it('opens separate tickets for genuinely different problems', async () => {
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Quero abrir um chamado: geladeira parada',
+      contactId: TEST_CONTACT_ID,
+    })
+    await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Quero abrir um chamado: máquina de lavar vazando',
+      contactId: TEST_CONTACT_ID,
+    })
+
+    const tickets = await db.ticket.findMany({ where: { contactId: TEST_CONTACT_ID } })
+    expect(tickets.length).toBe(2)
   })
 })

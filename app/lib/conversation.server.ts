@@ -7,6 +7,7 @@ import { loadKnowledgeFromSource } from './knowledge.server'
 import { extractLeadPatch } from './lead'
 import { retrieveRelevantChunks } from './retrieval'
 import { ensureTenant, INITIAL_TENANTS } from './tenants.server'
+import { hasDuplicateOpenTicket } from './ticket'
 
 export type ProcessIncomingMessageInput = {
   tenantSlug: string
@@ -78,7 +79,12 @@ export async function processIncomingMessage(
   const tenant = await ensureTenant(tenantInput)
   const config = loadConfigSafe(input.tenantSlug)
 
-  // Conversa: reutiliza a informada (validando dono) ou cria uma nova.
+  // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE
+  // do contato. No WhatsApp a identidade é o número (contactId) e a mensagem chega
+  // SEM conversationId — então, se este contato já tem uma conversa ativa, seguimos
+  // nela (preservando histórico e lead). Só abrimos conversa nova para um contato
+  // novo ou quando a anterior foi encerrada. É isto que faz o Hermes LEMBRAR de
+  // quem volta, em vez de tratar cada retorno como um estranho.
   let conversationId: string
   let contactId: string
   if (input.conversationId) {
@@ -91,16 +97,21 @@ export async function processIncomingMessage(
     conversationId = existing.id
     contactId = existing.contactId
   } else {
-    const created = await db.conversation.create({
-      data: {
-        tenantId: tenant.id,
-        channel: 'simulator',
-        contactId: input.contactId ?? 'demo-user',
-        status: 'open',
-      },
+    const contact = input.contactId ?? 'demo-user'
+    const active = await db.conversation.findFirst({
+      where: { tenantId: tenant.id, contactId: contact, status: { not: 'closed' } },
+      orderBy: { updatedAt: 'desc' },
     })
-    conversationId = created.id
-    contactId = created.contactId
+    if (active) {
+      conversationId = active.id
+      contactId = active.contactId
+    } else {
+      const created = await db.conversation.create({
+        data: { tenantId: tenant.id, channel: 'simulator', contactId: contact, status: 'open' },
+      })
+      conversationId = created.id
+      contactId = created.contactId
+    }
   }
 
   // Histórico ANTES de salvar a mensagem nova: a "memória" daquele contato.
@@ -195,16 +206,24 @@ export async function processIncomingMessage(
 
   // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
   // validador já garantiu que a ação é de uma tool habilitada para este tenant.
+  // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
+  // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
+  // continuam gerando chamados distintos).
   if (decision.action?.type === 'abrir_chamado') {
-    await db.ticket.create({
-      data: {
-        tenantId: tenant.id,
-        contactId,
-        subject: decision.action.subject,
-        description: decision.action.description,
-        category: decision.action.category ?? null,
-      },
-    })
+    const openSubjects = ticketRows
+      .filter((row) => row.status === 'aberto' || row.status === 'em_andamento')
+      .map((row) => row.subject)
+    if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
+      await db.ticket.create({
+        data: {
+          tenantId: tenant.id,
+          contactId,
+          subject: decision.action.subject,
+          description: decision.action.description,
+          category: decision.action.category ?? null,
+        },
+      })
+    }
   }
 
   // Camada de segurança determinística: só pedido explícito de humano e tema
