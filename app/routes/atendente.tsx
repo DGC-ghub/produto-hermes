@@ -1,5 +1,7 @@
-import { Form, Link } from 'react-router'
+import { Form, Link, redirect, useActionData } from 'react-router'
+import { db } from '../db.server'
 import { requireOperator } from '../lib/auth.server'
+import { isConversationAction, nextConversationStatus } from '../lib/conversation-status'
 import {
   type ContactDossier,
   type DossierPriority,
@@ -24,6 +26,37 @@ export async function loader({ request }: Route.LoaderArgs) {
     operator: { username: operator.username, tenantSlug: operator.tenantSlug },
     selected: { contactId },
   }
+}
+
+export async function action({ request }: Route.ActionArgs) {
+  const operator = await requireOperator(request)
+  const formData = await request.formData()
+  const contactId = String(formData.get('contactId') ?? '')
+  const actionName = String(formData.get('action') ?? '')
+
+  if (!isConversationAction(actionName)) {
+    return { error: 'Ação inválida.' }
+  }
+  // A conversa ativa do contato — SEMPRE escopada pelo tenant do operador, então
+  // ninguém age sobre conversa de outra empresa.
+  const conversation = await db.conversation.findFirst({
+    where: { tenantId: operator.tenantId, contactId, status: { not: 'closed' } },
+    orderBy: { updatedAt: 'desc' },
+    select: { id: true, status: true },
+  })
+  if (!conversation) {
+    return { error: 'Conversa não encontrada.' }
+  }
+  const next = nextConversationStatus(conversation.status, actionName)
+  if (!next) {
+    return { error: 'Essa ação não é possível no estado atual da conversa.' }
+  }
+  await db.conversation.update({
+    where: { id: conversation.id },
+    data: { status: next, updatedAt: new Date() },
+  })
+  // Encerrou: volta pra fila. Assumiu/devolveu: continua na ficha do contato.
+  return redirect(actionName === 'encerrar' ? '/atendente' : `/atendente?contactId=${contactId}`)
 }
 
 export function meta(_args: Route.MetaArgs) {
@@ -72,6 +105,11 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <PriorityBadge priority={dossier.priority} />
+          {dossier.status === 'human' && (
+            <span className="rounded bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+              Em atendimento humano
+            </span>
+          )}
           <span className="text-xs text-gray-500">{dossier.tenantName}</span>
           <span className="font-mono text-xs text-gray-400">{dossier.contactId}</span>
         </div>
@@ -142,21 +180,65 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
         </div>
       </section>
 
-      <Link
-        to={`/demo/chat?tenant=${dossier.tenantSlug}&contactId=${dossier.contactId}`}
-        className="inline-block rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-      >
-        Assumir conversa no simulador
-      </Link>
+      <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+        {dossier.status === 'human' ? (
+          <Form method="post">
+            <input type="hidden" name="contactId" value={dossier.contactId} />
+            <button
+              type="submit"
+              name="action"
+              value="devolver"
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Devolver ao Hermes
+            </button>
+          </Form>
+        ) : (
+          <Form method="post">
+            <input type="hidden" name="contactId" value={dossier.contactId} />
+            <button
+              type="submit"
+              name="action"
+              value="assumir"
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Assumir atendimento
+            </button>
+          </Form>
+        )}
+        <Form method="post">
+          <input type="hidden" name="contactId" value={dossier.contactId} />
+          <button
+            type="submit"
+            name="action"
+            value="encerrar"
+            className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700"
+          >
+            Encerrar
+          </button>
+        </Form>
+        <Link
+          to={`/demo/chat?tenant=${dossier.tenantSlug}&contactId=${dossier.contactId}`}
+          className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700"
+        >
+          Abrir no simulador
+        </Link>
+      </div>
     </div>
   )
 }
 
 export default function Atendente({ loaderData }: Route.ComponentProps) {
   const { queue, dossier, operator, selected } = loaderData
+  const actionData = useActionData<typeof action>()
 
   return (
     <main className="mx-auto max-w-5xl space-y-4 p-6">
+      {actionData?.error && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+          {actionData.error}
+        </div>
+      )}
       <header className="flex items-start justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold">Hermes — Atendente</h1>
@@ -198,6 +280,11 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
                     >
                       <div className="mb-1 flex items-center gap-2">
                         <PriorityBadge priority={item.priority} />
+                        {item.status === 'human' && (
+                          <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700">
+                            assumida
+                          </span>
+                        )}
                         <span className="text-xs text-gray-500">{item.tenantName}</span>
                       </div>
                       <p className="font-medium text-gray-800">{item.headline}</p>

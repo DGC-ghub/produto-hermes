@@ -2,6 +2,7 @@ import { db } from '../db.server'
 import { generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
 import { loadTenantConfig, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
+import { isHumanHandling } from './conversation-status'
 import { decideHandoff } from './handoff'
 import { loadKnowledgeFromSource } from './knowledge.server'
 import { extractLeadPatch } from './lead'
@@ -32,6 +33,8 @@ export type ProcessIncomingMessageResult = {
   handoffReason?: string
   confidence: number
   sources: ProcessIncomingMessageSource[]
+  // true quando um humano assumiu a conversa e o Hermes ficou em silêncio.
+  humanHandling?: boolean
 }
 
 const HISTORY_LIMIT = 12
@@ -87,6 +90,7 @@ export async function processIncomingMessage(
   // quem volta, em vez de tratar cada retorno como um estranho.
   let conversationId: string
   let contactId: string
+  let conversationStatus: string
   if (input.conversationId) {
     const existing = await db.conversation.findUnique({
       where: { id: input.conversationId },
@@ -96,6 +100,7 @@ export async function processIncomingMessage(
     }
     conversationId = existing.id
     contactId = existing.contactId
+    conversationStatus = existing.status
   } else {
     const contact = input.contactId ?? 'demo-user'
     const active = await db.conversation.findFirst({
@@ -105,12 +110,38 @@ export async function processIncomingMessage(
     if (active) {
       conversationId = active.id
       contactId = active.contactId
+      conversationStatus = active.status
     } else {
       const created = await db.conversation.create({
         data: { tenantId: tenant.id, channel: 'simulator', contactId: contact, status: 'open' },
       })
       conversationId = created.id
       contactId = created.contactId
+      conversationStatus = created.status
+    }
+  }
+
+  // Se um humano ASSUMIU esta conversa, o Hermes se cala: registra a mensagem do
+  // cliente (para o atendente ver) e devolve sem gerar resposta da IA.
+  if (isHumanHandling(conversationStatus)) {
+    const userMessage = await db.message.create({
+      data: { conversationId, role: 'user', content: message },
+    })
+    await db.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    })
+    return {
+      conversationId,
+      tenantSlug: input.tenantSlug,
+      userMessageId: userMessage.id,
+      assistantMessageId: '',
+      reply: '',
+      needsHuman: true,
+      handoffReason: 'human_handling',
+      confidence: 0,
+      sources: [],
+      humanHandling: true,
     }
   }
 

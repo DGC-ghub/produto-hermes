@@ -290,4 +290,35 @@ describe('processIncomingMessage', () => {
     })
     expect(back.conversationId).toBe(convA.id)
   })
+
+  // Assumir/devolver: enquanto um humano cuida (status 'human'), o Hermes fica em
+  // silêncio — registra a mensagem do cliente, mas não gera resposta da IA.
+  it('stays silent while a human is handling the conversation', async () => {
+    const first = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Oi, preciso de ajuda',
+      contactId: TEST_CONTACT_ID,
+    })
+    await db.conversation.update({
+      where: { id: first.conversationId },
+      data: { status: 'human' },
+    })
+
+    const result = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'Alguém aí?',
+      conversationId: first.conversationId,
+      contactId: TEST_CONTACT_ID,
+    })
+
+    expect(result.humanHandling).toBe(true)
+    expect(result.reply).toBe('')
+
+    // [user, assistant] da 1ª troca + [user] da 2ª (sem resposta da IA).
+    const messages = await db.message.findMany({
+      where: { conversationId: first.conversationId },
+      orderBy: { createdAt: 'asc' },
+    })
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+  })
 })

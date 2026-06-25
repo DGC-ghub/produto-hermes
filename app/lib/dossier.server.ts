@@ -192,6 +192,7 @@ export type HandoffQueueItem = {
   headline: string
   priority: DossierPriority
   handoffReason: string | null
+  status: string
   updatedAt: string
 }
 
@@ -199,13 +200,13 @@ const PRIORITY_RANK: Record<DossierPriority, number> = { alta: 0, media: 1, baix
 const QUEUE_LIMIT = 50
 
 /**
- * A FILA do atendente: conversas que precisam de humano, já com headline e
- * prioridade do dossiê, ordenadas por prioridade e depois por mais recente.
- * Escopada por `tenantId` — cada empresa só vê a própria fila. Server-side.
+ * A FILA do atendente: conversas que precisam de humano OU já assumidas por um
+ * humano (`needs_human` + `human`), com headline e prioridade do dossiê, ordenadas
+ * por prioridade e depois por mais recente. Escopada por `tenantId`. Server-side.
  */
 export async function getHandoffQueue(tenantId: string): Promise<HandoffQueueItem[]> {
   const conversations = await db.conversation.findMany({
-    where: { status: 'needs_human', tenantId },
+    where: { status: { in: ['needs_human', 'human'] }, tenantId },
     orderBy: { updatedAt: 'desc' },
     take: QUEUE_LIMIT,
     include: {
@@ -253,6 +254,7 @@ export async function getHandoffQueue(tenantId: string): Promise<HandoffQueueIte
         headline: dossier.headline,
         priority: dossier.priority,
         handoffReason: dossier.handoffReason,
+        status: conversation.status,
         updatedAt: conversation.updatedAt.toISOString(),
       }
     }),
