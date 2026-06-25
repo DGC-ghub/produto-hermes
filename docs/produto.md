@@ -67,7 +67,7 @@ tools habilitadas) e sobe documentos (knowledge base). A IA decide a conversa de
 - Cérebro IA (atende, entende, decide) — *funcional (Claude CLI)*
 - Parametrização por empresa (`TenantConfig`) — *fundação pronta*
 - Memória do cliente (reconhece quem volta) — *pronto*
-- Central do atendente: fila + dossiê do cliente (`/atendente`) — *1ª versão; falta resumo automático e assumir/devolver*
+- Central do atendente (`/atendente`): fila, dossiê, resumo da IA, assumir/devolver, fechar chamado — *completo*
 - Leads automáticos + handoff humano — *pronto*
 - Tickets / agendamento (as "mãos" da IA) — *tickets com dedup prontos; agendamento via tool*
 - Dashboard de resultado — *read-only*
