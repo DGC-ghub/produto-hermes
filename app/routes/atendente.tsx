@@ -8,6 +8,7 @@ import {
   getContactDossier,
   getHandoffQueue,
 } from '../lib/dossier.server'
+import { generateConversationSummary } from '../lib/summary.server'
 import { isTicketStatus } from '../lib/ticket'
 import type { Route } from './+types/atendente'
 
@@ -33,6 +34,20 @@ export async function action({ request }: Route.ActionArgs) {
   const operator = await requireOperator(request)
   const formData = await request.formData()
   const contactId = String(formData.get('contactId') ?? '')
+
+  // Ação de RESUMO: gera/atualiza o resumo da conversa ativa do contato (IA + fallback).
+  if (String(formData.get('intent') ?? '') === 'summary') {
+    const conversation = await db.conversation.findFirst({
+      where: { tenantId: operator.tenantId, contactId, status: { not: 'closed' } },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    })
+    if (!conversation) {
+      return { error: 'Conversa não encontrada.' }
+    }
+    await generateConversationSummary(conversation.id, operator.tenantId)
+    return redirect(`/atendente?contactId=${contactId}`)
+  }
 
   // Ação de CHAMADO: muda o status de um ticket (escopado pelo tenant do operador).
   const ticketId = String(formData.get('ticketId') ?? '')
@@ -139,6 +154,30 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           <span className="font-medium">{reasonLabel(dossier.handoffReason)}</span>
         </p>
       </div>
+
+      <section className="rounded border border-amber-200 bg-amber-50 p-3">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-gray-600">Resumo da conversa</h3>
+          <Form method="post">
+            <input type="hidden" name="contactId" value={dossier.contactId} />
+            <button
+              type="submit"
+              name="intent"
+              value="summary"
+              className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600"
+            >
+              {dossier.summary ? 'Atualizar' : 'Gerar resumo'}
+            </button>
+          </Form>
+        </div>
+        {dossier.summary ? (
+          <p className="whitespace-pre-wrap text-sm text-gray-700">{dossier.summary}</p>
+        ) : (
+          <p className="text-sm text-gray-400">
+            Ainda não gerado — clique em "Gerar resumo" para a IA resumir a conversa.
+          </p>
+        )}
+      </section>
 
       <section className="rounded border border-gray-200 bg-white p-3">
         <h3 className="mb-2 text-sm font-semibold text-gray-600">Ficha do cliente</h3>

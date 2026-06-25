@@ -99,6 +99,15 @@ function runClaude(prompt: string): Promise<string> {
 }
 
 /**
+ * Geração de TEXTO LIVRE via Claude CLI (mesma coleira do provider). Para
+ * funcionalidades que precisam de texto puro, não do JSON do atendente — ex.: o
+ * resumo de conversa. Server-side; lança se o CLI falhar (o chamador faz fallback).
+ */
+export async function generatePlainText(prompt: string): Promise<string> {
+  return (await runClaude(prompt)).trim()
+}
+
+/**
  * Provider de IA real via Claude CLI (modo headless `claude -p`), usando a conta
  * logada na máquina. Sem ferramentas (coleira). A saída é validada pelo
  * dispatcher; qualquer falha vira fallback seguro lá.

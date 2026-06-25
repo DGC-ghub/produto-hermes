@@ -37,6 +37,7 @@ export type ContactDossier = {
   recentMessages: DossierMessage[]
   headline: string
   priority: DossierPriority
+  summary: string | null
 }
 
 export type ComposeDossierInput = {
@@ -51,6 +52,7 @@ export type ComposeDossierInput = {
   // detalhe dos chamados), passe-a aqui. Se ausente, é derivada de `tickets`.
   openTicketCount?: number
   recentMessages: DossierMessage[]
+  summary?: string | null
 }
 
 const HEADLINE_NEED_MAX = 40
@@ -105,6 +107,7 @@ export function composeDossier(input: ComposeDossierInput): ContactDossier {
     recentMessages: input.recentMessages,
     headline: parts.join(' · '),
     priority,
+    summary: input.summary ?? null,
   }
 }
 
@@ -127,7 +130,7 @@ export async function getContactDossier(
   const conversations = await db.conversation.findMany({
     where: { tenantId: tenant.id, contactId },
     orderBy: { updatedAt: 'desc' },
-    select: { id: true, status: true },
+    select: { id: true, status: true, summary: true },
   })
   if (conversations.length === 0) {
     return null
@@ -162,6 +165,7 @@ export async function getContactDossier(
     tenantSlug: tenant.slug,
     tenantName: tenant.name,
     status: activeStatus,
+    summary: conversations[0].summary,
     handoffReason: handoffRow?.reason ?? null,
     lead: leadRow
       ? {
