@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { hasDuplicateOpenTicket, subjectsAreSimilar } from './ticket'
+import { hasDuplicateOpenTicket, isTicketStatus, subjectsAreSimilar } from './ticket'
+
+describe('isTicketStatus', () => {
+  it('aceita os estados válidos e rejeita o resto', () => {
+    expect(isTicketStatus('aberto')).toBe(true)
+    expect(isTicketStatus('em_andamento')).toBe(true)
+    expect(isTicketStatus('resolvido')).toBe(true)
+    expect(isTicketStatus('fechado')).toBe(false)
+    expect(isTicketStatus('')).toBe(false)
+  })
+})
 
 describe('subjectsAreSimilar', () => {
   it('treats identical subjects as the same problem', () => {

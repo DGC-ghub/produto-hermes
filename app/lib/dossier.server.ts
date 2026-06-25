@@ -14,6 +14,7 @@ export type DossierLead = {
 }
 
 export type DossierTicket = {
+  id: string
   subject: string
   status: string
   category: string | null
@@ -173,6 +174,7 @@ export async function getContactDossier(
         }
       : null,
     tickets: ticketRows.map((t) => ({
+      id: t.id,
       subject: t.subject,
       status: t.status,
       category: t.category,

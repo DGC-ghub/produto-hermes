@@ -8,6 +8,7 @@ import {
   getContactDossier,
   getHandoffQueue,
 } from '../lib/dossier.server'
+import { isTicketStatus } from '../lib/ticket'
 import type { Route } from './+types/atendente'
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -32,8 +33,27 @@ export async function action({ request }: Route.ActionArgs) {
   const operator = await requireOperator(request)
   const formData = await request.formData()
   const contactId = String(formData.get('contactId') ?? '')
-  const actionName = String(formData.get('action') ?? '')
 
+  // Ação de CHAMADO: muda o status de um ticket (escopado pelo tenant do operador).
+  const ticketId = String(formData.get('ticketId') ?? '')
+  if (ticketId) {
+    const ticketStatus = String(formData.get('ticketStatus') ?? '')
+    if (!isTicketStatus(ticketStatus)) {
+      return { error: 'Status de chamado inválido.' }
+    }
+    const ticket = await db.ticket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, tenantId: true },
+    })
+    if (!ticket || ticket.tenantId !== operator.tenantId) {
+      return { error: 'Chamado não encontrado.' }
+    }
+    await db.ticket.update({ where: { id: ticketId }, data: { status: ticketStatus } })
+    return redirect(`/atendente?contactId=${contactId}`)
+  }
+
+  // Ação de CONVERSA: assumir/devolver/encerrar.
+  const actionName = String(formData.get('action') ?? '')
   if (!isConversationAction(actionName)) {
     return { error: 'Ação inválida.' }
   }
@@ -145,7 +165,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
         ) : (
           <ul className="space-y-1 text-sm">
             {tickets.map((ticket) => (
-              <li key={`${ticket.subject}-${ticket.createdAt}`} className="flex items-center gap-2">
+              <li key={ticket.id} className="flex items-center gap-2">
                 <span
                   className={`rounded px-1.5 py-0.5 text-xs ${
                     ticket.status === 'resolvido'
@@ -155,7 +175,30 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
                 >
                   {ticket.status}
                 </span>
-                <span className="text-gray-700">{ticket.subject}</span>
+                <span className="flex-1 text-gray-700">{ticket.subject}</span>
+                <Form method="post">
+                  <input type="hidden" name="contactId" value={dossier.contactId} />
+                  <input type="hidden" name="ticketId" value={ticket.id} />
+                  {ticket.status === 'resolvido' ? (
+                    <button
+                      type="submit"
+                      name="ticketStatus"
+                      value="aberto"
+                      className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600"
+                    >
+                      Reabrir
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      name="ticketStatus"
+                      value="resolvido"
+                      className="rounded border border-green-300 px-2 py-0.5 text-xs text-green-700"
+                    >
+                      Resolver
+                    </button>
+                  )}
+                </Form>
               </li>
             ))}
           </ul>

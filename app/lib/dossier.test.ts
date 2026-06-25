@@ -50,7 +50,9 @@ describe('composeDossier', () => {
   it('marks priority media when there is an open ticket but no lead', () => {
     const d = composeDossier(
       baseInput({
-        tickets: [{ subject: 'Geladeira', status: 'aberto', category: null, createdAt: '' }],
+        tickets: [
+          { id: 't1', subject: 'Geladeira', status: 'aberto', category: null, createdAt: '' },
+        ],
       }),
     )
     expect(d.priority).toBe('media')
@@ -66,9 +68,9 @@ describe('composeDossier', () => {
     const d = composeDossier(
       baseInput({
         tickets: [
-          { subject: 'A', status: 'aberto', category: null, createdAt: '' },
-          { subject: 'B', status: 'em_andamento', category: null, createdAt: '' },
-          { subject: 'C', status: 'resolvido', category: null, createdAt: '' },
+          { id: 'a', subject: 'A', status: 'aberto', category: null, createdAt: '' },
+          { id: 'b', subject: 'B', status: 'em_andamento', category: null, createdAt: '' },
+          { id: 'c', subject: 'C', status: 'resolvido', category: null, createdAt: '' },
         ],
       }),
     )
@@ -79,7 +81,7 @@ describe('composeDossier', () => {
     const d = composeDossier(
       baseInput({
         lead: lead({ urgency: 'alta' }),
-        tickets: [{ subject: 'X', status: 'aberto', category: null, createdAt: '' }],
+        tickets: [{ id: 'x', subject: 'X', status: 'aberto', category: null, createdAt: '' }],
       }),
     )
     expect(d.headline).toBe(
@@ -103,8 +105,8 @@ describe('composeDossier', () => {
     const d = composeDossier(
       baseInput({
         tickets: [
-          { subject: 'A', status: 'aberto', category: null, createdAt: '' },
-          { subject: 'B', status: 'aberto', category: null, createdAt: '' },
+          { id: 'a', subject: 'A', status: 'aberto', category: null, createdAt: '' },
+          { id: 'b', subject: 'B', status: 'aberto', category: null, createdAt: '' },
         ],
       }),
     )

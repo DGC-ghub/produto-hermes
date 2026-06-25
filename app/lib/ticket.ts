@@ -80,3 +80,11 @@ export function subjectsAreSimilar(a: string, b: string): boolean {
 export function hasDuplicateOpenTicket(newSubject: string, openSubjects: string[]): boolean {
   return openSubjects.some((subject) => subjectsAreSimilar(newSubject, subject))
 }
+
+// Estados válidos de um chamado (o atendente muda na tela /atendente).
+export const TICKET_STATUSES = ['aberto', 'em_andamento', 'resolvido'] as const
+export type TicketStatus = (typeof TICKET_STATUSES)[number]
+
+export function isTicketStatus(value: string): value is TicketStatus {
+  return (TICKET_STATUSES as readonly string[]).includes(value)
+}
