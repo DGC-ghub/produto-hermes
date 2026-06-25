@@ -9,20 +9,20 @@ export function meta(_args: Route.MetaArgs) {
 }
 
 const WORKS = [
-  'Memória por empresa (knowledge base)',
-  'Busca de trechos relevantes (retrieval)',
-  'Resposta com guardrails',
+  'IA real (Claude) atende e decide',
+  'Memória do cliente (reconhece quem volta)',
+  'Dossiê + fila do atendente',
+  'Chamados com dedup',
   'Chamada para humano (handoff)',
-  'Persistência de conversas e mensagens',
-  'Extração simples de leads',
-  'Dashboard read-only',
+  'Leads automáticos',
+  'Gate de operador (login)',
 ]
 
 const DEMOS = ['DGC Hub', 'ResolveTech Assistência (Demo)', 'Prestacon Contabilidade']
 
 const OUT_OF_SCOPE = [
   'WhatsApp real',
-  'Autenticação / produção',
+  'Autenticação multi-tenant',
   'Billing / SaaS completo',
   'Campanhas',
   'CRM completo',
@@ -58,6 +58,12 @@ export default function Home() {
           className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
         >
           Abrir simulador
+        </Link>
+        <Link
+          to="/atendente"
+          className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700"
+        >
+          Atendente
         </Link>
         <Link
           to="/dashboard"
