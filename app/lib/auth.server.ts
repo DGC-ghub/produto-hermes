@@ -1,15 +1,15 @@
-import { timingSafeEqual } from 'node:crypto'
 import { createCookieSessionStorage, redirect } from 'react-router'
+import type { AuthedOperator } from './operators.server'
 
-// Gate do operador (MVP): protege as telas internas (/atendente, /dashboard) de
-// acesso anônimo. NÃO é auth multi-usuário/multi-tenant ainda — é uma senha única
-// de operador. O isolamento por tenant do operador (cada empresa só vê o seu) é a
-// próxima fase, quando existir um modelo de usuário. Server-side (usa env/cookie).
+// Gate do operador: sessão por cookie assinado. A sessão carrega a identidade do
+// operador (incl. o tenant), e os loaders das telas internas escopam tudo por esse
+// tenant — uma empresa nunca vê os dados de outra. A autenticação (usuário + senha
+// com hash) vive em `operators.server.ts`.
 
 const sessionSecret = process.env.SESSION_SECRET
 if (!sessionSecret) {
-  // Sem segredo a sessão é forjável (qualquer um assina `operator: true`). Em
-  // produção isso é inaceitável: falha fechado. Em dev, avisa e segue com um valor fixo.
+  // Sem segredo a sessão é forjável. Em produção isso é inaceitável: falha fechado.
+  // Em dev, avisa e segue com um valor fixo.
   if (process.env.NODE_ENV === 'production') {
     throw new Error('SESSION_SECRET é obrigatório em produção (assina o cookie do operador).')
   }
@@ -28,23 +28,11 @@ const storage = createCookieSessionStorage({
   },
 })
 
-// Comparação em tempo constante: evita timing attack ao conferir a senha.
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  return ab.length === bb.length && timingSafeEqual(ab, bb)
-}
-
-/**
- * Confere a senha do operador contra OPERATOR_PASSWORD. Fail-closed: se a env não
- * estiver definida, NINGUÉM entra (em vez de abrir sem senha). Função testável.
- */
-export function checkOperatorPassword(password: string): boolean {
-  const expected = process.env.OPERATOR_PASSWORD
-  if (!expected) {
-    return false
-  }
-  return constantTimeEqual(password, expected)
+export type OperatorSession = {
+  operatorId: string
+  username: string
+  tenantId: string
+  tenantSlug: string
 }
 
 /**
@@ -58,28 +46,48 @@ export function safeRedirect(to: string | null | undefined, fallback = '/atenden
   return to
 }
 
-/** True se a requisição traz uma sessão de operador válida. */
-export async function isOperator(request: Request): Promise<boolean> {
+/** Lê a sessão do operador, se válida e completa. */
+export async function getOperator(request: Request): Promise<OperatorSession | null> {
   const session = await storage.getSession(request.headers.get('Cookie'))
-  return session.get('operator') === true
+  const operatorId = session.get('operatorId')
+  const username = session.get('username')
+  const tenantId = session.get('tenantId')
+  const tenantSlug = session.get('tenantSlug')
+  if (
+    typeof operatorId !== 'string' ||
+    typeof username !== 'string' ||
+    typeof tenantId !== 'string' ||
+    typeof tenantSlug !== 'string'
+  ) {
+    return null
+  }
+  return { operatorId, username, tenantId, tenantSlug }
 }
 
 /**
- * Exige operador logado num loader/action. Se não houver sessão, LANÇA um redirect
- * para /login (preservando o destino). Use no topo de loaders de telas internas.
+ * Exige operador logado num loader/action e RETORNA a sessão (incl. o tenant, para
+ * escopar as queries). Lança redirect para /login se não houver — use no topo dos
+ * loaders das telas internas.
  */
-export async function requireOperator(request: Request): Promise<void> {
-  if (await isOperator(request)) {
-    return
+export async function requireOperator(request: Request): Promise<OperatorSession> {
+  const operator = await getOperator(request)
+  if (operator) {
+    return operator
   }
   const url = new URL(request.url)
   throw redirect(`/login?redirectTo=${encodeURIComponent(url.pathname + url.search)}`)
 }
 
-/** Cria a sessão do operador e redireciona para o destino (já normalizado). */
-export async function createOperatorSession(redirectTo: string): Promise<Response> {
+/** Cria a sessão do operador autenticado e redireciona para o destino. */
+export async function createOperatorSession(
+  operator: AuthedOperator,
+  redirectTo: string,
+): Promise<Response> {
   const session = await storage.getSession()
-  session.set('operator', true)
+  session.set('operatorId', operator.id)
+  session.set('username', operator.username)
+  session.set('tenantId', operator.tenantId)
+  session.set('tenantSlug', operator.tenantSlug)
   return redirect(redirectTo, {
     headers: { 'Set-Cookie': await storage.commitSession(session) },
   })

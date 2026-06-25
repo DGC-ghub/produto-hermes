@@ -9,15 +9,21 @@ import {
 import type { Route } from './+types/atendente'
 
 export async function loader({ request }: Route.LoaderArgs) {
-  await requireOperator(request)
+  const operator = await requireOperator(request)
   const url = new URL(request.url)
-  const tenant = url.searchParams.get('tenant')
   const contactId = url.searchParams.get('contactId')
 
-  const queue = await getHandoffQueue()
-  const dossier = tenant && contactId ? await getContactDossier(tenant, contactId) : null
+  // O tenant vem SEMPRE da sessão do operador — nunca da query —, então ninguém vê
+  // dados de outra empresa trocando a URL. Um contactId de fora simplesmente não casa.
+  const queue = await getHandoffQueue(operator.tenantId)
+  const dossier = contactId ? await getContactDossier(operator.tenantSlug, contactId) : null
 
-  return { queue, dossier, selected: { tenant, contactId } }
+  return {
+    queue,
+    dossier,
+    operator: { username: operator.username, tenantSlug: operator.tenantSlug },
+    selected: { contactId },
+  }
 }
 
 export function meta(_args: Route.MetaArgs) {
@@ -147,7 +153,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
 }
 
 export default function Atendente({ loaderData }: Route.ComponentProps) {
-  const { queue, dossier, selected } = loaderData
+  const { queue, dossier, operator, selected } = loaderData
 
   return (
     <main className="mx-auto max-w-5xl space-y-4 p-6">
@@ -158,14 +164,19 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
             Fila de atendimentos que o Hermes encaminhou. Clique para ver a ficha do cliente.
           </p>
         </div>
-        <Form method="post" action="/logout">
-          <button
-            type="submit"
-            className="rounded border border-gray-300 px-3 py-1 text-xs text-gray-600"
-          >
-            Sair
-          </button>
-        </Form>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            {operator.username} · <span className="font-medium">{operator.tenantSlug}</span>
+          </span>
+          <Form method="post" action="/logout">
+            <button
+              type="submit"
+              className="rounded border border-gray-300 px-3 py-1 text-xs text-gray-600"
+            >
+              Sair
+            </button>
+          </Form>
+        </div>
       </header>
 
       <div className="grid gap-4 md:grid-cols-[300px_1fr]">
@@ -176,12 +187,11 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
           ) : (
             <ul className="space-y-2">
               {queue.map((item) => {
-                const isActive =
-                  selected.tenant === item.tenantSlug && selected.contactId === item.contactId
+                const isActive = selected.contactId === item.contactId
                 return (
                   <li key={item.conversationId}>
                     <Link
-                      to={`/atendente?tenant=${item.tenantSlug}&contactId=${item.contactId}`}
+                      to={`/atendente?contactId=${item.contactId}`}
                       className={`block rounded border p-2 text-sm ${
                         isActive ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-white'
                       }`}

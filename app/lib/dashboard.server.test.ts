@@ -43,7 +43,7 @@ afterEach(async () => {
 
 describe('getDashboardData', () => {
   it('returns a numeric summary and arrays', async () => {
-    const data = await getDashboardData()
+    const data = await getDashboardData(await dgcTenantId())
 
     expect(typeof data.summary.totalConversations).toBe('number')
     expect(typeof data.summary.totalMessages).toBe('number')
@@ -60,7 +60,7 @@ describe('getDashboardData', () => {
       data: { conversationId, role: 'assistant', content: 'Oi, tudo bem?' },
     })
 
-    const data = await getDashboardData()
+    const data = await getDashboardData(await dgcTenantId())
 
     // Os registros existem no momento da query, então os totais são pelo menos os nossos.
     expect(data.summary.totalConversations).toBeGreaterThanOrEqual(1)
@@ -76,7 +76,7 @@ describe('getDashboardData', () => {
   it('increments needsHumanConversations for a needs_human conversation', async () => {
     const conversationId = await createTestConversation('needs_human')
 
-    const data = await getDashboardData()
+    const data = await getDashboardData(await dgcTenantId())
 
     expect(data.summary.needsHumanConversations).toBeGreaterThanOrEqual(1)
     const mine = data.conversations.find((c) => c.id === conversationId)
@@ -88,7 +88,7 @@ describe('getDashboardData', () => {
     const longContent = 'a'.repeat(200)
     await db.message.create({ data: { conversationId, role: 'user', content: longContent } })
 
-    const data = await getDashboardData()
+    const data = await getDashboardData(await dgcTenantId())
 
     const mine = data.conversations.find((c) => c.id === conversationId)
     expect(mine?.lastMessagePreview).toBe(longContent.slice(0, 120))
@@ -102,7 +102,7 @@ describe('getDashboardData', () => {
       data: { tenantId, conversationId, need: 'Trocar tela', stage: 'novo' },
     })
 
-    const data = await getDashboardData()
+    const data = await getDashboardData(await dgcTenantId())
 
     expect(data.summary.totalLeads).toBeGreaterThanOrEqual(1)
     const mine = data.leads.find((l) => l.id === lead.id)

@@ -1,41 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { checkOperatorPassword, safeRedirect } from './auth.server'
-
-describe('checkOperatorPassword', () => {
-  const original = process.env.OPERATOR_PASSWORD
-  beforeEach(() => {
-    process.env.OPERATOR_PASSWORD = 'segredo-do-operador'
-  })
-  afterEach(() => {
-    process.env.OPERATOR_PASSWORD = original
-  })
-
-  it('accepts the exact configured password', () => {
-    expect(checkOperatorPassword('segredo-do-operador')).toBe(true)
-  })
-
-  it('rejects a wrong password', () => {
-    expect(checkOperatorPassword('errado')).toBe(false)
-  })
-
-  it('rejects a wrong-length password without throwing', () => {
-    expect(checkOperatorPassword('x')).toBe(false)
-  })
-
-  it('is fail-closed when no password is configured', () => {
-    process.env.OPERATOR_PASSWORD = ''
-    expect(checkOperatorPassword('qualquer')).toBe(false)
-    process.env.OPERATOR_PASSWORD = undefined
-    expect(checkOperatorPassword('qualquer')).toBe(false)
-  })
-})
+import { describe, expect, it } from 'vitest'
+import { safeRedirect } from './auth.server'
 
 describe('safeRedirect', () => {
   it('allows internal absolute paths', () => {
     expect(safeRedirect('/dashboard')).toBe('/dashboard')
-    expect(safeRedirect('/atendente?tenant=dgc&contactId=x')).toBe(
-      '/atendente?tenant=dgc&contactId=x',
-    )
+    expect(safeRedirect('/atendente?contactId=x')).toBe('/atendente?contactId=x')
   })
 
   it('falls back when missing', () => {

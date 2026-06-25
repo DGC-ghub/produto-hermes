@@ -9,18 +9,24 @@ As rotas atuais, incluindo `/demo/chat`, são **públicas dentro do ambiente loc
 de desenvolvimento**. Isso é aceitável para demo local, mas **NÃO** é aceitável
 para produção ou uso com dados reais.
 
-## Já implementado (2026-06-24)
+## Já implementado
 
-- **Gate de operador** (`app/lib/auth.server.ts`): `/atendente` e `/dashboard`
-  exigem senha (`OPERATOR_PASSWORD`) + cookie de sessão assinado (`SESSION_SECRET`,
-  httpOnly, `secure` em prod, fail-closed). Fecha o **acesso anônimo** a essas
-  telas. Senha comparada em tempo constante; redirect protegido contra open-redirect.
-- **Isolamento por contato no motor:** o LLM e as queries de chamado/lead operam
-  por `(tenantId, contactId)` — um contato nunca vê dados de outro.
+**Auth multi-tenant (2026-06-25)** — modelo `Operator` no banco (username + senha
+com hash scrypt nativo, salt por senha; `app/lib/operators.server.ts`). Login por
+usuário+senha; a sessão carrega o tenant do operador e **todas** as leituras
+internas (fila, dossiê, dashboard) são escopadas por ele. Cada empresa só vê os
+próprios clientes — o IDOR cross-tenant do operador (item 4) está **fechado**
+(provado por curl: operador `dgc` não acessa o dossiê de um contato da `assistencia`).
 
-> ⚠️ O gate é **senha única de operador**, não auth multi-usuário. O operador
-> logado ainda enxerga **todos os tenants** (ver item 4). O `contactId` ainda vem
-> do form no simulador (item 3).
+**Gate de operador (2026-06-24)** — `/atendente` e `/dashboard` exigem login;
+cookie de sessão assinado (`SESSION_SECRET`, httpOnly, `secure` em prod,
+fail-closed). Redirect protegido contra open-redirect.
+
+**Isolamento por contato no motor** — o LLM e as queries de chamado/lead operam
+por `(tenantId, contactId)`; um contato nunca vê dados de outro.
+
+> ⚠️ Ainda pendente: `contactId` vem do form no simulador (item 3 — resolve no
+> WhatsApp real) e não há tela de gestão de operadores (hoje criados via seed).
 
 ## Itens obrigatórios antes de produção
 
@@ -36,8 +42,9 @@ Mitigação futura:
 - garantir que um operador só acesse conversas do tenant permitido;
 - validar acesso por `conversationId` sempre com tenant + usuário autorizado.
 
-**Status:** acesso anônimo **fechado** pelo gate de operador; falta a autorização
-por tenant do operador (ver item 4).
+**Status:** ✅ **resolvido** no MVP — acesso anônimo fechado pelo gate e autorização
+por tenant do operador implementada (item 4). Falta só `conversationId` confiável do
+canal autenticado (item 3, no WhatsApp real).
 
 ### 2. Information Disclosure / Missing Authorization
 
@@ -50,8 +57,8 @@ Mitigação futura:
 - filtrar dados por tenant autorizado;
 - nunca expor conversas reais sem autorização.
 
-**Status:** `/dashboard` agora **exige login** (gate de operador); falta filtrar
-os dados por tenant autorizado (ver item 4).
+**Status:** ✅ **resolvido** — `/dashboard` exige login e `getDashboardData` filtra
+todos os números pelo tenant do operador.
 
 ### 3. Identity Spoofing / Audit Integrity
 
@@ -81,9 +88,11 @@ Mitigação futura (fase de auth multi-tenant):
 - `getHandoffQueue`/`getContactDossier` recebem o `tenantId` da sessão e filtram por ele;
 - rejeitar `tenant` da query que não pertença ao operador.
 
-**Status:** dívida **explícita e consciente** do MVP (operador único confiável =
-os próprios donos). Vira **obrigatório** antes do primeiro operador de uma empresa
-diferente acessar o sistema.
+**Status:** ✅ **resolvido (2026-06-25).** Modelo `Operator` (username + senha com
+hash scrypt) com `tenantId`; a sessão carrega o tenant e `getHandoffQueue`,
+`getContactDossier` e `getDashboardData` filtram por ele. `/atendente` não lê mais
+o tenant da query — vem da sessão. Falta apenas uma tela de gestão de operadores
+(hoje há um por empresa, via seed).
 
 ## Regra de corte
 

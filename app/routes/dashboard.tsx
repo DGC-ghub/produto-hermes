@@ -4,8 +4,8 @@ import { getDashboardData } from '../lib/dashboard.server'
 import type { Route } from './+types/dashboard'
 
 export async function loader({ request }: Route.LoaderArgs) {
-  await requireOperator(request)
-  return getDashboardData()
+  const operator = await requireOperator(request)
+  return getDashboardData(operator.tenantId)
 }
 
 export function meta(_args: Route.MetaArgs) {

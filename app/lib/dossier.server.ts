@@ -201,11 +201,11 @@ const QUEUE_LIMIT = 50
 /**
  * A FILA do atendente: conversas que precisam de humano, já com headline e
  * prioridade do dossiê, ordenadas por prioridade e depois por mais recente.
- * Server-side (usa `db`).
+ * Escopada por `tenantId` — cada empresa só vê a própria fila. Server-side.
  */
-export async function getHandoffQueue(): Promise<HandoffQueueItem[]> {
+export async function getHandoffQueue(tenantId: string): Promise<HandoffQueueItem[]> {
   const conversations = await db.conversation.findMany({
-    where: { status: 'needs_human' },
+    where: { status: 'needs_human', tenantId },
     orderBy: { updatedAt: 'desc' },
     take: QUEUE_LIMIT,
     include: {

@@ -1,5 +1,4 @@
 import { db } from '../db.server'
-import { ensureInitialTenants } from './tenants.server'
 
 export type DashboardSummary = {
   totalConversations: number
@@ -42,21 +41,21 @@ const RECENT_LIMIT = 20
 const PREVIEW_MAX_CHARS = 120
 
 /**
- * Lê os dados do painel (read-only) a partir do banco. Server-side — usa `db`.
- * Não importar em componente React. Sem otimização agressiva: MVP primeiro.
+ * Lê os dados do painel (read-only) a partir do banco, ESCOPADOS pelo tenant do
+ * operador — cada empresa só vê os próprios números. Server-side — usa `db`.
+ * Não importar em componente React.
  */
-export async function getDashboardData(): Promise<DashboardData> {
-  await ensureInitialTenants()
-
+export async function getDashboardData(tenantId: string): Promise<DashboardData> {
   const [totalConversations, totalMessages, totalLeads, needsHumanConversations] =
     await Promise.all([
-      db.conversation.count(),
-      db.message.count(),
-      db.lead.count(),
-      db.conversation.count({ where: { status: 'needs_human' } }),
+      db.conversation.count({ where: { tenantId } }),
+      db.message.count({ where: { conversation: { tenantId } } }),
+      db.lead.count({ where: { tenantId } }),
+      db.conversation.count({ where: { status: 'needs_human', tenantId } }),
     ])
 
   const conversationRows = await db.conversation.findMany({
+    where: { tenantId },
     orderBy: { updatedAt: 'desc' },
     take: RECENT_LIMIT,
     include: {
@@ -67,6 +66,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   })
 
   const leadRows = await db.lead.findMany({
+    where: { tenantId },
     orderBy: { createdAt: 'desc' },
     take: RECENT_LIMIT,
     include: { tenant: { select: { slug: true, name: true } } },
