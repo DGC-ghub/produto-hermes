@@ -5,6 +5,9 @@ export type DashboardSummary = {
   totalMessages: number
   totalLeads: number
   needsHumanConversations: number
+  // Conversas que envolveram um humano (na fila OU já assumidas). Base para a
+  // taxa de autonomia (% resolvido sem humano) no painel.
+  humanInvolvedConversations: number
 }
 
 export type DashboardConversation = {
@@ -46,13 +49,19 @@ const PREVIEW_MAX_CHARS = 120
  * Não importar em componente React.
  */
 export async function getDashboardData(tenantId: string): Promise<DashboardData> {
-  const [totalConversations, totalMessages, totalLeads, needsHumanConversations] =
-    await Promise.all([
-      db.conversation.count({ where: { tenantId } }),
-      db.message.count({ where: { conversation: { tenantId } } }),
-      db.lead.count({ where: { tenantId } }),
-      db.conversation.count({ where: { status: 'needs_human', tenantId } }),
-    ])
+  const [
+    totalConversations,
+    totalMessages,
+    totalLeads,
+    needsHumanConversations,
+    humanInvolvedConversations,
+  ] = await Promise.all([
+    db.conversation.count({ where: { tenantId } }),
+    db.message.count({ where: { conversation: { tenantId } } }),
+    db.lead.count({ where: { tenantId } }),
+    db.conversation.count({ where: { status: 'needs_human', tenantId } }),
+    db.conversation.count({ where: { status: { in: ['needs_human', 'human'] }, tenantId } }),
+  ])
 
   const conversationRows = await db.conversation.findMany({
     where: { tenantId },
@@ -73,7 +82,13 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
   })
 
   return {
-    summary: { totalConversations, totalMessages, totalLeads, needsHumanConversations },
+    summary: {
+      totalConversations,
+      totalMessages,
+      totalLeads,
+      needsHumanConversations,
+      humanInvolvedConversations,
+    },
     conversations: conversationRows.map((conversation) => ({
       id: conversation.id,
       tenantSlug: conversation.tenant.slug,
