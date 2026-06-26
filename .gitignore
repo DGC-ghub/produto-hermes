@@ -24,3 +24,6 @@ prisma/*.db-journal
 *.ogg
 *.m4a
 *.webm
+
+# Certificados de dev (HTTPS local para liberar o microfone no navegador)
+/certs/
