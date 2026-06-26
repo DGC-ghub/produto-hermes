@@ -131,7 +131,8 @@ export async function sendWhatsAppMessage(
       },
     )
     if (!response.ok) {
-      console.error(`[whatsapp] envio falhou: HTTP ${response.status}`)
+      const errorBody = await response.text()
+      console.error(`[whatsapp] envio falhou: HTTP ${response.status} — ${errorBody}`)
       return false
     }
     return true
