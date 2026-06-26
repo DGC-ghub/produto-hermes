@@ -7,4 +7,5 @@ export default [
   route('atendente', 'routes/atendente.tsx'),
   route('login', 'routes/login.tsx'),
   route('logout', 'routes/logout.tsx'),
+  route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
 ] satisfies RouteConfig

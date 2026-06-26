@@ -1,0 +1,72 @@
+import { processIncomingMessage } from '../lib/conversation.server'
+import {
+  type InboundMessage,
+  parseInboundMessages,
+  resolveTenantSlugByPhoneNumberId,
+  sendWhatsAppMessage,
+  verifyWebhookChallenge,
+  verifyWebhookSignature,
+} from '../lib/whatsapp.server'
+import type { Route } from './+types/webhook.whatsapp'
+
+// GET — handshake de verificação: a Meta chama a URL com o verify_token; devolvemos
+// o challenge só se bater. É como a Meta confirma que a URL é nossa.
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url)
+  const challenge = verifyWebhookChallenge(url.searchParams)
+  if (challenge) {
+    return new Response(challenge, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+  }
+  return new Response('Forbidden', { status: 403 })
+}
+
+// Processa as mensagens recebidas: resolve a empresa pelo número, chama o MESMO
+// motor do simulador e responde pela Cloud API. Roda em background (ver action).
+async function handleInbound(messages: InboundMessage[]): Promise<void> {
+  for (const message of messages) {
+    const tenantSlug = resolveTenantSlugByPhoneNumberId(message.phoneNumberId)
+    if (!tenantSlug) {
+      console.warn('[whatsapp] número sem empresa mapeada:', message.phoneNumberId)
+      continue
+    }
+    try {
+      // contactId = telefone validado do canal (wa_id), NUNCA do form — fecha o item
+      // de identity spoofing do SECURITY-BACKLOG.
+      const result = await processIncomingMessage({
+        tenantSlug,
+        message: message.text,
+        contactId: message.from,
+      })
+      // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
+      if (result.reply.trim().length > 0) {
+        await sendWhatsAppMessage(message.from, result.reply, message.phoneNumberId)
+      }
+    } catch (error) {
+      console.error(
+        '[whatsapp] erro ao processar mensagem:',
+        error instanceof Error ? error.message : error,
+      )
+    }
+  }
+}
+
+// POST — mensagens recebidas. Valida a assinatura, então processa em BACKGROUND e
+// devolve 200 imediatamente: a Meta tem timeout curto e a IA pode levar ~15s; sem
+// isto a Meta reenviaria o evento. (Produção: trocar o fire-and-forget por uma fila.)
+export async function action({ request }: Route.ActionArgs) {
+  const rawBody = await request.text()
+  const signature = request.headers.get('x-hub-signature-256')
+  if (!verifyWebhookSignature(rawBody, signature)) {
+    return new Response('Invalid signature', { status: 401 })
+  }
+
+  let payload: unknown
+  try {
+    payload = JSON.parse(rawBody)
+  } catch {
+    return new Response('Bad payload', { status: 400 })
+  }
+
+  void handleInbound(parseInboundMessages(payload))
+  return new Response('EVENT_RECEIVED', { status: 200 })
+}
