@@ -9,16 +9,15 @@
 
 ## 📌 Escopo desta rodada (LEIA PRIMEIRO)
 
-Faça **os passos 1 a 4** (criar o app, ligar o WhatsApp, coletar os **3 segredos**) e o
-**passo 7** (entregar os valores ao Gabriel). **PULE os passos 5 e 6** (configurar o
-webhook e testar) — a URL pública ainda não existe; o time técnico conecta o webhook
-depois, com os valores que você coletar agora.
+Os passos 1 a 4 **já foram feitos** (app criado, WhatsApp ligado, tokens coletados). Agora
+faça **apenas os passos 5 e 6**: configurar o webhook com a URL abaixo e testar. A URL
+pública já está no ar e respondendo. *(Se você for um agente novo e o app ainda não existir,
+faça os passos 1 a 4 primeiro.)*
 
 ## Dados de configuração
 
-- **Callback URL (webhook):** _(em branco nesta rodada — não configure o webhook)_
+- **Callback URL (webhook):** `https://stand-scouts-selective.ngrok-free.dev/webhook/whatsapp`
 - **Token de verificação (Verify Token):** `hermes-webhook-2026`
-  *(já definido — será usado quando o webhook for configurado, na próxima rodada)*
 
 ---
 
