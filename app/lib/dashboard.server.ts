@@ -1,4 +1,5 @@
 import { db } from '../db.server'
+import { buildDailyActivity, type DayBucket } from './activity'
 
 export type DashboardSummary = {
   totalConversations: number
@@ -38,10 +39,12 @@ export type DashboardData = {
   summary: DashboardSummary
   conversations: DashboardConversation[]
   leads: DashboardLead[]
+  activity: DayBucket[]
 }
 
 const RECENT_LIMIT = 20
 const PREVIEW_MAX_CHARS = 120
+const ACTIVITY_DAYS = 14
 
 /**
  * Lê os dados do painel (read-only) a partir do banco, ESCOPADOS pelo tenant do
@@ -81,6 +84,21 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
     include: { tenant: { select: { slug: true, name: true } } },
   })
 
+  // Atividade dos últimos 14 dias (volume de conversas/dia) para o sparkline.
+  const now = new Date()
+  const since = new Date(now)
+  since.setUTCDate(since.getUTCDate() - (ACTIVITY_DAYS - 1))
+  since.setUTCHours(0, 0, 0, 0)
+  const activityRows = await db.conversation.findMany({
+    where: { tenantId, createdAt: { gte: since } },
+    select: { createdAt: true },
+  })
+  const activity = buildDailyActivity(
+    activityRows.map((row) => row.createdAt),
+    ACTIVITY_DAYS,
+    now,
+  )
+
   return {
     summary: {
       totalConversations,
@@ -113,5 +131,6 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
       stage: lead.stage,
       createdAt: lead.createdAt.toISOString(),
     })),
+    activity,
   }
 }
