@@ -2,19 +2,11 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { AppShell } from '../components/layout/AppShell'
-import { Avatar } from '../components/ui/Avatar'
-import { Card } from '../components/ui/Card'
 import { Tag } from '../components/ui/Tag'
 import { requireOperator } from '../lib/auth.server'
 import type { DashboardConversation, DashboardLead } from '../lib/dashboard.server'
 import { getDashboardData } from '../lib/dashboard.server'
-import {
-  AUTONOMY_TONE_CLASS,
-  autonomyPercent,
-  autonomyTone,
-  conversationStatusMeta,
-  cx,
-} from '../lib/ui'
+import { AUTONOMY_TONE_CLASS, autonomyPercent, autonomyTone, cx } from '../lib/ui'
 import type { Route } from './+types/dashboard'
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -28,227 +20,237 @@ export function meta(_args: Route.MetaArgs) {
     { title: 'Hermes — Painel' },
     {
       name: 'description',
-      content: 'Visão geral do atendimento: autonomia da IA, conversas e leads.',
+      content: 'Quanto a IA resolve sozinha, em um número — e o que precisa de você.',
     },
   ]
 }
 
-// Ordena conversas por urgência (precisa-humano primeiro); dentro do grupo, o
-// servidor já entrega por updatedAt desc, e o sort estável preserva isso.
-const STATUS_WEIGHT: Record<string, number> = { needs_human: 0, human: 1, open: 2, closed: 3 }
-const RECENT_VISIBLE = 5
+type Bar = { count: number }
 
-// Título de seção com a asa do mensageiro como bullet (signature da marca).
-function SectionTitle({ children }: { children: ReactNode }) {
+// Sparkline de área: a trajetória de atividade (conversas/dia) correndo na base
+// do número-herói. Pura/determinística — recebe a série pronta do loader.
+function Sparkline({ data, className }: { data: Bar[]; className?: string }) {
+  const W = 720
+  const H = 44
+  const max = Math.max(1, ...data.map((d) => d.count))
+  const n = data.length
+  const points = data.map((d, i) => {
+    const x = n <= 1 ? 0 : (i / (n - 1)) * W
+    const y = H - 2 - (d.count / max) * (H - 6)
+    return [x, y] as const
+  })
+  const line = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`)
+  const linePath = line.join(' ')
+  const areaPath = `${linePath} L${W},${H} L0,${H} Z`
   return (
-    <h2 className="mb-3 flex items-center gap-1.5 text-sm font-medium text-ink-soft">
-      <WingMark accent className="size-3.5 text-brand" />
-      {children}
-    </h2>
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      className={cx('block w-full', className)}
+      aria-hidden="true"
+    >
+      <path d={areaPath} fill="var(--color-brand-vivid)" opacity="0.16" />
+      <path d={linePath} fill="none" stroke="var(--color-brand)" strokeWidth="2" />
+    </svg>
   )
 }
 
-// Faixa de atenção: o ponto focal do painel. Nunca some — quando há fila, vira um
-// alerta clicável pra Central; quando está limpa, vira a recompensa "tudo em dia".
-function AttentionBand({
+// Bloco "pulso" da barra lateral (vai no slot do AppShell): faz o verde escuro
+// carregar informação em vez de ser um paredão vazio.
+function SidebarPulse({
+  totalConversations,
   needsHuman,
-  urgent,
+  totalLeads,
+  activity,
 }: {
+  totalConversations: number
   needsHuman: number
-  urgent: DashboardConversation | null
+  totalLeads: number
+  activity: Bar[]
 }) {
-  if (needsHuman > 0) {
-    return (
-      <Link
-        to={urgent ? `/atendente?contactId=${urgent.contactId}` : '/atendente'}
-        className="flex items-center gap-3 rounded-xl border border-urgent/25 bg-urgent/10 px-4 py-3 transition-colors hover:bg-urgent/15"
-      >
-        <span className="size-2 shrink-0 rounded-full bg-urgent" />
-        <div className="min-w-0 flex-1">
-          <p className="font-display font-semibold text-ink">
-            {needsHuman} {needsHuman === 1 ? 'conversa precisa' : 'conversas precisam'} de você
-            agora
-          </p>
-          {urgent && (
-            <p className="mt-0.5 truncate text-sm text-ink-soft">
-              {urgent.contactId}
-              {urgent.lastMessagePreview ? ` · ${urgent.lastMessagePreview}` : ''}
-            </p>
-          )}
-        </div>
-        <span className="shrink-0 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white">
-          Abrir na Central →
-        </span>
-      </Link>
-    )
-  }
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-brand/20 bg-brand/8 px-4 py-3">
-      <span className="size-2 shrink-0 rounded-full bg-brand" />
-      <div className="min-w-0 flex-1">
-        <p className="font-display font-semibold text-brand-deep">Tudo em dia</p>
-        <p className="mt-0.5 text-sm text-ink-soft">
-          A IA está cuidando das conversas — nada na sua fila.
-        </p>
-      </div>
-      <img src="/brand/empty-caught-up.svg" alt="" className="h-12 w-auto shrink-0" />
+    <div className="border-t border-white/10 pt-4">
+      <p className="mb-2 text-[10px] uppercase tracking-wide text-white/45">resumo</p>
+      <p className="text-xs text-white/85">{totalConversations} conversas</p>
+      <p className="mt-1 flex items-center gap-1.5 text-xs text-white/85">
+        {needsHuman > 0 && <span className="size-1.5 rounded-full bg-urgent" />}
+        fila {needsHuman}
+      </p>
+      <p className="mt-1 text-xs text-white/85">{totalLeads} leads</p>
+      <Sparkline data={activity} className="mt-3 h-6 opacity-90" />
     </div>
   )
 }
 
-// Item da régua de prova: número grande em Bricolage + rótulo.
-function ProofItem({
+function SupportCard({
   value,
   label,
-  valueClass,
-  wide,
+  trend,
 }: {
   value: ReactNode
   label: string
-  valueClass?: string
-  wide?: boolean
+  trend?: boolean
 }) {
   return (
-    <div className={cx('px-3 py-3 text-center', wide ? 'flex-[1.3]' : 'flex-1')}>
-      <p className={cx('font-display text-2xl font-bold tracking-tight', valueClass ?? 'text-ink')}>
+    <div className="rounded-xl bg-surface p-3 shadow-[0_8px_22px_-14px_rgba(26,31,28,0.6)]">
+      <p className="font-display text-xl font-bold tracking-tight text-ink">
         {value}
+        {trend && <span className="ml-1 text-sm text-brand">▲</span>}
       </p>
-      <p className="mt-0.5 text-xs text-ink-soft">{label}</p>
+      <p className="text-xs text-ink-soft">{label}</p>
     </div>
   )
 }
 
-// Status em ponto + texto (regra: nunca bloco de cor cheio).
-function StatusDot({ status }: { status: string }) {
-  const { label, dot } = conversationStatusMeta(status)
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-ink-soft">
-      <span className={cx('size-1.5 rounded-full', dot)} />
-      {label}
-    </span>
-  )
-}
-
-// Estado vazio com a ilustração da marca.
-function EmptyState({ illustration, children }: { illustration: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col items-center gap-3 py-10 text-center">
-      <img src={illustration} alt="" className="h-24 w-auto" />
-      <p className="text-sm text-ink-soft">{children}</p>
-    </div>
-  )
-}
-
-function LeadRow({ lead }: { lead: DashboardLead }) {
-  const facts = [lead.need, lead.neighborhood, lead.urgency].filter(Boolean).join(' · ')
+function LeadLine({ lead }: { lead: DashboardLead }) {
   const urgent = lead.urgency === 'alta'
+  const where = [lead.neighborhood, lead.need].filter(Boolean).join(' · ')
   return (
-    <div className="flex items-start gap-3 p-3">
-      <Avatar name={lead.name ?? lead.id} size="sm" />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          {urgent && <span className="size-1.5 rounded-full bg-urgent" />}
-          <span className="font-medium text-ink">{lead.name ?? 'Sem nome'}</span>
-          <Tag>{lead.stage}</Tag>
-        </div>
-        {facts && <p className="mt-0.5 text-xs text-ink-soft">{facts}</p>}
+    <div className="py-1.5">
+      <div className="flex items-center gap-2">
+        {urgent && <span className="size-1.5 shrink-0 rounded-full bg-urgent" />}
+        <span className="text-sm font-medium text-ink">{lead.name ?? 'Sem nome'}</span>
+        <Tag>{lead.stage}</Tag>
       </div>
+      {where && <p className="mt-0.5 truncate text-xs text-ink-soft">{where}</p>}
     </div>
+  )
+}
+
+// Linha do card escuro "precisa de você": nome do contato + motivo curto.
+function EscalationLine({ conversation }: { conversation: DashboardConversation }) {
+  return (
+    <Link
+      to={`/atendente?contactId=${conversation.contactId}`}
+      className="flex items-center gap-2 py-1.5 text-sm text-white/90 hover:text-white"
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-urgent" />
+      <span className="font-medium">{conversation.contactId}</span>
+      {conversation.lastMessagePreview && (
+        <span className="truncate text-white/55">· {conversation.lastMessagePreview}</span>
+      )}
+    </Link>
   )
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { summary, conversations, leads, operator } = loaderData
+  const { summary, conversations, leads, activity, operator } = loaderData
   const autonomy = autonomyPercent(summary.totalConversations, summary.humanInvolvedConversations)
-  const resolvedLabel =
-    summary.totalConversations === 0
-      ? '—'
-      : `${summary.totalConversations - summary.humanInvolvedConversations} de ${summary.totalConversations}`
-  const urgentConversation = conversations.find((c) => c.status === 'needs_human') ?? null
-  const recentConversations = [...conversations]
-    .sort((a, b) => (STATUS_WEIGHT[a.status] ?? 2) - (STATUS_WEIGHT[b.status] ?? 2))
-    .slice(0, RECENT_VISIBLE)
-  const recentLeads = leads.slice(0, RECENT_VISIBLE)
+  const toneClass = AUTONOMY_TONE_CLASS[autonomyTone(autonomy)]
+  const solved = summary.totalConversations - summary.humanInvolvedConversations
+  const escalations = conversations.filter((c) => c.status === 'needs_human').slice(0, 4)
+  const recentLeads = leads.slice(0, 5)
 
   return (
-    <AppShell operator={operator}>
-      <div className="mx-auto max-w-5xl space-y-5 px-6 py-8">
-        <div className="flex items-center gap-2">
-          <span className="text-xs uppercase tracking-wide text-ink-soft">
-            painel · {operator.tenantSlug}
-          </span>
-          <Tag>dados de simulação</Tag>
+    <AppShell
+      operator={operator}
+      sidebarSlot={
+        <SidebarPulse
+          totalConversations={summary.totalConversations}
+          needsHuman={summary.needsHumanConversations}
+          totalLeads={summary.totalLeads}
+          activity={activity}
+        />
+      }
+    >
+      <div className="flex items-center justify-between px-6 pt-5 text-xs text-ink-soft">
+        <span className="uppercase tracking-wide">painel · {operator.tenantSlug}</span>
+        <Tag>dados de simulação</Tag>
+      </div>
+
+      <section className="relative mt-3 overflow-hidden bg-bg-warm px-6 pt-7 pb-2">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-[0.06]"
+          style={{ backgroundImage: 'url(/brand/pattern.svg)' }}
+        />
+        <div className="relative">
+          {autonomy === null ? (
+            <div className="flex items-center gap-4 pb-6">
+              <div>
+                <p className="font-display text-3xl font-bold tracking-tight text-ink">
+                  Sua IA começa a atender agora
+                </p>
+                <p className="mt-1 text-sm text-ink-soft">
+                  Assim que os clientes escreverem, este número mostra quanto ela resolve sozinha.
+                </p>
+              </div>
+              <img src="/brand/empty-caught-up.svg" alt="" className="ml-auto h-20 w-auto" />
+            </div>
+          ) : (
+            <>
+              <div className="flex items-start gap-3">
+                <span
+                  className={cx(
+                    'font-display text-[88px] font-extrabold leading-[0.82] tracking-tighter tabular-nums sm:text-[116px]',
+                    toneClass,
+                  )}
+                >
+                  {autonomy}%
+                </span>
+                <WingMark accent className="mt-4 size-7 text-brand" />
+              </div>
+              <p className="mt-2 max-w-md text-sm text-ink-soft">
+                das conversas a IA resolveu sozinha —{' '}
+                <span className="text-ink">
+                  {solved} de {summary.totalConversations}
+                </span>
+                , e {summary.humanInvolvedConversations}{' '}
+                {summary.humanInvolvedConversations === 1 ? 'vez precisou' : 'vezes precisaram'} de
+                você.
+              </p>
+              <Sparkline data={activity} className="mt-3 h-10" />
+            </>
+          )}
+        </div>
+      </section>
+
+      <div className="mx-auto max-w-5xl space-y-4 px-6 py-5">
+        <div className="grid grid-cols-3 gap-3">
+          <SupportCard value={summary.totalConversations} label="clientes atendidos" />
+          <SupportCard
+            value={summary.totalLeads}
+            label="leads capturados"
+            trend={summary.totalLeads > 0}
+          />
+          <SupportCard value={summary.totalMessages} label="mensagens trocadas" />
         </div>
 
-        <AttentionBand needsHuman={summary.needsHumanConversations} urgent={urgentConversation} />
-
-        <Card className="flex divide-x divide-border">
-          <ProofItem value={summary.totalConversations} label="conversas" />
-          <ProofItem value={summary.totalLeads} label="leads" />
-          <ProofItem value={summary.totalMessages} label="mensagens" />
-          <ProofItem
-            value={resolvedLabel}
-            label="resolvido sem você"
-            valueClass={AUTONOMY_TONE_CLASS[autonomyTone(autonomy)]}
-            wide
-          />
-        </Card>
-
-        <div className="grid gap-6 pt-2 lg:grid-cols-2">
-          <section>
-            <SectionTitle>conversas recentes</SectionTitle>
-            {recentConversations.length === 0 ? (
-              <Card>
-                <EmptyState illustration="/brand/empty-no-conversations.svg">
-                  Nenhuma conversa ainda. Assim que um cliente escrever, ela aparece aqui.
-                </EmptyState>
-              </Card>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <section className="rounded-xl bg-brand-deep p-4 text-white">
+            <p className="mb-3 text-xs text-white/65">precisa de você</p>
+            {escalations.length === 0 ? (
+              <div className="flex items-center gap-3 py-2">
+                <span className="size-2 rounded-full bg-brand-vivid" />
+                <p className="text-sm text-white/90">Tudo em dia — a IA está cuidando da fila.</p>
+              </div>
             ) : (
-              <Card className="divide-y divide-border">
-                {recentConversations.map((conversation) => (
-                  <div key={conversation.id} className="flex items-center gap-3 p-3">
-                    <Avatar name={conversation.contactId} size="md" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="font-medium text-ink">{conversation.contactId}</span>
-                        <StatusDot status={conversation.status} />
-                      </div>
-                      <p className="mt-0.5 truncate text-sm text-ink-soft">
-                        {conversation.lastMessagePreview ?? '—'}
-                      </p>
-                    </div>
-                    <Link
-                      to={`/demo/chat?tenant=${conversation.tenantSlug}&conversationId=${conversation.id}`}
-                      className="shrink-0 text-xs font-medium text-brand hover:text-brand-deep"
-                    >
-                      Abrir
-                    </Link>
-                  </div>
-                ))}
+              <>
+                <div className="divide-y divide-white/10">
+                  {escalations.map((c) => (
+                    <EscalationLine key={c.id} conversation={c} />
+                  ))}
+                </div>
                 <Link
                   to="/atendente"
-                  className="block p-3 text-xs font-medium text-brand hover:text-brand-deep"
+                  className="mt-3 inline-block text-xs font-medium text-brand-vivid hover:text-white"
                 >
-                  Ver todas na Central →
+                  Abrir na Central →
                 </Link>
-              </Card>
+              </>
             )}
           </section>
 
-          <section>
-            <SectionTitle>leads recentes</SectionTitle>
+          <section className="rounded-xl border border-border bg-surface p-4">
+            <p className="mb-2 text-xs text-ink-soft">leads quentes</p>
             {recentLeads.length === 0 ? (
-              <Card>
-                <EmptyState illustration="/brand/empty-no-results.svg">
-                  Nenhum lead capturado ainda.
-                </EmptyState>
-              </Card>
+              <p className="py-2 text-sm text-ink-soft">Nenhum lead capturado ainda.</p>
             ) : (
-              <Card className="divide-y divide-border">
+              <div className="divide-y divide-border">
                 {recentLeads.map((lead) => (
-                  <LeadRow key={lead.id} lead={lead} />
+                  <LeadLine key={lead.id} lead={lead} />
                 ))}
-              </Card>
+              </div>
             )}
           </section>
         </div>

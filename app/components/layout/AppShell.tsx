@@ -17,6 +17,9 @@ const NAV = [
 type AppShellProps = {
   operator: Operator
   children: ReactNode
+  // Bloco opcional na barra lateral (entre a navegação e o rodapé) — cada tela
+  // injeta o seu (ex.: o "pulso" do painel). A casca não conhece os dados.
+  sidebarSlot?: ReactNode
 }
 
 /**
@@ -24,10 +27,13 @@ type AppShellProps = {
  * conteúdo. As telas internas envolvem o próprio conteúdo com este componente
  * conforme vão sendo repaginadas.
  */
-export function AppShell({ operator, children }: AppShellProps) {
+export function AppShell({ operator, children, sidebarSlot }: AppShellProps) {
   return (
     <div className="flex min-h-screen bg-bg text-ink">
-      <aside className="flex w-56 shrink-0 flex-col bg-brand-deep px-3 py-4 text-white">
+      <aside
+        className="flex w-52 shrink-0 flex-col px-3 py-4 text-white"
+        style={{ backgroundImage: 'linear-gradient(to bottom, #0a3c2e, #072a20)' }}
+      >
         <div className="flex items-center gap-2 px-2">
           <WingMark accent className="size-7 text-white" />
           <span className="font-display text-lg font-bold tracking-tight text-white">Hermes</span>
@@ -51,6 +57,8 @@ export function AppShell({ operator, children }: AppShellProps) {
             </NavLink>
           ))}
         </nav>
+
+        {sidebarSlot && <div className="mt-6">{sidebarSlot}</div>}
 
         <div className="mt-auto flex items-center gap-2 border-t border-white/10 pt-3">
           <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-vivid text-[11px] font-medium text-brand-deep">
