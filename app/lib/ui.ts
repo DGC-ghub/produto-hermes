@@ -44,6 +44,38 @@ export function autonomyPercent(total: number, humanInvolved: number): number | 
   return Math.round(((total - humanInvolved) / total) * 100)
 }
 
+export type AutonomyTone = 'good' | 'fair' | 'poor' | 'empty'
+
+// Limiares da taxa de autonomia. A cor é MERECIDA: verde só quando a IA está de
+// fato resolvendo sozinha. Abaixo disso é âmbar/neutro — nunca pintar 0% de verde.
+export const AUTONOMY_GOOD = 70
+export const AUTONOMY_FAIR = 40
+
+/**
+ * Classifica a taxa de autonomia em um tom semântico (por VALOR, não fixo).
+ * `null` (sem conversas ainda) vira 'empty'. Função pura.
+ */
+export function autonomyTone(autonomy: number | null): AutonomyTone {
+  if (autonomy === null) {
+    return 'empty'
+  }
+  if (autonomy >= AUTONOMY_GOOD) {
+    return 'good'
+  }
+  if (autonomy >= AUTONOMY_FAIR) {
+    return 'fair'
+  }
+  return 'poor'
+}
+
+/** Classe de cor do texto para cada tom de autonomia. */
+export const AUTONOMY_TONE_CLASS: Record<AutonomyTone, string> = {
+  good: 'text-brand',
+  fair: 'text-waiting',
+  poor: 'text-ink',
+  empty: 'text-ink-soft',
+}
+
 export type AttendStatus = 'urgent' | 'waiting' | 'resolved' | 'ai'
 
 /** Rótulo + classe do ponto para cada status do atendimento. */

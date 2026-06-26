@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   autonomyPercent,
+  autonomyTone,
   avatarColor,
   conversationStatusMeta,
   cx,
@@ -64,6 +65,27 @@ describe('autonomyPercent', () => {
 
   it('chega a 100% quando nenhuma envolveu humano', () => {
     expect(autonomyPercent(8, 0)).toBe(100)
+  })
+})
+
+describe('autonomyTone', () => {
+  it('é "empty" sem conversas (null)', () => {
+    expect(autonomyTone(null)).toBe('empty')
+  })
+
+  it('nunca pinta autonomia baixa de verde', () => {
+    expect(autonomyTone(0)).toBe('poor')
+    expect(autonomyTone(39)).toBe('poor')
+  })
+
+  it('usa âmbar na faixa intermediária', () => {
+    expect(autonomyTone(40)).toBe('fair')
+    expect(autonomyTone(69)).toBe('fair')
+  })
+
+  it('só vira "good" (verde) quando a autonomia é boa', () => {
+    expect(autonomyTone(70)).toBe('good')
+    expect(autonomyTone(100)).toBe('good')
   })
 })
 
