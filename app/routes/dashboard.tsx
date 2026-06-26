@@ -153,106 +153,113 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
         />
       }
     >
-      <div className="flex items-center justify-between px-6 pt-5 text-xs text-ink-soft">
-        <span className="uppercase tracking-wide">painel · {operator.tenantSlug}</span>
-        <Tag>dados de simulação</Tag>
-      </div>
-
-      <section className="relative mt-3 overflow-hidden bg-bg-warm px-6 pt-7 pb-2">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-[0.06]"
-          style={{ backgroundImage: 'url(/brand/pattern.svg)' }}
-        />
-        <div className="relative">
-          {autonomy === null ? (
-            <div className="flex items-center gap-4 pb-6">
-              <div>
-                <p className="font-display text-3xl font-bold tracking-tight text-ink">
-                  Sua IA começa a atender agora
-                </p>
-                <p className="mt-1 text-sm text-ink-soft">
-                  Assim que os clientes escreverem, este número mostra quanto ela resolve sozinha.
-                </p>
-              </div>
-              <img src="/brand/empty-caught-up.svg" alt="" className="ml-auto h-20 w-auto" />
-            </div>
-          ) : (
-            <>
-              <div className="flex items-start gap-3">
-                <span
-                  className={cx(
-                    'font-display text-[88px] font-extrabold leading-[0.82] tracking-tighter tabular-nums sm:text-[116px]',
-                    toneClass,
-                  )}
-                >
-                  {autonomy}%
-                </span>
-                <WingMark accent className="mt-4 size-7 text-brand" />
-              </div>
-              <p className="mt-2 max-w-md text-sm text-ink-soft">
-                das conversas a IA resolveu sozinha —{' '}
-                <span className="text-ink">
-                  {solved} de {summary.totalConversations}
-                </span>
-                , e {summary.humanInvolvedConversations}{' '}
-                {summary.humanInvolvedConversations === 1 ? 'vez precisou' : 'vezes precisaram'} de
-                você.
-              </p>
-              <Sparkline data={activity} className="mt-3 h-10" />
-            </>
-          )}
+      <div className="flex min-h-screen flex-col">
+        <div className="flex items-center justify-between px-6 pt-5 text-xs text-ink-soft">
+          <span className="uppercase tracking-wide">painel · {operator.tenantSlug}</span>
+          <Tag>dados de simulação</Tag>
         </div>
-      </section>
 
-      <div className="mx-auto max-w-5xl space-y-4 px-6 py-5">
-        <div className="grid grid-cols-3 gap-3">
-          <SupportCard value={summary.totalConversations} label="clientes atendidos" />
-          <SupportCard
-            value={summary.totalLeads}
-            label="leads capturados"
-            trend={summary.totalLeads > 0}
+        <section className="relative mt-3 overflow-hidden bg-bg-warm px-6 pt-7 pb-2">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-[0.8]"
+            style={{ backgroundImage: 'url(/brand/pattern.svg)' }}
           />
-          <SupportCard value={summary.totalMessages} label="mensagens trocadas" />
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <section className="rounded-xl bg-brand-deep p-4 text-white">
-            <p className="mb-3 text-xs text-white/65">precisa de você</p>
-            {escalations.length === 0 ? (
-              <div className="flex items-center gap-3 py-2">
-                <span className="size-2 rounded-full bg-brand-vivid" />
-                <p className="text-sm text-white/90">Tudo em dia — a IA está cuidando da fila.</p>
+          <div className="relative">
+            {autonomy === null ? (
+              <div className="flex items-center gap-4 pb-6">
+                <div>
+                  <p className="font-display text-3xl font-bold tracking-tight text-ink">
+                    Sua IA começa a atender agora
+                  </p>
+                  <p className="mt-1 text-sm text-ink-soft">
+                    Assim que os clientes escreverem, este número mostra quanto ela resolve sozinha.
+                  </p>
+                </div>
+                <img src="/brand/empty-caught-up.svg" alt="" className="ml-auto h-20 w-auto" />
               </div>
             ) : (
               <>
+                <div className="flex items-start gap-3">
+                  <span
+                    className={cx(
+                      'font-display text-[88px] font-extrabold leading-[0.82] tracking-tighter tabular-nums sm:text-[116px]',
+                      toneClass,
+                    )}
+                  >
+                    {autonomy}%
+                  </span>
+                  <WingMark accent className="mt-4 size-7 text-brand" />
+                </div>
+                <p className="mt-2 max-w-md text-sm text-ink-soft">
+                  A IA resolveu{' '}
+                  <span className="text-ink">
+                    {solved} de {summary.totalConversations}
+                  </span>{' '}
+                  conversas sozinha — você só precisou entrar {summary.humanInvolvedConversations}{' '}
+                  {summary.humanInvolvedConversations === 1 ? 'vez' : 'vezes'}.
+                </p>
+                <Sparkline data={activity} className="mt-3 h-10" />
+              </>
+            )}
+          </div>
+        </section>
+
+        <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-3 px-6 pt-3 pb-6">
+          <div className="grid grid-cols-3 gap-3">
+            <SupportCard value={summary.totalConversations} label="clientes atendidos" />
+            <SupportCard
+              value={summary.totalLeads}
+              label="leads capturados"
+              trend={summary.totalLeads > 0}
+            />
+            <SupportCard value={summary.totalMessages} label="mensagens trocadas" />
+          </div>
+
+          <div className="grid flex-1 gap-4 lg:grid-cols-2">
+            <section className="flex flex-col rounded-xl bg-brand-deep p-4 text-white">
+              <p className="mb-3 text-xs text-white/65">precisa de você</p>
+              {escalations.length === 0 ? (
+                <div className="flex items-center gap-3 py-2">
+                  <span className="size-2 rounded-full bg-brand-vivid" />
+                  <p className="text-sm text-white/90">Tudo em dia — a IA está cuidando da fila.</p>
+                </div>
+              ) : (
                 <div className="divide-y divide-white/10">
                   {escalations.map((c) => (
                     <EscalationLine key={c.id} conversation={c} />
                   ))}
                 </div>
-                <Link
-                  to="/atendente"
-                  className="mt-3 inline-block text-xs font-medium text-brand-vivid hover:text-white"
-                >
-                  Abrir na Central →
-                </Link>
-              </>
-            )}
-          </section>
-
-          <section className="rounded-xl border border-border bg-surface p-4">
-            <p className="mb-2 text-xs text-ink-soft">leads quentes</p>
-            {recentLeads.length === 0 ? (
-              <p className="py-2 text-sm text-ink-soft">Nenhum lead capturado ainda.</p>
-            ) : (
-              <div className="divide-y divide-border">
-                {recentLeads.map((lead) => (
-                  <LeadLine key={lead.id} lead={lead} />
-                ))}
+              )}
+              <div className="mt-auto border-t border-white/10 pt-3">
+                <p className="text-xs text-white/55">
+                  A IA resolveu {solved} de {summary.totalConversations} conversas sem te chamar.
+                </p>
+                {escalations.length > 0 && (
+                  <Link
+                    to="/atendente"
+                    className="mt-1.5 inline-block text-xs font-medium text-brand-vivid hover:text-white"
+                  >
+                    Abrir {escalations.length === 1 ? 'a 1' : `as ${escalations.length}`} na Central
+                    →
+                  </Link>
+                )}
               </div>
-            )}
-          </section>
+            </section>
+
+            <section className="rounded-xl border border-border bg-surface p-4">
+              <p className="mb-2 text-xs text-ink-soft">leads quentes</p>
+              {recentLeads.length === 0 ? (
+                <p className="py-2 text-sm text-ink-soft">Nenhum lead capturado ainda.</p>
+              ) : (
+                <div className="divide-y divide-border">
+                  {recentLeads.map((lead) => (
+                    <LeadLine key={lead.id} lead={lead} />
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
         </div>
       </div>
     </AppShell>
