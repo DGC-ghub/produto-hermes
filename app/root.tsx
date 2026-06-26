@@ -4,6 +4,9 @@ import type { Route } from './+types/root'
 import './app.css'
 
 export const links: Route.LinksFunction = () => [
+  { rel: 'icon', href: '/brand/favicon.svg', type: 'image/svg+xml' },
+  { rel: 'icon', href: '/brand/favicon-32.png', sizes: '32x32', type: 'image/png' },
+  { rel: 'apple-touch-icon', href: '/brand/icon-512.png' },
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
   {
     rel: 'preconnect',
@@ -14,6 +17,25 @@ export const links: Route.LinksFunction = () => [
     rel: 'stylesheet',
     href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400..700&display=swap',
   },
+]
+
+// Metadados padrão (título, descrição, Open Graph). Rotas individuais podem
+// sobrescrever o título; o og:image usa a peça social do kit de marca.
+export const meta: Route.MetaFunction = () => [
+  { title: 'Hermes — o atendente de WhatsApp que lembra de cada cliente' },
+  {
+    name: 'description',
+    content:
+      'O Hermes atende seus clientes no WhatsApp, lembra de cada conversa e passa pro humano na hora certa.',
+  },
+  { property: 'og:title', content: 'Hermes' },
+  { property: 'og:description', content: 'O atendente de WhatsApp que lembra de cada cliente.' },
+  { property: 'og:type', content: 'website' },
+  { property: 'og:image', content: '/brand/og.png' },
+  { property: 'og:image:width', content: '1200' },
+  { property: 'og:image:height', content: '630' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: '/brand/og.png' },
 ]
 
 export function Layout({ children }: { children: React.ReactNode }) {
