@@ -36,22 +36,37 @@ def main() -> int:
     model_size = os.environ.get("WHISPER_MODEL", "base")
     language = os.environ.get("WHISPER_LANG", "pt") or None
     compute_type = os.environ.get("WHISPER_COMPUTE", "int8")
-
-    # Import tardio: só paga o custo quando realmente vai transcrever.
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(model_size, device="cpu", compute_type=compute_type)
-
-    # vad_filter remove silêncios/ruído antes da decodificação — melhora a
-    # precisão em áudios de WhatsApp (que vêm com pausas e respiração).
-    segments, info = model.transcribe(
-        audio_path,
-        language=language,
-        vad_filter=True,
-        beam_size=5,
+    beam_size = int(os.environ.get("WHISPER_BEAM", "5"))
+    # Limita os threads do whisper para NÃO usar todos os núcleos: deixa CPU livre
+    # para o servidor web responder durante a transcrição (senão a página "congela"
+    # no Pi). Default: total de núcleos - 2 (mínimo 1). Override por WHISPER_CPU_THREADS.
+    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", "0")) or max(
+        1, (os.cpu_count() or 4) - 2
     )
 
-    text = "".join(segment.text for segment in segments).strip()
+    try:
+        # Import tardio: só paga o custo quando realmente vai transcrever.
+        from faster_whisper import WhisperModel
+
+        model = WhisperModel(
+            model_size,
+            device="cpu",
+            compute_type=compute_type,
+            cpu_threads=cpu_threads,
+        )
+
+        # vad_filter remove silêncios/ruído antes da decodificação — melhora a
+        # precisão em áudios de WhatsApp (que vêm com pausas e respiração).
+        segments, info = model.transcribe(
+            audio_path,
+            language=language,
+            vad_filter=True,
+            beam_size=beam_size,
+        )
+        text = "".join(segment.text for segment in segments).strip()
+    except Exception as exc:  # noqa: BLE001 — borda: erro vira mensagem curta, não traceback
+        print(f"falha na transcrição: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
 
     json.dump(
         {

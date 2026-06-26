@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  audioExtensionFor,
   cleanTranscript,
   isSupportedAudioExtension,
   parseTranscriptionOutput,
@@ -27,6 +28,24 @@ describe('isSupportedAudioExtension', () => {
   it('considera a última extensão em nomes com pontos', () => {
     expect(isSupportedAudioExtension('voz.note.m4a')).toBe(true)
     expect(isSupportedAudioExtension('arquivo.mp3.txt')).toBe(false)
+  })
+})
+
+describe('audioExtensionFor', () => {
+  it('prioriza a extensão do nome do arquivo', () => {
+    expect(audioExtensionFor('nota.ogg', 'audio/webm')).toBe('.ogg')
+    expect(audioExtensionFor('voz.mp3', '')).toBe('.mp3')
+  })
+
+  it('deduz pelo mime quando o nome não ajuda (gravação do navegador)', () => {
+    expect(audioExtensionFor('gravacao', 'audio/webm;codecs=opus')).toBe('.webm')
+    expect(audioExtensionFor('blob', 'audio/ogg')).toBe('.ogg')
+    expect(audioExtensionFor('', 'audio/mp4')).toBe('.m4a')
+  })
+
+  it('devolve null para formato não suportado', () => {
+    expect(audioExtensionFor('arquivo.pdf', 'application/pdf')).toBeNull()
+    expect(audioExtensionFor('', 'video/mp4')).toBeNull()
   })
 })
 

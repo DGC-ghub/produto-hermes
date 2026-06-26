@@ -23,3 +23,4 @@ prisma/*.db-journal
 *.mp3
 *.ogg
 *.m4a
+*.webm

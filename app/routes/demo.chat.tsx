@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
+import { AudioRecorder } from '../components/audio-recorder'
 import { db } from '../db.server'
+import { transcribeUploadedAudio } from '../lib/audio/upload.server'
 import { processIncomingMessage } from '../lib/conversation.server'
 import { ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
 import type { Route } from './+types/demo.chat'
@@ -82,12 +84,40 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 }
 
+// Teto do corpo da requisição: rejeita uploads grandes ANTES de bufferizar o
+// arquivo em memória (request.formData() carrega tudo na RAM). Content-Length é
+// do cliente (pode ser forjado), então é só a 1ª linha — em produção, um proxy
+// na borda (ex.: nginx client_max_body_size) é a defesa real contra OOM.
+const MAX_BODY_BYTES = Number(process.env.MAX_AUDIO_BYTES ?? 15_000_000) + 1_000_000
+
 export async function action({ request }: Route.ActionArgs) {
+  const contentLength = Number(request.headers.get('content-length') ?? 0)
+  if (contentLength > MAX_BODY_BYTES) {
+    return { error: 'Áudio grande demais. Grave/escolha um áudio mais curto.' }
+  }
+
   const formData = await request.formData()
   const tenantSlug = resolveTenantSlug(String(formData.get('tenantSlug') ?? ''))
-  const message = String(formData.get('message') ?? '')
   const conversationIdRaw = formData.get('conversationId')
   const contactIdRaw = formData.get('contactId')
+
+  // Áudio (gravação ou upload) converge no mesmo fluxo: transcreve para texto e
+  // segue como se o cliente tivesse digitado. O texto vira a mensagem do cliente.
+  const audio = formData.get('audio')
+  let message: string
+  if (audio instanceof File && audio.size > 0) {
+    try {
+      message = await transcribeUploadedAudio(audio)
+    } catch (error) {
+      console.error('[demo.chat] erro ao transcrever áudio', error)
+      return { error: 'Não consegui entender o áudio. Tente gravar de novo ou digite a mensagem.' }
+    }
+    if (message.trim().length === 0) {
+      return { error: 'O áudio veio sem fala reconhecível. Tente de novo, falando mais perto.' }
+    }
+  } else {
+    message = String(formData.get('message') ?? '')
+  }
 
   // Mensagem vazia: volta sem processar (o textarea já tem `required`, isto é só defesa).
   if (message.trim().length === 0) {
@@ -127,19 +157,33 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // Áudio: gravador/upload avisam via setAudioSending; o indicador some ao voltar a idle.
+  const [audioSending, setAudioSending] = useState(false)
+  // Rastreia se há texto não enviado no textarea (não-controlado): bloqueia o áudio
+  // enquanto houver, pra não descartar o texto silenciosamente quando o áudio vence.
+  const [hasDraft, setHasDraft] = useState(false)
+  useEffect(() => {
+    if (navigation.state === 'idle') {
+      setAudioSending(false)
+      setHasDraft(false)
+    }
+  }, [navigation.state])
+
   // Feedback de envio (optimistic UI): enquanto a action roda (~13s), mostra a mensagem
   // do cliente na hora + "digitando", e trava os controles para não duplicar o envio.
   const pendingValue = navigation.formData?.get('message')
   const pendingText =
     typeof pendingValue === 'string' && pendingValue.trim().length > 0 ? pendingValue : null
-  // Trava textarea/botão durante todo o round-trip (action + revalidação do loader).
-  const sending = navigation.state !== 'idle' && pendingText !== null
+  // Trava textarea/botão durante todo o round-trip (texto OU áudio).
+  const sending = (navigation.state !== 'idle' && pendingText !== null) || audioSending
   // A bolha otimista + "digitando" aparece só na fase de submit: durante a revalidação
   // a mensagem já volta persistida do loader, então não piscamos uma cópia duplicada.
   const pendingMessage = navigation.state === 'submitting' ? pendingText : null
   // Remonta o formulário quando uma nova mensagem é persistida, limpando o textarea
   // não-controlado — senão o texto enviado fica preso no campo e convida a reenviar.
   const formKey = messages.at(-1)?.id ?? 'novo'
+  // Áudio fica indisponível durante um envio OU quando há texto não enviado.
+  const audioDisabled = sending || hasDraft
 
   // Devolve o foco ao campo ao fim do envio (o disabled remove o foco) — fluxo contínuo.
   useEffect(() => {
@@ -250,6 +294,13 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
                   </div>
                 </>
               )}
+
+              {navigation.state === 'submitting' && audioSending && (
+                <div className="mr-auto flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-gray-500 shadow-sm">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                  🎤 Processando seu áudio (transcrevendo e respondendo)…
+                </div>
+              )}
             </>
           )}
         </div>
@@ -295,6 +346,7 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
           required
           rows={3}
           disabled={sending}
+          onChange={(event) => setHasDraft(event.target.value.trim().length > 0)}
           placeholder="Mensagem do cliente..."
           className={`w-full rounded border border-gray-300 p-2 text-sm ${
             sending ? 'opacity-60' : ''
@@ -310,6 +362,53 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
           {sending ? 'Enviando…' : 'Enviar'}
         </button>
       </Form>
+
+      <section className="space-y-2 border-t border-gray-200 pt-4">
+        <h2 className="text-sm font-semibold text-gray-600">Ou mande um áudio</h2>
+        {hasDraft && (
+          <p className="text-xs text-amber-700">
+            Você tem uma mensagem digitada. Envie ou apague o texto para usar o áudio.
+          </p>
+        )}
+        <AudioRecorder
+          tenantSlug={tenantSlug}
+          conversationId={selectedConversationId}
+          disabled={audioDisabled}
+          onSend={() => setAudioSending(true)}
+        />
+        <Form
+          key={`audio-${formKey}`}
+          method="post"
+          encType="multipart/form-data"
+          onSubmit={() => setAudioSending(true)}
+          className="flex flex-wrap items-center gap-2"
+        >
+          <input type="hidden" name="tenantSlug" value={tenantSlug} />
+          {selectedConversationId && (
+            <input type="hidden" name="conversationId" value={selectedConversationId} />
+          )}
+          <input
+            type="file"
+            name="audio"
+            accept="audio/*"
+            required
+            disabled={audioDisabled}
+            className="text-xs text-gray-600 file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm"
+          />
+          <button
+            type="submit"
+            disabled={audioDisabled}
+            className={`rounded px-3 py-2 text-sm font-semibold text-white ${
+              audioDisabled ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600'
+            }`}
+          >
+            Enviar arquivo
+          </button>
+        </Form>
+        <p className="text-xs text-gray-400">
+          A transcrição roda local (faster-whisper). No Pi leva ~15s por áudio curto.
+        </p>
+      </section>
     </main>
   )
 }

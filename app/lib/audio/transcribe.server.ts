@@ -29,6 +29,24 @@ const SUPPORTED_AUDIO_EXTENSIONS = [
   '.flac',
 ]
 
+// Mapeia o mime do upload/gravação para uma extensão. Gravação do navegador
+// (MediaRecorder) costuma vir como audio/webm ou audio/ogg (codec opus).
+const MIME_TO_EXT: Record<string, string> = {
+  'audio/webm': '.webm',
+  'audio/ogg': '.ogg',
+  'audio/opus': '.opus',
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/aac': '.aac',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/wave': '.wav',
+  'audio/flac': '.flac',
+  'audio/x-flac': '.flac',
+}
+
 export type Transcription = {
   text: string
   language: string
@@ -43,6 +61,21 @@ export type Transcription = {
 export function isSupportedAudioExtension(fileName: string): boolean {
   const lower = fileName.toLowerCase()
   return SUPPORTED_AUDIO_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/**
+ * Escolhe a extensão para gravar o áudio recebido: prioriza a extensão do nome
+ * do arquivo; senão deduz pelo mime (ignorando o sufixo de codec). Devolve null
+ * quando o formato não é suportado. Função pura.
+ */
+export function audioExtensionFor(fileName: string, mimeType: string): string | null {
+  const lower = fileName.toLowerCase()
+  const fromName = SUPPORTED_AUDIO_EXTENSIONS.find((ext) => lower.endsWith(ext))
+  if (fromName) {
+    return fromName
+  }
+  const baseMime = mimeType.split(';')[0]?.trim().toLowerCase() ?? ''
+  return MIME_TO_EXT[baseMime] ?? null
 }
 
 /**
