@@ -1,4 +1,11 @@
+import type { ReactNode } from 'react'
 import { Form, Link, redirect, useActionData } from 'react-router'
+import { WingMark } from '../components/brand/BrandMark'
+import { AppShell } from '../components/layout/AppShell'
+import { Avatar } from '../components/ui/Avatar'
+import { Button } from '../components/ui/Button'
+import { Card } from '../components/ui/Card'
+import { Tag } from '../components/ui/Tag'
 import { db } from '../db.server'
 import { requireOperator } from '../lib/auth.server'
 import { isConversationAction, nextConversationStatus } from '../lib/conversation-status'
@@ -10,6 +17,7 @@ import {
 } from '../lib/dossier.server'
 import { generateConversationSummary } from '../lib/summary.server'
 import { isTicketStatus } from '../lib/ticket'
+import { cx } from '../lib/ui'
 import type { Route } from './+types/atendente'
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -101,17 +109,6 @@ export function meta(_args: Route.MetaArgs) {
   ]
 }
 
-const PRIORITY_LABEL: Record<DossierPriority, string> = {
-  alta: 'Alta',
-  media: 'Média',
-  baixa: 'Baixa',
-}
-const PRIORITY_CLASS: Record<DossierPriority, string> = {
-  alta: 'bg-red-100 text-red-700',
-  media: 'bg-amber-100 text-amber-700',
-  baixa: 'bg-gray-100 text-gray-600',
-}
-
 // Traduz o motivo técnico do handoff para algo que o atendente lê de bate-pronto.
 const REASON_LABEL: Record<string, string> = {
   requested_human: 'Cliente pediu atendimento humano',
@@ -121,187 +118,211 @@ const REASON_LABEL: Record<string, string> = {
   validacao_falhou: 'Resposta da IA barrada pela validação — revisar',
 }
 function reasonLabel(reason: string | null): string {
-  if (!reason) return '—'
+  if (!reason) {
+    return '—'
+  }
   return REASON_LABEL[reason] ?? reason
 }
 
-function PriorityBadge({ priority }: { priority: DossierPriority }) {
+const PRIORITY: Record<DossierPriority, { label: string; dot: string; text: string }> = {
+  alta: { label: 'alta', dot: 'bg-urgent', text: 'text-urgent' },
+  media: { label: 'média', dot: 'bg-waiting', text: 'text-waiting' },
+  baixa: { label: 'baixa', dot: 'bg-ink-soft', text: 'text-ink-soft' },
+}
+
+function PriorityTag({ priority }: { priority: DossierPriority }) {
+  const meta = PRIORITY[priority]
   return (
-    <span className={`rounded px-2 py-0.5 text-xs font-semibold ${PRIORITY_CLASS[priority]}`}>
-      {PRIORITY_LABEL[priority]}
+    <span className={cx('inline-flex items-center gap-1.5 text-xs', meta.text)}>
+      <span className={cx('size-1.5 rounded-full', meta.dot)} />
+      prioridade {meta.label}
     </span>
+  )
+}
+
+/** Form de uma linha que dispara uma ação de conversa (assumir/devolver/encerrar). */
+function ConversationAction({
+  contactId,
+  action,
+  variant,
+  children,
+}: {
+  contactId: string
+  action: string
+  variant?: 'primary' | 'secondary' | 'ghost'
+  children: ReactNode
+}) {
+  return (
+    <Form method="post">
+      <input type="hidden" name="contactId" value={contactId} />
+      <Button type="submit" name="action" value={action} variant={variant}>
+        {children}
+      </Button>
+    </Form>
   )
 }
 
 function Dossier({ dossier }: { dossier: ContactDossier }) {
   const { lead, tickets } = dossier
+  const assumed = dossier.status === 'human'
+
   return (
-    <div className="space-y-4">
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <PriorityBadge priority={dossier.priority} />
-          {dossier.status === 'human' && (
-            <span className="rounded bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-              Em atendimento humano
-            </span>
-          )}
-          <span className="text-xs text-gray-500">{dossier.tenantName}</span>
-          <span className="font-mono text-xs text-gray-400">{dossier.contactId}</span>
+    <div className="space-y-5">
+      <div className="flex items-start gap-3">
+        <Avatar name={dossier.headline} size="lg" />
+        <div className="min-w-0 flex-1">
+          <h2 className="font-display text-lg font-bold tracking-tight text-ink">
+            {dossier.headline}
+          </h2>
+          <p className="text-xs text-ink-soft">
+            {dossier.tenantName} · <span className="font-mono">{dossier.contactId}</span>
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <PriorityTag priority={dossier.priority} />
+            {assumed && <Tag>em atendimento humano</Tag>}
+          </div>
         </div>
-        <h2 className="text-lg font-bold">{dossier.headline}</h2>
-        <p className="text-sm text-gray-600">
-          Encaminhado porque:{' '}
-          <span className="font-medium">{reasonLabel(dossier.handoffReason)}</span>
-        </p>
+        <div className="shrink-0">
+          {assumed ? (
+            <ConversationAction contactId={dossier.contactId} action="devolver">
+              Devolver ao Hermes
+            </ConversationAction>
+          ) : (
+            <ConversationAction contactId={dossier.contactId} action="assumir" variant="primary">
+              Assumir conversa
+            </ConversationAction>
+          )}
+        </div>
       </div>
 
-      <section className="rounded border border-amber-200 bg-amber-50 p-3">
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-600">Resumo da conversa</h3>
+      <p className="text-sm text-ink-soft">
+        Encaminhado: <span className="text-ink">{reasonLabel(dossier.handoffReason)}</span>
+      </p>
+
+      <Card className="p-4">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-brand">
+            <WingMark accent className="size-4" />
+            Resumo do Hermes
+          </span>
           <Form method="post">
             <input type="hidden" name="contactId" value={dossier.contactId} />
-            <button
-              type="submit"
-              name="intent"
-              value="summary"
-              className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600"
-            >
-              {dossier.summary ? 'Atualizar' : 'Gerar resumo'}
-            </button>
+            <Button type="submit" name="intent" value="summary" size="sm">
+              {dossier.summary ? 'Atualizar' : 'Gerar'}
+            </Button>
           </Form>
         </div>
         {dossier.summary ? (
-          <p className="whitespace-pre-wrap text-sm text-gray-700">{dossier.summary}</p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+            {dossier.summary}
+          </p>
         ) : (
-          <p className="text-sm text-gray-400">
-            Ainda não gerado — clique em "Gerar resumo" para a IA resumir a conversa.
+          <p className="text-sm text-ink-soft/70">
+            Ainda não gerado — clique em "Gerar" para a IA resumir a conversa.
           </p>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded border border-gray-200 bg-white p-3">
-        <h3 className="mb-2 text-sm font-semibold text-gray-600">Ficha do cliente</h3>
+      <Card className="p-4">
+        <h3 className="mb-2 text-sm font-medium text-ink">Ficha do cliente</h3>
         {lead ? (
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-gray-700">
-            <div>Nome: {lead.name ?? '—'}</div>
-            <div>Telefone: {lead.phone ?? '—'}</div>
-            <div>Bairro: {lead.neighborhood ?? '—'}</div>
-            <div>Urgência: {lead.urgency ?? '—'}</div>
-            <div className="col-span-2">Necessidade: {lead.need ?? '—'}</div>
-            <div>Estágio: {lead.stage}</div>
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm text-ink-soft">
+            <div>
+              Nome: <span className="text-ink">{lead.name ?? '—'}</span>
+            </div>
+            <div>
+              Telefone: <span className="text-ink">{lead.phone ?? '—'}</span>
+            </div>
+            <div>
+              Bairro: <span className="text-ink">{lead.neighborhood ?? '—'}</span>
+            </div>
+            <div>
+              Urgência: <span className="text-ink">{lead.urgency ?? '—'}</span>
+            </div>
+            <div className="col-span-2">
+              Necessidade: <span className="text-ink">{lead.need ?? '—'}</span>
+            </div>
+            <div>
+              Estágio: <span className="text-ink">{lead.stage}</span>
+            </div>
           </dl>
         ) : (
-          <p className="text-sm text-gray-400">Sem ficha de lead ainda.</p>
+          <p className="text-sm text-ink-soft/70">Sem ficha de lead ainda.</p>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded border border-gray-200 bg-white p-3">
-        <h3 className="mb-2 text-sm font-semibold text-gray-600">
+      <Card className="p-4">
+        <h3 className="mb-2 text-sm font-medium text-ink">
           Chamados ({dossier.openTicketCount} aberto{dossier.openTicketCount === 1 ? '' : 's'})
         </h3>
         {tickets.length === 0 ? (
-          <p className="text-sm text-gray-400">Nenhum chamado registrado.</p>
+          <p className="text-sm text-ink-soft/70">Nenhum chamado registrado.</p>
         ) : (
-          <ul className="space-y-1 text-sm">
-            {tickets.map((ticket) => (
-              <li key={ticket.id} className="flex items-center gap-2">
-                <span
-                  className={`rounded px-1.5 py-0.5 text-xs ${
-                    ticket.status === 'resolvido'
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-blue-100 text-blue-700'
-                  }`}
-                >
-                  {ticket.status}
-                </span>
-                <span className="flex-1 text-gray-700">{ticket.subject}</span>
-                <Form method="post">
-                  <input type="hidden" name="contactId" value={dossier.contactId} />
-                  <input type="hidden" name="ticketId" value={ticket.id} />
-                  {ticket.status === 'resolvido' ? (
-                    <button
+          <ul className="space-y-2 text-sm">
+            {tickets.map((ticket) => {
+              const resolved = ticket.status === 'resolvido'
+              return (
+                <li key={ticket.id} className="flex items-center gap-2">
+                  <span
+                    className={cx(
+                      'inline-flex items-center gap-1.5 text-xs',
+                      resolved ? 'text-brand' : 'text-ink-soft',
+                    )}
+                  >
+                    <span
+                      className={cx('size-1.5 rounded-full', resolved ? 'bg-brand' : 'bg-ai')}
+                    />
+                    {ticket.status}
+                  </span>
+                  <span className="flex-1 text-ink">{ticket.subject}</span>
+                  <Form method="post">
+                    <input type="hidden" name="contactId" value={dossier.contactId} />
+                    <input type="hidden" name="ticketId" value={ticket.id} />
+                    <Button
                       type="submit"
                       name="ticketStatus"
-                      value="aberto"
-                      className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600"
+                      value={resolved ? 'aberto' : 'resolvido'}
+                      size="sm"
                     >
-                      Reabrir
-                    </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      name="ticketStatus"
-                      value="resolvido"
-                      className="rounded border border-green-300 px-2 py-0.5 text-xs text-green-700"
-                    >
-                      Resolver
-                    </button>
-                  )}
-                </Form>
-              </li>
-            ))}
+                      {resolved ? 'Reabrir' : 'Resolver'}
+                    </Button>
+                  </Form>
+                </li>
+              )
+            })}
           </ul>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded border border-gray-200 bg-gray-50 p-3">
-        <h3 className="mb-2 text-sm font-semibold text-gray-600">Conversa recente</h3>
+      <div>
+        <h3 className="mb-2 text-sm font-medium text-ink">Conversa recente</h3>
         <div className="space-y-2">
-          {dossier.recentMessages.map((message) => (
-            <div
-              key={message.id}
-              className={`max-w-[80%] rounded-lg px-3 py-1.5 text-sm ${
-                message.role === 'user'
-                  ? 'ml-auto bg-blue-600 text-white'
-                  : 'mr-auto bg-white text-gray-800 shadow-sm'
-              }`}
-            >
-              <p className="whitespace-pre-wrap">{message.content}</p>
-            </div>
-          ))}
+          {dossier.recentMessages.map((message) => {
+            const fromClient = message.role === 'user'
+            return (
+              <div
+                key={message.id}
+                className={cx(
+                  'max-w-[80%] rounded-xl px-3 py-2 text-sm leading-snug',
+                  fromClient
+                    ? 'mr-auto rounded-tl-sm border border-border bg-surface text-ink'
+                    : 'ml-auto rounded-tr-sm bg-brand text-white',
+                )}
+              >
+                <p className="whitespace-pre-wrap">{message.content}</p>
+              </div>
+            )
+          })}
         </div>
-      </section>
+      </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
-        {dossier.status === 'human' ? (
-          <Form method="post">
-            <input type="hidden" name="contactId" value={dossier.contactId} />
-            <button
-              type="submit"
-              name="action"
-              value="devolver"
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-            >
-              Devolver ao Hermes
-            </button>
-          </Form>
-        ) : (
-          <Form method="post">
-            <input type="hidden" name="contactId" value={dossier.contactId} />
-            <button
-              type="submit"
-              name="action"
-              value="assumir"
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-            >
-              Assumir atendimento
-            </button>
-          </Form>
-        )}
-        <Form method="post">
-          <input type="hidden" name="contactId" value={dossier.contactId} />
-          <button
-            type="submit"
-            name="action"
-            value="encerrar"
-            className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700"
-          >
-            Encerrar
-          </button>
-        </Form>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+        <ConversationAction contactId={dossier.contactId} action="encerrar">
+          Encerrar
+        </ConversationAction>
         <Link
           to={`/demo/chat?tenant=${dossier.tenantSlug}&contactId=${dossier.contactId}`}
-          className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700"
+          className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-bg"
         >
           Abrir no simulador
         </Link>
@@ -313,84 +334,85 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
 export default function Atendente({ loaderData }: Route.ComponentProps) {
   const { queue, dossier, operator, selected } = loaderData
   const actionData = useActionData<typeof action>()
+  const needsCount = queue.filter((item) => item.status === 'needs_human').length
 
   return (
-    <main className="mx-auto max-w-5xl space-y-4 p-6">
-      {actionData?.error && (
-        <div className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
-          {actionData.error}
-        </div>
-      )}
-      <header className="flex items-start justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold">Hermes — Atendente</h1>
-          <p className="text-sm text-gray-500">
-            Fila de atendimentos que o Hermes encaminhou. Clique para ver a ficha do cliente.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-500">
-            {operator.username} · <span className="font-medium">{operator.tenantSlug}</span>
+    <AppShell operator={operator}>
+      <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-4">
+        <h1 className="font-display text-xl font-bold tracking-tight text-ink">
+          Central do atendente
+        </h1>
+        {needsCount > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1.5 text-sm text-ink-soft">
+            <span className="size-1.5 rounded-full bg-urgent" />
+            {needsCount} precisam de você
           </span>
-          <Form method="post" action="/logout">
-            <button
-              type="submit"
-              className="rounded border border-gray-300 px-3 py-1 text-xs text-gray-600"
-            >
-              Sair
-            </button>
-          </Form>
-        </div>
+        )}
       </header>
 
-      <div className="grid gap-4 md:grid-cols-[300px_1fr]">
-        <aside className="space-y-2">
-          <h2 className="text-sm font-semibold text-gray-600">Fila ({queue.length})</h2>
-          {queue.length === 0 ? (
-            <p className="text-sm text-gray-500">Ninguém na fila. 🎉</p>
-          ) : (
-            <ul className="space-y-2">
-              {queue.map((item) => {
-                const isActive = selected.contactId === item.contactId
-                return (
-                  <li key={item.conversationId}>
-                    <Link
-                      to={`/atendente?contactId=${item.contactId}`}
-                      className={`block rounded border p-2 text-sm ${
-                        isActive ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-white'
-                      }`}
-                    >
-                      <div className="mb-1 flex items-center gap-2">
-                        <PriorityBadge priority={item.priority} />
-                        {item.status === 'human' && (
-                          <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700">
-                            assumida
-                          </span>
-                        )}
-                        <span className="text-xs text-gray-500">{item.tenantName}</span>
-                      </div>
-                      <p className="font-medium text-gray-800">{item.headline}</p>
-                      <p className="text-xs text-gray-500">{reasonLabel(item.handoffReason)}</p>
-                    </Link>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </aside>
+      <div className="p-6">
+        {actionData?.error && (
+          <div className="mb-4 rounded-lg border border-urgent/30 bg-urgent/10 px-3 py-2 text-sm text-urgent">
+            {actionData.error}
+          </div>
+        )}
 
-        <section className="rounded border border-gray-200 bg-gray-50 p-4">
-          {dossier ? (
-            <Dossier dossier={dossier} />
-          ) : (
-            <p className="text-sm text-gray-500">
-              {queue.length === 0
-                ? 'Sem atendimentos encaminhados no momento.'
-                : 'Selecione um atendimento na fila para ver a ficha do cliente.'}
-            </p>
-          )}
-        </section>
+        <div className="grid gap-5 md:grid-cols-[300px_1fr]">
+          <aside>
+            <h2 className="mb-3 text-sm font-medium text-ink">Fila ({queue.length})</h2>
+            {queue.length === 0 ? (
+              <Card className="p-4 text-sm text-ink-soft">Ninguém na fila. Tudo em dia.</Card>
+            ) : (
+              <ul className="space-y-2">
+                {queue.map((item) => {
+                  const isActive = selected.contactId === item.contactId
+                  return (
+                    <li key={item.conversationId}>
+                      <Link
+                        to={`/atendente?contactId=${item.contactId}`}
+                        className={cx(
+                          'block rounded-xl border p-3 transition-colors',
+                          isActive
+                            ? 'border-brand bg-brand/5'
+                            : 'border-border bg-surface hover:bg-bg',
+                        )}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <Avatar name={item.headline} size="sm" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-ink">{item.headline}</p>
+                            <p className="truncate text-xs text-ink-soft">
+                              {reasonLabel(item.handoffReason)}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-center gap-1.5 text-xs text-ink-soft">
+                          <span
+                            className={cx('size-1.5 rounded-full', PRIORITY[item.priority].dot)}
+                          />
+                          {item.status === 'human' ? 'em atendimento' : 'precisa de você'}
+                        </div>
+                      </Link>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </aside>
+
+          <section>
+            {dossier ? (
+              <Dossier dossier={dossier} />
+            ) : (
+              <Card className="p-8 text-center text-sm text-ink-soft">
+                {queue.length === 0
+                  ? 'Sem atendimentos encaminhados no momento.'
+                  : 'Selecione um atendimento na fila para ver a ficha do cliente.'}
+              </Card>
+            )}
+          </section>
+        </div>
       </div>
-    </main>
+    </AppShell>
   )
 }

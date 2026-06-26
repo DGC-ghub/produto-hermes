@@ -9,16 +9,31 @@ const VARIANTS: Record<ButtonVariant, string> = {
   ghost: 'text-ink-soft hover:bg-bg hover:text-ink',
 }
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: ButtonVariant
+type ButtonSize = 'sm' | 'md'
+
+const SIZES: Record<ButtonSize, string> = {
+  sm: 'px-2.5 py-1 text-xs',
+  md: 'px-4 py-2 text-sm',
 }
 
-export function Button({ variant = 'secondary', className, type, ...props }: ButtonProps) {
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant
+  size?: ButtonSize
+}
+
+export function Button({
+  variant = 'secondary',
+  size = 'md',
+  className,
+  type,
+  ...props
+}: ButtonProps) {
   return (
     <button
       type={type ?? 'button'}
       className={cx(
-        'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60',
+        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60',
+        SIZES[size],
         VARIANTS[variant],
         className,
       )}
