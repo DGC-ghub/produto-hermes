@@ -1,0 +1,49 @@
+/**
+ * Helpers puros da camada de UI (testáveis sem DOM). Os componentes em
+ * `app/components/ui/` consomem estas funções; a lógica fica aqui para os
+ * testes rodarem no ambiente `node` do Vitest.
+ */
+
+/** Junta classes condicionais, ignorando valores falsy. */
+export function cx(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(' ')
+}
+
+/** Iniciais de um nome (1–2 letras maiúsculas) para avatares. */
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) {
+    return '?'
+  }
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase()
+  }
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+const AVATAR_COLORS = ['bg-brand', 'bg-brand-deep', 'bg-ai', 'bg-waiting'] as const
+
+/** Cor de avatar determinística a partir de um seed (nome ou id). */
+export function avatarColor(seed: string): string {
+  let hash = 0
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
+}
+
+export type AttendStatus = 'urgent' | 'waiting' | 'resolved' | 'ai'
+
+/** Rótulo + classe do ponto para cada status do atendimento. */
+export function statusMeta(status: AttendStatus): { label: string; dot: string } {
+  switch (status) {
+    case 'urgent':
+      return { label: 'precisa de humano', dot: 'bg-urgent' }
+    case 'waiting':
+      return { label: 'aguardando', dot: 'bg-waiting' }
+    case 'resolved':
+      return { label: 'resolvido', dot: 'bg-brand' }
+    case 'ai':
+      return { label: 'IA no ar', dot: 'bg-ai' }
+  }
+}
