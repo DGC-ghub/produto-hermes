@@ -144,7 +144,7 @@ export function AudioRecorder({ tenantSlug, conversationId, disabled, onSend }: 
 
   if (!supported) {
     return (
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-ink-soft">
         Seu navegador não permite gravar áudio aqui. Use o envio de arquivo abaixo.
       </p>
     )
@@ -157,11 +157,11 @@ export function AudioRecorder({ tenantSlug, conversationId, disabled, onSend }: 
           type="button"
           onClick={startRecording}
           disabled={disabled}
-          className={`rounded border border-gray-300 px-3 py-2 text-sm font-medium ${
-            disabled ? 'cursor-not-allowed opacity-60' : 'bg-white text-gray-700 hover:bg-gray-50'
+          className={`rounded-lg border border-border px-3 py-2 text-sm font-medium transition-colors ${
+            disabled ? 'cursor-not-allowed opacity-60' : 'bg-surface text-ink hover:bg-bg'
           }`}
         >
-          🎤 Gravar áudio
+          Gravar áudio
         </button>
       )}
 
@@ -169,9 +169,9 @@ export function AudioRecorder({ tenantSlug, conversationId, disabled, onSend }: 
         <button
           type="button"
           onClick={stopRecording}
-          className="flex items-center gap-2 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-medium text-red-700"
+          className="flex items-center gap-2 rounded-lg border border-urgent/30 bg-urgent/8 px-3 py-2 text-sm font-medium text-urgent"
         >
-          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-red-600" />
+          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-urgent" />
           Parar gravação
         </button>
       )}
@@ -184,8 +184,8 @@ export function AudioRecorder({ tenantSlug, conversationId, disabled, onSend }: 
             type="button"
             onClick={send}
             disabled={disabled}
-            className={`rounded px-3 py-2 text-sm font-semibold text-white ${
-              disabled ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600'
+            className={`rounded-lg px-3 py-2 text-sm font-semibold text-white transition-colors ${
+              disabled ? 'cursor-not-allowed bg-brand/60' : 'bg-brand hover:bg-brand-deep'
             }`}
           >
             Enviar áudio
@@ -194,14 +194,14 @@ export function AudioRecorder({ tenantSlug, conversationId, disabled, onSend }: 
             type="button"
             onClick={discard}
             disabled={disabled}
-            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600"
+            className="rounded-lg border border-border px-3 py-2 text-sm text-ink-soft transition-colors hover:text-ink"
           >
             Descartar
           </button>
         </div>
       )}
 
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p className="text-xs text-urgent">{error}</p>}
     </div>
   )
 }

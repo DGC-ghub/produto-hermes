@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
 import { AudioRecorder } from '../components/audio-recorder'
+import { WingMark } from '../components/brand/BrandMark'
+import { PublicHeader } from '../components/layout/PublicHeader'
+import { Button } from '../components/ui/Button'
 import { db } from '../db.server'
 import { transcribeUploadedAudio } from '../lib/audio/upload.server'
 import { processIncomingMessage } from '../lib/conversation.server'
 import { ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
+import { conversationStatusMeta, cx } from '../lib/ui'
 import type { Route } from './+types/demo.chat'
 
 const ALLOWED_SLUGS: readonly string[] = INITIAL_TENANTS.map((tenant) => tenant.slug)
@@ -143,9 +147,19 @@ export async function action({ request }: Route.ActionArgs) {
 
 export function meta(_args: Route.MetaArgs) {
   return [
-    { title: 'Hermes — Simulador' },
-    { name: 'description', content: 'Simulador de atendimento por IA (ambiente de teste).' },
+    { title: 'Hermes — demonstração' },
+    { name: 'description', content: 'Converse com o Hermes como se fosse um cliente no WhatsApp.' },
   ]
+}
+
+// Avatar da IA: a asa do mensageiro num squircle verde. É a assinatura do Hermes
+// "falando" nas bolhas.
+function AiAvatar() {
+  return (
+    <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg bg-brand-deep">
+      <WingMark accent className="size-3.5 text-white" />
+    </span>
+  )
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
@@ -193,222 +207,233 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
   }, [sending])
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-bold">Hermes — Simulador</h1>
-        <p className="text-sm text-gray-500">
-          Você é o cliente: digite como se fosse no WhatsApp. Ambiente de teste — ainda sem WhatsApp
-          real.
-        </p>
-      </header>
+    <div className="min-h-screen bg-bg text-ink">
+      <PublicHeader />
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-gray-600">Empresa</h2>
-        <div className="flex flex-wrap gap-2">
-          {tenants.map((tenant) => (
-            <Link
-              key={tenant.slug}
-              to={`/demo/chat?tenant=${tenant.slug}`}
-              className={`rounded border px-3 py-1 text-sm ${
-                tenant.slug === tenantSlug
-                  ? 'border-blue-600 bg-blue-600 text-white'
-                  : 'border-gray-300 bg-white text-gray-700'
-              }`}
-            >
-              {tenant.name}
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-gray-600">Conversas recentes</h2>
-        {conversations.length === 0 ? (
-          <p className="text-sm text-gray-500">Nenhuma conversa ainda.</p>
-        ) : (
-          <ul className="space-y-1">
-            {conversations.map((conversation) => (
-              <li key={conversation.id}>
-                <Link
-                  to={`/demo/chat?tenant=${tenantSlug}&conversationId=${conversation.id}`}
-                  className={`block rounded border px-3 py-2 text-sm ${
-                    conversation.id === selectedConversationId
-                      ? 'border-blue-400 bg-blue-50'
-                      : 'border-gray-200 bg-white'
-                  }`}
-                >
-                  <span className="font-mono text-xs text-gray-500">{conversation.contactId}</span>
-                  {conversation.status === 'needs_human' && (
-                    <span className="ml-2 rounded bg-red-100 px-2 py-0.5 text-xs text-red-700">
-                      precisa humano
-                    </span>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-600">Conversa</h2>
-          {needsHuman && (
-            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-              Esta conversa precisa de um humano
-            </span>
-          )}
-        </div>
-
-        <div className="min-h-32 space-y-3 rounded border border-gray-200 bg-gray-50 p-3">
-          {messages.length === 0 && !sending ? (
-            <p className="text-sm text-gray-500">
-              Digite uma mensagem como se fosse o cliente no WhatsApp.
-            </p>
-          ) : (
-            <>
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-                    m.role === 'user'
-                      ? 'ml-auto bg-blue-600 text-white'
-                      : 'mr-auto bg-white text-gray-800 shadow-sm'
-                  }`}
-                >
-                  <p className="whitespace-pre-wrap">{m.content}</p>
-                  {m.role === 'assistant' && m.confidence != null && (
-                    <p className="mt-1 text-xs opacity-70">confiança: {m.confidence.toFixed(2)}</p>
-                  )}
-                </div>
-              ))}
-
-              {pendingMessage && (
-                <>
-                  <div className="ml-auto max-w-[80%] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white opacity-70">
-                    <p className="whitespace-pre-wrap">{pendingMessage}</p>
-                  </div>
-                  <div className="mr-auto flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-gray-500 shadow-sm">
-                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-gray-400" />
-                    Hermes está digitando…
-                  </div>
-                </>
-              )}
-
-              {navigation.state === 'submitting' && audioSending && (
-                <div className="mr-auto flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-gray-500 shadow-sm">
-                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                  🎤 Processando seu áudio (transcrevendo e respondendo)…
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        {actionData?.error && (
-          <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            {actionData.error}
-          </div>
-        )}
-
-        {lastAssistant && lastAssistant.sources.length > 0 && (
-          <div className="rounded border border-gray-200 bg-white p-3 text-xs text-gray-600">
-            <p className="font-semibold">Fontes da última resposta:</p>
-            <ul className="mt-1 list-disc pl-5">
-              {lastAssistant.sources.map((source) => (
-                <li key={source.fileName}>
-                  {source.title} <span className="text-gray-400">({source.fileName})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
-
-      <Form
-        key={formKey}
-        method="post"
-        className="space-y-2"
-        onSubmit={(event) => {
-          const value = String(new FormData(event.currentTarget).get('message') ?? '')
-          if (value.trim().length === 0) {
-            event.preventDefault()
-          }
-        }}
-      >
-        <input type="hidden" name="tenantSlug" value={tenantSlug} />
-        {selectedConversationId && (
-          <input type="hidden" name="conversationId" value={selectedConversationId} />
-        )}
-        <textarea
-          ref={textareaRef}
-          name="message"
-          required
-          rows={3}
-          disabled={sending}
-          onChange={(event) => setHasDraft(event.target.value.trim().length > 0)}
-          placeholder="Mensagem do cliente..."
-          className={`w-full rounded border border-gray-300 p-2 text-sm ${
-            sending ? 'opacity-60' : ''
-          }`}
-        />
-        <button
-          type="submit"
-          disabled={sending}
-          className={`rounded px-4 py-2 text-sm font-semibold text-white ${
-            sending ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600'
-          }`}
-        >
-          {sending ? 'Enviando…' : 'Enviar'}
-        </button>
-      </Form>
-
-      <section className="space-y-2 border-t border-gray-200 pt-4">
-        <h2 className="text-sm font-semibold text-gray-600">Ou mande um áudio</h2>
-        {hasDraft && (
-          <p className="text-xs text-amber-700">
-            Você tem uma mensagem digitada. Envie ou apague o texto para usar o áudio.
+      <main className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+        <header>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-ink">Demonstração</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Você é o cliente: escreva como se fosse no WhatsApp. Ambiente de teste — sem WhatsApp
+            real ainda.
           </p>
+        </header>
+
+        <section>
+          <h2 className="mb-2 text-sm font-medium text-ink-soft">Empresa</h2>
+          <div className="flex flex-wrap gap-2">
+            {tenants.map((tenant) => (
+              <Link
+                key={tenant.slug}
+                to={`/demo/chat?tenant=${tenant.slug}`}
+                className={cx(
+                  'rounded-full px-3 py-1.5 text-sm transition-colors',
+                  tenant.slug === tenantSlug
+                    ? 'bg-brand text-white'
+                    : 'border border-border bg-surface text-ink-soft hover:text-ink',
+                )}
+              >
+                {tenant.name}
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        {conversations.length > 0 && (
+          <section>
+            <h2 className="mb-2 text-sm font-medium text-ink-soft">Conversas recentes</h2>
+            <div className="flex flex-wrap gap-2">
+              {conversations.map((conversation) => {
+                const meta = conversationStatusMeta(conversation.status)
+                return (
+                  <Link
+                    key={conversation.id}
+                    to={`/demo/chat?tenant=${tenantSlug}&conversationId=${conversation.id}`}
+                    className={cx(
+                      'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors',
+                      conversation.id === selectedConversationId
+                        ? 'border-brand bg-brand/8 text-ink'
+                        : 'border-border bg-surface text-ink-soft hover:text-ink',
+                    )}
+                  >
+                    <span className={cx('size-1.5 rounded-full', meta.dot)} />
+                    {conversation.contactId}
+                  </Link>
+                )
+              })}
+            </div>
+          </section>
         )}
-        <AudioRecorder
-          tenantSlug={tenantSlug}
-          conversationId={selectedConversationId}
-          disabled={audioDisabled}
-          onSend={() => setAudioSending(true)}
-        />
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-ink-soft">Conversa</h2>
+            {needsHuman && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-urgent">
+                <span className="size-1.5 rounded-full bg-urgent" />
+                precisa de um humano
+              </span>
+            )}
+          </div>
+
+          <div className="min-h-44 space-y-3 rounded-card bg-bg-warm p-4">
+            {messages.length === 0 && !sending ? (
+              <div className="flex flex-col items-center gap-2 py-10 text-center">
+                <AiAvatar />
+                <p className="text-sm text-ink-soft">
+                  Mande uma mensagem como se fosse o cliente no WhatsApp.
+                </p>
+              </div>
+            ) : (
+              <>
+                {messages.map((m) =>
+                  m.role === 'user' ? (
+                    <div
+                      key={m.id}
+                      className="ml-auto max-w-[80%] rounded-2xl rounded-br-sm bg-brand px-3 py-2 text-sm text-white"
+                    >
+                      <p className="whitespace-pre-wrap">{m.content}</p>
+                    </div>
+                  ) : (
+                    <div key={m.id} className="mr-auto flex max-w-[88%] items-start gap-2">
+                      <AiAvatar />
+                      <div className="rounded-2xl rounded-tl-sm border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm">
+                        <p className="whitespace-pre-wrap">{m.content}</p>
+                        {m.confidence != null && (
+                          <p className="mt-1 text-[11px] text-ink-soft/70">
+                            confiança {m.confidence.toFixed(2)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ),
+                )}
+
+                {pendingMessage && (
+                  <>
+                    <div className="ml-auto max-w-[80%] rounded-2xl rounded-br-sm bg-brand px-3 py-2 text-sm text-white opacity-70">
+                      <p className="whitespace-pre-wrap">{pendingMessage}</p>
+                    </div>
+                    <div className="mr-auto flex items-start gap-2">
+                      <AiAvatar />
+                      <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-surface px-3 py-2 text-sm text-ink-soft shadow-sm">
+                        <span className="inline-block size-1.5 animate-pulse rounded-full bg-brand" />
+                        Hermes está digitando…
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {navigation.state === 'submitting' && audioSending && (
+                  <div className="mr-auto flex items-start gap-2">
+                    <AiAvatar />
+                    <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-surface px-3 py-2 text-sm text-ink-soft shadow-sm">
+                      <span className="inline-block size-1.5 animate-pulse rounded-full bg-waiting" />
+                      Transcrevendo seu áudio e respondendo…
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {actionData?.error && (
+            <div className="rounded-lg border border-urgent/30 bg-urgent/8 p-3 text-sm text-urgent">
+              {actionData.error}
+            </div>
+          )}
+
+          {lastAssistant && lastAssistant.sources.length > 0 && (
+            <div className="rounded-lg border border-border bg-surface p-3 text-xs text-ink-soft">
+              <p className="flex items-center gap-1.5 font-medium text-ink">
+                <WingMark accent className="size-3.5 text-brand" />
+                Fontes da última resposta
+              </p>
+              <ul className="mt-1.5 space-y-0.5">
+                {lastAssistant.sources.map((source) => (
+                  <li key={source.fileName}>
+                    {source.title} <span className="text-ink-soft/60">({source.fileName})</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+
         <Form
-          key={`audio-${formKey}`}
+          key={formKey}
           method="post"
-          encType="multipart/form-data"
-          onSubmit={() => setAudioSending(true)}
-          className="flex flex-wrap items-center gap-2"
+          className="space-y-2"
+          onSubmit={(event) => {
+            const value = String(new FormData(event.currentTarget).get('message') ?? '')
+            if (value.trim().length === 0) {
+              event.preventDefault()
+            }
+          }}
         >
           <input type="hidden" name="tenantSlug" value={tenantSlug} />
           {selectedConversationId && (
             <input type="hidden" name="conversationId" value={selectedConversationId} />
           )}
-          <input
-            type="file"
-            name="audio"
-            accept="audio/*"
+          <textarea
+            ref={textareaRef}
+            name="message"
             required
-            disabled={audioDisabled}
-            className="text-xs text-gray-600 file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm"
+            rows={3}
+            disabled={sending}
+            onChange={(event) => setHasDraft(event.target.value.trim().length > 0)}
+            placeholder="Mensagem do cliente..."
+            className={cx(
+              'w-full rounded-lg border border-border bg-surface p-2.5 text-sm text-ink placeholder:text-ink-soft/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+              sending && 'opacity-60',
+            )}
           />
-          <button
-            type="submit"
-            disabled={audioDisabled}
-            className={`rounded px-3 py-2 text-sm font-semibold text-white ${
-              audioDisabled ? 'cursor-not-allowed bg-blue-400' : 'bg-blue-600'
-            }`}
-          >
-            Enviar arquivo
-          </button>
+          <Button type="submit" variant="primary" disabled={sending}>
+            {sending ? 'Enviando…' : 'Enviar'}
+          </Button>
         </Form>
-        <p className="text-xs text-gray-400">
-          A transcrição roda local (faster-whisper). No Pi leva ~15s por áudio curto.
-        </p>
-      </section>
-    </main>
+
+        <section className="space-y-2 border-t border-border pt-4">
+          <h2 className="text-sm font-medium text-ink-soft">Ou mande um áudio</h2>
+          {hasDraft && (
+            <p className="text-xs text-waiting">
+              Você tem uma mensagem digitada. Envie ou apague o texto para usar o áudio.
+            </p>
+          )}
+          <AudioRecorder
+            tenantSlug={tenantSlug}
+            conversationId={selectedConversationId}
+            disabled={audioDisabled}
+            onSend={() => setAudioSending(true)}
+          />
+          <Form
+            key={`audio-${formKey}`}
+            method="post"
+            encType="multipart/form-data"
+            onSubmit={() => setAudioSending(true)}
+            className="flex flex-wrap items-center gap-2"
+          >
+            <input type="hidden" name="tenantSlug" value={tenantSlug} />
+            {selectedConversationId && (
+              <input type="hidden" name="conversationId" value={selectedConversationId} />
+            )}
+            <input
+              type="file"
+              name="audio"
+              accept="audio/*"
+              required
+              disabled={audioDisabled}
+              className="text-xs text-ink-soft file:mr-2 file:rounded file:border-0 file:bg-bg file:px-3 file:py-1.5 file:text-sm file:text-ink"
+            />
+            <Button type="submit" variant="secondary" size="sm" disabled={audioDisabled}>
+              Enviar arquivo
+            </Button>
+          </Form>
+          <p className="text-xs text-ink-soft/60">
+            A transcrição roda local (faster-whisper). No Pi leva ~15s por áudio curto.
+          </p>
+        </section>
+      </main>
+    </div>
   )
 }
