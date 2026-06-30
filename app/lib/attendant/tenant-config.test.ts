@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadTenantConfig, parseTenantConfig } from './tenant-config'
+import { loadTenantConfig, parseTenantConfig, serializeTenantConfig } from './tenant-config'
 
 describe('loadTenantConfig', () => {
   it('carrega o config da Prestacon do arquivo', () => {
@@ -54,5 +54,18 @@ describe('parseTenantConfig', () => {
     const config = parseTenantConfig('x', valid)
     expect(config.guardrails.forbiddenTopics).toBeUndefined()
     expect(config.extraRules).toBeUndefined()
+  })
+})
+
+describe('serializeTenantConfig', () => {
+  it('faz roundtrip: serialize → parse devolve o mesmo config', () => {
+    const config = loadTenantConfig('dgc')
+    const back = parseTenantConfig('dgc', JSON.parse(serializeTenantConfig(config)))
+    expect(back).toEqual(config)
+  })
+
+  it('não grava o slug dentro do JSON (vem do nome do arquivo)', () => {
+    const config = loadTenantConfig('dgc')
+    expect(JSON.parse(serializeTenantConfig(config))).not.toHaveProperty('slug')
   })
 })

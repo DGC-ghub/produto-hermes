@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // TenantConfig: a descrição declarativa de COMO cada empresa funciona. Um motor
@@ -152,6 +152,30 @@ export function loadTenantConfig(slug: string): TenantConfig {
     throw new Error(`TenantConfig não encontrado para: ${slug}`)
   }
   return parseTenantConfig(slug, raw)
+}
+
+/**
+ * Serializa um TenantConfig para o JSON gravável em disco. O `slug` não vai no
+ * arquivo (vem do nome do arquivo). Função pura — o roundtrip serialize → parse
+ * preserva o config.
+ */
+export function serializeTenantConfig(config: TenantConfig): string {
+  const { slug: _slug, ...rest } = config
+  return `${JSON.stringify(rest, null, 2)}\n`
+}
+
+/**
+ * Grava o TenantConfig em `config/tenants/<slug>.json`. Espelha loadTenantConfig:
+ * o ÚNICO ponto de escrita. Revalida (parse do serializado) antes de gravar —
+ * nunca persiste algo que não carregaria de volta. Server-side (escreve arquivo).
+ */
+export function saveTenantConfig(config: TenantConfig): void {
+  if (!SAFE_SLUG.test(config.slug)) {
+    throw new Error(`Invalid tenant slug: ${config.slug}`)
+  }
+  // Revalida pelo mesmo caminho do load: garante forma íntegra e normalizada.
+  const validated = parseTenantConfig(config.slug, JSON.parse(serializeTenantConfig(config)))
+  writeFileSync(join(CONFIG_DIR, `${validated.slug}.json`), serializeTenantConfig(validated), 'utf8')
 }
 
 /**
