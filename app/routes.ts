@@ -5,6 +5,7 @@ export default [
   route('demo/chat', 'routes/demo.chat.tsx'),
   route('dashboard', 'routes/dashboard.tsx'),
   route('atendente', 'routes/atendente.tsx'),
+  route('configuracoes', 'routes/configuracoes.tsx'),
   route('login', 'routes/login.tsx'),
   route('logout', 'routes/logout.tsx'),
   route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
