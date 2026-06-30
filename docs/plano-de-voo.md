@@ -41,8 +41,8 @@ Configurar o cliente na mão? Ok. Cobrar no Pix? Ok. Um número de WhatsApp dedi
 ## ✈️ As fases (cada caixinha ≈ 1 sessão)
 
 ### Fase 0 — Acabar o produto pro piloto · *você está aqui*
-- [ ] **Tela de Configurações** — você descreve a empresa (perfil, tom, regras, tools, escalação) por uma tela, em vez de editar JSON na mão. *(é a tarefa de hoje)*
-- [ ] **IA real estável** — garantir que o `claude_cli` está logado **ou** pôr `ANTHROPIC_API_KEY` no `.env`, pra não cair em fallback no meio de um atendimento real.
+- [x] **Tela de Configurações** — você descreve a empresa (perfil, tom, regras, tools, escalação) por uma tela, em vez de editar JSON na mão. ✅ *feito em 2026-06-29*
+- [ ] **IA real estável** — garantir que o `claude_cli` está logado **ou** pôr `ANTHROPIC_API_KEY` no `.env`, pra não cair em fallback no meio de um atendimento real. *(próxima)*
 
 > **Marco:** o produto está "bom o suficiente" pra um cliente de verdade usar.
 
@@ -85,5 +85,6 @@ O desânimo perde pra constância. Aparecer todo dia > surto de fim de semana.
 
 ## 📍 Onde você está agora
 
-👉 **Fase 0 · Configurações.** A boa notícia: a parte difícil (persistência) já está pavimentada
-no código — é só salvar de volta no `config/tenants/<slug>.json`. Bora.
+✅ **Front 100% pronto** (login, central, dashboard, landing, demo, configurações).
+👉 Próxima caixinha: **Fase 0 · IA real estável** — checar o `claude_cli`/`ANTHROPIC_API_KEY`.
+Depois disso, o foco vira **Fase 1 (WhatsApp 24/7)** — o gargalo real até o cliente. Tá perto.
