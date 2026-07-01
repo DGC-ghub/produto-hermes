@@ -175,7 +175,11 @@ export function saveTenantConfig(config: TenantConfig): void {
   }
   // Revalida pelo mesmo caminho do load: garante forma íntegra e normalizada.
   const validated = parseTenantConfig(config.slug, JSON.parse(serializeTenantConfig(config)))
-  writeFileSync(join(CONFIG_DIR, `${validated.slug}.json`), serializeTenantConfig(validated), 'utf8')
+  writeFileSync(
+    join(CONFIG_DIR, `${validated.slug}.json`),
+    serializeTenantConfig(validated),
+    'utf8',
+  )
 }
 
 /**
