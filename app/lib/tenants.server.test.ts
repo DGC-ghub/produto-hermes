@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { ensureInitialTenants, ensureTenant } from './tenants.server'
+import { ensureInitialTenants, ensureTenant, resolveTenant } from './tenants.server'
 
 const TEST_SLUG = 'zzz-test-tenant-task-9'
 
@@ -45,5 +45,34 @@ describe('ensureInitialTenants', () => {
 
     expect(dgc?.name).toBe('DGC Hub')
     expect(demo?.name).toBe('ResolveTech Assistência (Demo)')
+  })
+})
+
+describe('resolveTenant', () => {
+  const R_SLUG = 'zzz-test-resolve-tenant'
+
+  afterEach(async () => {
+    await db.tenant.deleteMany({ where: { slug: R_SLUG } })
+  })
+
+  it('devolve null para slug desconhecido (não cria sujeira no banco)', async () => {
+    expect(await resolveTenant('zzz-slug-que-nao-existe')).toBeNull()
+  })
+
+  it('devolve null para slug inseguro', async () => {
+    expect(await resolveTenant('../dgc')).toBeNull()
+  })
+
+  it('resolve um tenant já existente no banco — mesmo sem ser um seed', async () => {
+    await ensureTenant({ slug: R_SLUG, name: 'Resolve Test' })
+    const tenant = await resolveTenant(R_SLUG)
+    expect(tenant?.slug).toBe(R_SLUG)
+    expect(tenant?.name).toBe('Resolve Test')
+  })
+
+  it('cria on-demand um seed conhecido (dgc)', async () => {
+    const tenant = await resolveTenant('dgc')
+    expect(tenant?.slug).toBe('dgc')
+    expect(tenant?.name).toBe('DGC Hub')
   })
 })

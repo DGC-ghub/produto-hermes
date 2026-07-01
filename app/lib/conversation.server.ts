@@ -7,7 +7,7 @@ import { decideHandoff } from './handoff'
 import { loadKnowledgeFromSource } from './knowledge.server'
 import { extractLeadPatch } from './lead'
 import { retrieveRelevantChunks } from './retrieval'
-import { ensureTenant, INITIAL_TENANTS } from './tenants.server'
+import { resolveTenant } from './tenants.server'
 import { hasDuplicateOpenTicket } from './ticket'
 
 export type ProcessIncomingMessageInput = {
@@ -38,10 +38,6 @@ export type ProcessIncomingMessageResult = {
 }
 
 const HISTORY_LIMIT = 12
-
-function findTenantInput(slug: string) {
-  return INITIAL_TENANTS.find((tenant) => tenant.slug === slug)
-}
 
 // Carrega o TenantConfig com fallback SEGURO: se o config faltar ou estiver
 // inválido, degrada para um default conservador (sem ações, escala humano),
@@ -74,12 +70,13 @@ export async function processIncomingMessage(
     throw new Error('Message is required')
   }
 
-  // Para o MVP só aceitamos tenants conhecidos — evita criar sujeira no banco.
-  const tenantInput = findTenantInput(input.tenantSlug)
-  if (!tenantInput) {
+  // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
+  // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
+  // é rejeitado (não cria sujeira no banco).
+  const tenant = await resolveTenant(input.tenantSlug)
+  if (!tenant) {
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
-  const tenant = await ensureTenant(tenantInput)
   const config = loadConfigSafe(input.tenantSlug)
 
   // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE

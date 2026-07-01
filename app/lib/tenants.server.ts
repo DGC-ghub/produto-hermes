@@ -35,3 +35,22 @@ export async function ensureTenant(input: TenantInput) {
 export async function ensureInitialTenants() {
   return Promise.all(INITIAL_TENANTS.map((tenant) => ensureTenant(tenant)))
 }
+
+/**
+ * Resolve um tenant pelo slug a partir do BANCO (fonte de verdade) — é isto que
+ * permite adicionar um cliente novo só criando o registro, sem editar código nem
+ * fazer redeploy. Se o tenant ainda não existe mas é um dos seeds conhecidos
+ * (`INITIAL_TENANTS`), cria on-demand, preservando o comportamento de MVP. Slug
+ * inválido ou desconhecido → `null` (o chamador decide como rejeitar). Server-side.
+ */
+export async function resolveTenant(slug: string) {
+  if (!SAFE_SLUG.test(slug)) {
+    return null
+  }
+  const existing = await db.tenant.findUnique({ where: { slug } })
+  if (existing) {
+    return existing
+  }
+  const seed = INITIAL_TENANTS.find((tenant) => tenant.slug === slug)
+  return seed ? ensureTenant(seed) : null
+}
