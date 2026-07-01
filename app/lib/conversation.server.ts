@@ -1,4 +1,5 @@
 import { db } from '../db.server'
+import { reportDegradation } from './alarm.server'
 import { generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
 import { loadTenantConfig, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
@@ -222,6 +223,15 @@ export async function processIncomingMessage(
       },
     },
   )
+
+  // Alarme: se o cérebro CAIU no fallback (provider/validação), o cliente recebeu a
+  // resposta genérica. Avisa o operador (best-effort) — não é escalação normal.
+  if (
+    decision.handoffReason === 'provider_error' ||
+    decision.handoffReason === 'validacao_falhou'
+  ) {
+    void reportDegradation(decision.handoffReason)
+  }
 
   // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
   if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
