@@ -1,4 +1,5 @@
 import { processIncomingMessage } from '../lib/conversation.server'
+import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import {
   type InboundMessage,
   parseInboundMessages,
@@ -8,6 +9,10 @@ import {
   verifyWebhookSignature,
 } from '../lib/whatsapp.server'
 import type { Route } from './+types/webhook.whatsapp'
+
+// Teto global do webhook público (o app vê tudo como localhost atrás da ponte, então
+// não dá pra limitar por IP). Estado no processo — zera a cada reinício do serviço.
+let rateState: RateState = { windowStart: 0, count: 0 }
 
 // GET — handshake de verificação: a Meta chama a URL com o verify_token; devolvemos
 // o challenge só se bater. É como a Meta confirma que a URL é nossa.
@@ -57,6 +62,17 @@ async function handleInbound(messages: InboundMessage[]): Promise<void> {
 // devolve 200 imediatamente: a Meta tem timeout curto e a IA pode levar ~15s; sem
 // isto a Meta reenviaria o evento. (Produção: trocar o fire-and-forget por uma fila.)
 export async function action({ request }: Route.ActionArgs) {
+  // Anti-flood: rejeita o excesso ANTES de ler o corpo ou validar assinatura (barato).
+  const { max, windowMs } = rateConfig()
+  const rate = checkRate(Date.now(), rateState, max, windowMs)
+  rateState = rate.state
+  if (!rate.allowed) {
+    return new Response('Too Many Requests', {
+      status: 429,
+      headers: { 'Retry-After': String(rate.retryAfterSec) },
+    })
+  }
+
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
   if (!verifyWebhookSignature(rawBody, signature)) {
