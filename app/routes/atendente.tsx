@@ -64,14 +64,16 @@ export async function action({ request }: Route.ActionArgs) {
     if (!isTicketStatus(ticketStatus)) {
       return { error: 'Status de chamado inválido.' }
     }
-    const ticket = await db.ticket.findUnique({
-      where: { id: ticketId },
-      select: { id: true, tenantId: true },
+    // Escopa por tenant no PRÓPRIO filtro (não "lê e depois compara"): um chamado de
+    // outra empresa simplesmente não casa, então nunca é lido antes da checagem.
+    const ticket = await db.ticket.findFirst({
+      where: { id: ticketId, tenantId: operator.tenantId },
+      select: { id: true },
     })
-    if (!ticket || ticket.tenantId !== operator.tenantId) {
+    if (!ticket) {
       return { error: 'Chamado não encontrado.' }
     }
-    await db.ticket.update({ where: { id: ticketId }, data: { status: ticketStatus } })
+    await db.ticket.update({ where: { id: ticket.id }, data: { status: ticketStatus } })
     return redirect(`/atendente?contactId=${contactId}`)
   }
 
