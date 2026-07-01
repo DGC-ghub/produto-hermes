@@ -1,22 +1,31 @@
 import type { TenantConfig } from './tenant-config'
 
 // Regras globais de atendimento (a "coleira" de conteúdo, igual para todos).
-// O que é por-empresa vem do TenantConfig (extraRules, sourcePolicy).
+// O que é por-empresa vem do TenantConfig (persona, extraRules, sourcePolicy).
 const BASE_RULES = [
-  'Responda em português, de forma curta, natural e cordial.',
-  'Use apenas as informações da base da empresa; não invente dados.',
+  'Responda em português, de forma curta e natural, como numa conversa de WhatsApp.',
+  'Use apenas as informações da base da empresa; não invente dados, preços ou prazos.',
   'Nunca prometa preço fechado, garantia de conserto ou prazo que não esteja na base.',
-  'Se não souber responder com segurança, ou se o tema for sensível (contrato, jurídico, dados pessoais), peça para encaminhar a um humano.',
-  'Se o cliente pedir para falar com uma pessoa, encaminhe sem insistir.',
+  'Só abra um chamado (o campo action) DEPOIS que o cliente confirmar que quer agendar ou registrar; antes disso, ofereça e pergunte, mantendo action nula.',
+  'Diante de objeção de preço ou atrito leve, contorne com jeito e ofereça o próximo passo (ex.: a visita) — não encaminhe a um humano só por isso.',
+  'Encaminhe a um humano apenas em: pedido explícito do cliente, insatisfação forte ou repetida, ou tema sensível (contrato, jurídico, dados pessoais).',
 ]
+
+// Uma linha de persona derivada do businessProfile: dá ao cérebro a identidade
+// e o tom DAQUELA empresa (antes só chegava o tom genérico das BASE_RULES).
+function personaRule(config: TenantConfig): string {
+  const { name, segment, tone, workingHours } = config.businessProfile
+  const base = `Você é o atendente da ${name} (${segment}). Fale sempre neste tom: ${tone}.`
+  return workingHours ? `${base} Horário de funcionamento: ${workingHours}.` : base
+}
 
 /**
  * Deriva as regras de atendimento (orientação para o prompt) a partir do
- * TenantConfig: regras globais + política de fonte + as regras livres da empresa.
- * Substitui o antigo `companyRulesFor` (que tinha um Record hard-coded por slug).
+ * TenantConfig: persona da empresa + regras globais + política de fonte + as
+ * regras livres da empresa. Substitui o antigo `companyRulesFor`.
  */
 export function buildCompanyRules(config: TenantConfig): string[] {
-  const rules = [...BASE_RULES]
+  const rules = [personaRule(config), ...BASE_RULES]
   if (config.knowledge.sourcePolicy === 'answer_only_from_knowledge') {
     rules.push(
       'Responda somente com base nas informações da empresa. Se algo não estiver na base, diga que vai verificar ou encaminhar — não invente.',

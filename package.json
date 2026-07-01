@@ -10,6 +10,7 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
+    "eval:motor": "vitest run --config vitest.eval.config.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
