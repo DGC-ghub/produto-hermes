@@ -30,3 +30,6 @@ prisma/*.db-journal
 
 # Relatório do banco de provas (artefato de execução, não versionar)
 eval-report.md
+
+# Log de runtime do serviço (voo de teste)
+hermes.log
