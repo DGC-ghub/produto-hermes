@@ -10,8 +10,13 @@ const source: RetrievedChunk = {
   score: 3,
 }
 
-function compose(userMessage: string, sources: RetrievedChunk[], tenantSlug = 'dgc') {
-  return composeAssistantResponse({ tenantSlug, userMessage, sources })
+// Um exemplo de próximo-passo específico de vertical, agora vindo do TenantConfig
+// (antes era um `if slug === 'assistencia-tecnica-demo'` colado no motor).
+const ASSISTENCIA_NEXT_STEP =
+  'Para eu te orientar melhor, me diga seu bairro, o equipamento e o que aconteceu.'
+
+function compose(userMessage: string, sources: RetrievedChunk[], nextStepPrompt?: string) {
+  return composeAssistantResponse({ userMessage, sources, nextStepPrompt })
 }
 
 describe('composeAssistantResponse', () => {
@@ -60,11 +65,11 @@ describe('composeAssistantResponse', () => {
     expect(reply).toContain('depende')
   })
 
-  it('asks for next-step details on an assistência problem message', () => {
+  it('uses the tenant nextStepPrompt on a problem message', () => {
     const reply = compose(
       'minha geladeira parou',
       [source],
-      'assistencia-tecnica-demo',
+      ASSISTENCIA_NEXT_STEP,
     ).reply.toLowerCase()
 
     expect(reply).toContain('bairro')
@@ -78,18 +83,18 @@ describe('composeAssistantResponse', () => {
     expect(result.reply).not.toContain('MARCADOR_FINAL')
   })
 
-  it('uses an assistência-tecnica next step for that tenant', () => {
+  it('uses the tenant nextStepPrompt when provided', () => {
     const reply = compose(
       'quero agendar uma visita',
       [source],
-      'assistencia-tecnica-demo',
+      ASSISTENCIA_NEXT_STEP,
     ).reply.toLowerCase()
 
     expect(reply).toContain('bairro')
   })
 
-  it('uses a consultive next step for the dgc tenant', () => {
-    const reply = compose('quero um orçamento', [source], 'dgc').reply.toLowerCase()
+  it('falls back to the neutral next step when the tenant has no nextStepPrompt', () => {
+    const reply = compose('quero um orçamento', [source]).reply.toLowerCase()
 
     expect(reply).not.toContain('bairro')
     expect(reply).toContain('processo')

@@ -93,6 +93,8 @@ export async function action({ request }: Route.ActionArgs) {
       humanMessage: str('humanMessage'),
     },
     extraRules: lines('extraRules'),
+    // Preserva o próximo-passo do tenant (a tela ainda não o edita, mas não deve apagá-lo).
+    ...(current.nextStepPrompt ? { nextStepPrompt: current.nextStepPrompt } : {}),
   }
 
   try {

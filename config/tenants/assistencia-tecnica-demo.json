@@ -24,5 +24,6 @@
     "defaultReason": "tema_sensivel",
     "humanMessage": "Vou marcar para uma pessoa do time te ajudar com segurança."
   },
-  "extraRules": ["Para orientar melhor, pergunte o bairro, o equipamento e o que aconteceu."]
+  "extraRules": ["Para orientar melhor, pergunte o bairro, o equipamento e o que aconteceu."],
+  "nextStepPrompt": "Para eu te orientar melhor, me diga seu bairro, o equipamento e o que aconteceu."
 }

@@ -31,10 +31,8 @@ const NO_SOURCE_REPLY =
 const CLOSED_PRICE_NOTE =
   'Só não consigo fechar um valor final por aqui; ele depende da avaliação e da proposta.'
 
-const NEXT_STEP_ASSISTENCIA =
-  'Para eu te orientar melhor, me diga seu bairro, o equipamento e o que aconteceu.'
-
-const NEXT_STEP_CONSULTIVO =
+// Default neutro quando o tenant não define um `nextStepPrompt` próprio no config.
+const NEXT_STEP_DEFAULT =
   'Para eu te orientar melhor, me conta um pouco do seu processo e o que você precisa resolver.'
 
 const CLOSING_OFFER = 'Se quiser, posso encaminhar para uma pessoa do time.'
@@ -72,9 +70,11 @@ function stripForbiddenClaims(text: string): string {
  * Função pura — sem banco, fs, API ou LLM. Não inventa informação fora dos sources.
  */
 export function composeAssistantResponse(input: {
-  tenantSlug: string
   userMessage: string
   sources: RetrievedChunk[]
+  // Orientação de próximo passo específica do tenant (vem do TenantConfig); ausente
+  // → default neutro. O motor NÃO conhece o vertical — recebe o texto pronto.
+  nextStepPrompt?: string
 }): AssistantDecision {
   if (input.sources.length === 0) {
     return {
@@ -88,14 +88,13 @@ export function composeAssistantResponse(input: {
 
   const top = input.sources[0]
   const message = normalizeText(input.userMessage)
-  const isAssistencia = input.tenantSlug === 'assistencia-tecnica-demo'
 
   const parts = [compactSnippet(top.snippet)]
   if (includesAny(message, CLOSED_PRICE_TRIGGERS)) {
     parts.push(CLOSED_PRICE_NOTE)
   }
   if (includesAny(message, NEXT_STEP_TRIGGERS)) {
-    parts.push(isAssistencia ? NEXT_STEP_ASSISTENCIA : NEXT_STEP_CONSULTIVO)
+    parts.push(input.nextStepPrompt?.trim() || NEXT_STEP_DEFAULT)
   }
   parts.push(CLOSING_OFFER)
 

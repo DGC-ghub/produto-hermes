@@ -56,6 +56,10 @@ export type TenantConfig = {
   }
   // Regras livres por empresa (o TENANT_RULES de hoje, agora como dado).
   extraRules?: string[]
+  // Orientação de "próximo passo" quando o cliente sinaliza um problema/pedido —
+  // varia por vertical (ex.: assistência pede bairro+equipamento). Dado, não código:
+  // é assim que o motor deixa de ter um `if slug === ...` colado. Ausente → default neutro.
+  nextStepPrompt?: string
 }
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
@@ -134,6 +138,10 @@ export function parseTenantConfig(slug: string, raw: unknown): TenantConfig {
       humanMessage: asString(escalation.humanMessage, 'escalationPolicy.humanMessage'),
     },
     extraRules: root.extraRules !== undefined ? asStringArray(root.extraRules) : undefined,
+    nextStepPrompt:
+      typeof root.nextStepPrompt === 'string' && root.nextStepPrompt.trim().length > 0
+        ? root.nextStepPrompt
+        : undefined,
   }
 }
 
