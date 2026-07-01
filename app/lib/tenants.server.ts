@@ -9,6 +9,7 @@ export const INITIAL_TENANTS = [
   { slug: 'dgc', name: 'DGC Hub' },
   { slug: 'assistencia-tecnica-demo', name: 'ResolveTech Assistência (Demo)' },
   { slug: 'prestacon', name: 'Prestacon Contabilidade' },
+  { slug: 'csmed', name: 'Carvalho Serviços Médicos (CS MED)' },
 ] as const
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
