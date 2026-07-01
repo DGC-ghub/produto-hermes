@@ -77,6 +77,44 @@ describe('retrieveRelevantChunks', () => {
     expect(result[0]?.snippet.length).toBeLessThanOrEqual(500)
   })
 
+  it('retorna a SEÇÃO que casou como snippet, não o começo do documento', () => {
+    const doc = makeDoc(
+      'servicos.md',
+      'Serviços',
+      '# Serviços\n\n## Preços\nA visita custa R$ 80.\n\n## Horário\nAbrimos cedo todo dia.',
+    )
+    const result = retrieveRelevantChunks('visita', [doc])
+    expect(result[0]?.title).toBe('Preços')
+    expect(result[0]?.snippet).toContain('R$ 80')
+    expect(result[0]?.snippet).not.toContain('Abrimos cedo')
+  })
+
+  it('pontua por seção — o cabeçalho certo vence o corpo genérico', () => {
+    const precos = makeDoc('precos.md', 'Preços', '# Tabela\n\n## Visita\nCusta R$ 80.')
+    const generico = makeDoc(
+      'tom.md',
+      'Tom',
+      '# Tom\n\n## Estilo\nFale de visita, custo, preço, atendimento e horário.',
+    )
+    // 'visita' casa o TÍTULO da seção certa (peso 2) e o corpo do genérico (peso 1).
+    const result = retrieveRelevantChunks('visita', [precos, generico])
+    expect(result[0]?.fileName).toBe('precos.md')
+    expect(result[0]?.title).toBe('Visita')
+  })
+
+  it('limita a 1 seção por documento (diversidade de fontes)', () => {
+    const multi = makeDoc(
+      'multi.md',
+      'Multi',
+      '# M\n\n## Visita A\nvisita aqui\n\n## Visita B\nvisita ali',
+    )
+    const outro = makeDoc('outro.md', 'Outro', '# O\n\n## Nota\nvisita também')
+    const files = retrieveRelevantChunks('visita', [multi, outro]).map((chunk) => chunk.fileName)
+    expect(new Set(files).size).toBe(files.length) // sem arquivo repetido
+    expect(files).toContain('multi.md')
+    expect(files).toContain('outro.md')
+  })
+
   it('works with real documents loaded by loadKnowledgeBase', async () => {
     const realDocs = await loadKnowledgeBase('dgc')
     const result = retrieveRelevantChunks('quanto custa o diagnóstico?', realDocs)
