@@ -1,8 +1,12 @@
 import { createHmac } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { db } from '../db.server'
+import { ensureTenant } from './tenants.server'
 import {
   type InboundMessage,
   parseInboundMessages,
+  registerWhatsappNumber,
+  resolveTenantSlugByPhoneNumber,
   resolveTenantSlugByPhoneNumberId,
   verifyWebhookChallenge,
   verifyWebhookSignature,
@@ -144,5 +148,70 @@ describe('resolveTenantSlugByPhoneNumberId', () => {
     expect(resolveTenantSlugByPhoneNumberId('OUTRO')).toBeNull()
     process.env.WHATSAPP_NUMBER_MAP = ''
     expect(resolveTenantSlugByPhoneNumberId('PHONE_123')).toBeNull()
+  })
+})
+
+describe('resolveTenantSlugByPhoneNumber (banco + fallback env)', () => {
+  const WA_TENANT = 'zzz-test-wa-tenant'
+  const WA_PHONE = 'WA_TEST_DB_1'
+
+  beforeAll(async () => {
+    await ensureTenant({ slug: WA_TENANT, name: 'WA Test Tenant' })
+  })
+  afterEach(async () => {
+    await db.whatsappNumber.deleteMany({ where: { phoneNumberId: { startsWith: 'WA_TEST_' } } })
+  })
+  afterAll(async () => {
+    await db.whatsappNumber.deleteMany({ where: { tenant: { slug: WA_TENANT } } })
+    await db.tenant.deleteMany({ where: { slug: WA_TENANT } })
+  })
+
+  it('resolve pelo banco quando há registro — e o banco vence o env', async () => {
+    await registerWhatsappNumber(WA_PHONE, WA_TENANT, 'Número principal')
+    // Mesmo com o env apontando para outro slug, a fonte de verdade é o banco.
+    process.env.WHATSAPP_NUMBER_MAP = `${WA_PHONE}:dgc`
+    expect(await resolveTenantSlugByPhoneNumber(WA_PHONE)).toBe(WA_TENANT)
+  })
+
+  it('cai no fallback do env quando não há registro no banco', async () => {
+    process.env.WHATSAPP_NUMBER_MAP = 'WA_TEST_ENV:assistencia-tecnica-demo'
+    expect(await resolveTenantSlugByPhoneNumber('WA_TEST_ENV')).toBe('assistencia-tecnica-demo')
+  })
+
+  it('devolve null quando não está no banco nem no env', async () => {
+    process.env.WHATSAPP_NUMBER_MAP = ''
+    expect(await resolveTenantSlugByPhoneNumber('WA_TEST_INEXISTENTE')).toBeNull()
+  })
+})
+
+describe('registerWhatsappNumber', () => {
+  const WA_A = 'zzz-test-wa-reg-a'
+  const WA_B = 'zzz-test-wa-reg-b'
+
+  beforeAll(async () => {
+    await ensureTenant({ slug: WA_A, name: 'WA Reg A' })
+    await ensureTenant({ slug: WA_B, name: 'WA Reg B' })
+  })
+  afterEach(async () => {
+    await db.whatsappNumber.deleteMany({ where: { phoneNumberId: { startsWith: 'WA_REG_' } } })
+  })
+  afterAll(async () => {
+    await db.whatsappNumber.deleteMany({ where: { tenant: { slug: { in: [WA_A, WA_B] } } } })
+    await db.tenant.deleteMany({ where: { slug: { in: [WA_A, WA_B] } } })
+  })
+
+  it('rejeita tenant desconhecido', async () => {
+    await expect(registerWhatsappNumber('WA_REG_X', 'slug-que-nao-existe')).rejects.toThrow(
+      'Unknown tenant',
+    )
+  })
+
+  it('é idempotente e reatribui o número a outra empresa (sem duplicar linha)', async () => {
+    await registerWhatsappNumber('WA_REG_1', WA_A)
+    await registerWhatsappNumber('WA_REG_1', WA_B) // reatribui o mesmo número
+    process.env.WHATSAPP_NUMBER_MAP = ''
+    expect(await resolveTenantSlugByPhoneNumber('WA_REG_1')).toBe(WA_B)
+    const rows = await db.whatsappNumber.findMany({ where: { phoneNumberId: 'WA_REG_1' } })
+    expect(rows.length).toBe(1)
   })
 })

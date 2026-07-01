@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { db } from '../db.server'
 
 // Integração com o WhatsApp Business Platform (Meta Cloud API). O webhook reutiliza
 // `processIncomingMessage` — aqui ficam só as peças do canal: handshake, validação
@@ -99,6 +100,49 @@ export function resolveTenantSlugByPhoneNumberId(phoneNumberId: string): string 
     }
   }
   return null
+}
+
+/**
+ * Resolve o slug do tenant a partir do phone_number_id da empresa — primeiro no
+ * BANCO (tabela `WhatsappNumber`, a fonte de verdade que permite adicionar um
+ * cliente sem redeploy) e, se não houver registro, no mapa em env
+ * (`WHATSAPP_NUMBER_MAP`) como fallback de transição. Server-side (usa `db`).
+ */
+export async function resolveTenantSlugByPhoneNumber(
+  phoneNumberId: string,
+): Promise<string | null> {
+  const row = await db.whatsappNumber.findUnique({
+    where: { phoneNumberId },
+    select: { tenant: { select: { slug: true } } },
+  })
+  if (row) {
+    return row.tenant.slug
+  }
+  return resolveTenantSlugByPhoneNumberId(phoneNumberId)
+}
+
+/**
+ * Registra (ou reatribui) um número de WhatsApp a uma empresa. Idempotente por
+ * `phoneNumberId`. É o que o onboarding de um novo cliente usa para mapear o
+ * número no banco, sem editar env nem fazer redeploy. Server-side (usa `db`).
+ */
+export async function registerWhatsappNumber(
+  phoneNumberId: string,
+  tenantSlug: string,
+  label?: string,
+): Promise<void> {
+  const tenant = await db.tenant.findUnique({
+    where: { slug: tenantSlug },
+    select: { id: true },
+  })
+  if (!tenant) {
+    throw new Error(`Unknown tenant: ${tenantSlug}`)
+  }
+  await db.whatsappNumber.upsert({
+    where: { phoneNumberId },
+    update: { tenantId: tenant.id, label: label ?? null },
+    create: { phoneNumberId, tenantId: tenant.id, label: label ?? null },
+  })
 }
 
 /**

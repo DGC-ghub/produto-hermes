@@ -2,7 +2,7 @@ import { processIncomingMessage } from '../lib/conversation.server'
 import {
   type InboundMessage,
   parseInboundMessages,
-  resolveTenantSlugByPhoneNumberId,
+  resolveTenantSlugByPhoneNumber,
   sendWhatsAppMessage,
   verifyWebhookChallenge,
   verifyWebhookSignature,
@@ -24,7 +24,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 // motor do simulador e responde pela Cloud API. Roda em background (ver action).
 async function handleInbound(messages: InboundMessage[]): Promise<void> {
   for (const message of messages) {
-    const tenantSlug = resolveTenantSlugByPhoneNumberId(message.phoneNumberId)
+    const tenantSlug = await resolveTenantSlugByPhoneNumber(message.phoneNumberId)
     if (!tenantSlug) {
       console.warn('[whatsapp] número sem empresa mapeada:', message.phoneNumberId)
       continue

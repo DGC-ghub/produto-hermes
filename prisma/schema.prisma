@@ -17,10 +17,27 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  conversations Conversation[]
-  leads         Lead[]
-  tickets       Ticket[]
-  operators     Operator[]
+  conversations   Conversation[]
+  leads           Lead[]
+  tickets         Ticket[]
+  operators       Operator[]
+  whatsappNumbers WhatsappNumber[]
+}
+
+// Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
+// É por aqui que o webhook resolve o tenant de uma mensagem recebida — vindo do
+// BANCO, não de env, para adicionar um cliente sem redeploy. Ver plano 1.1.
+model WhatsappNumber {
+  id            String   @id @default(cuid())
+  phoneNumberId String   @unique
+  tenantId      String
+  label         String? // ajuda o operador a saber de qual número se trata
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
 }
 
 // Operador (atendente humano) de UMA empresa. O login identifica o operador e a
