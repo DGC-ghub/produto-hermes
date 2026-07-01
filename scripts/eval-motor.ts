@@ -146,6 +146,81 @@ const SCENARIOS: Scenario[] = [
     },
     porque: 'Deve usar o histórico (sábado 8h-13h) sem repetir tudo — coerência multi-turno.',
   },
+
+  // ── DGC Hub (software house) — rode com: EVAL_TENANT=dgc npm run eval:motor ──
+  {
+    id: 'dgc-interesse',
+    titulo: 'Interesse inicial',
+    tenant: 'dgc',
+    message: 'oi! vi que vocês fazem sistema. como funciona?',
+    porque:
+      'Deve explicar em 1-2 linhas o que a DGC faz e puxar pro diagnóstico, sem despejar tudo.',
+  },
+  {
+    id: 'dgc-preco',
+    titulo: 'Pergunta preço direto',
+    tenant: 'dgc',
+    message: 'quanto custa pra vocês fazerem um sistema pra minha empresa?',
+    porque:
+      'RAG deve trazer as faixas; deve citar a faixa e explicar que o valor fechado vem após o diagnóstico, sem cravar.',
+  },
+  {
+    id: 'dgc-dor',
+    titulo: 'Dor concreta (planilha/caos)',
+    tenant: 'dgc',
+    message:
+      'tenho uma distribuidora e controlo pedidos e estoque no papel e no whatsapp, tá um caos. dá pra automatizar?',
+    porque:
+      'Objetivo qualificar_lead: reconhecer a dor, explicar o diagnóstico e propor o próximo passo.',
+  },
+  {
+    id: 'dgc-prazo',
+    titulo: 'Pergunta prazo',
+    tenant: 'dgc',
+    message: 'e em quanto tempo fica pronto?',
+    porque: 'Não pode cravar prazo — depende do escopo/diagnóstico (está no FAQ).',
+  },
+  {
+    id: 'dgc-proposta-fechada',
+    titulo: 'Exige proposta com preço fechado',
+    tenant: 'dgc',
+    message: 'não quero diagnóstico, me manda logo uma proposta com preço fechado',
+    porque:
+      'Segurar e converter: explica que o valor fechado vem após o diagnóstico e oferece esse passo; não escala à toa.',
+  },
+  {
+    id: 'dgc-fora-escopo',
+    titulo: 'Pede algo fora do escopo',
+    tenant: 'dgc',
+    message: 'vocês fazem logo e artes pro meu instagram?',
+    porque:
+      'DGC faz sistemas/automação, não design/marketing. Deve esclarecer com honestidade, sem inventar.',
+  },
+  {
+    id: 'dgc-contrato',
+    titulo: 'Tema sensível: contrato',
+    tenant: 'dgc',
+    message: 'antes de tudo preciso ver as cláusulas do contrato de vocês',
+    porque: 'Gatilho sensível do tenant (contrato) → deve escalar pro humano.',
+    espera: { escala: true },
+  },
+  {
+    id: 'dgc-humano',
+    titulo: 'Pede um humano',
+    tenant: 'dgc',
+    message: 'prefiro falar com alguém do time de vocês',
+    porque: 'Pedido explícito de humano → escala (determinístico).',
+    espera: { escala: true },
+  },
+  {
+    id: 'dgc-processo',
+    titulo: 'Automatizar "processo" (não pode mais escalar à toa)',
+    tenant: 'dgc',
+    message: 'quero automatizar o processo de vendas da minha empresa',
+    porque:
+      'Após o fix (tirar "processo" dos gatilhos globais): lead quente deve ser QUALIFICADO, não escalado.',
+    espera: { escala: false },
+  },
 ]
 
 type Report = {
@@ -245,8 +320,13 @@ function renderCard(r: Report): string {
   ].join('\n')
 }
 
+// Filtro opcional por tenant: `EVAL_TENANT=dgc npm run eval:motor`.
+const ACTIVE_SCENARIOS = process.env.EVAL_TENANT
+  ? SCENARIOS.filter((s) => s.tenant === process.env.EVAL_TENANT)
+  : SCENARIOS
+
 describe('banco de provas do motor', () => {
-  for (const scenario of SCENARIOS) {
+  for (const scenario of ACTIVE_SCENARIOS) {
     it(`[${scenario.id}] ${scenario.titulo}`, async () => {
       const r = await runScenario(scenario)
       reports.push(r)

@@ -12,7 +12,11 @@ const REQUESTED_HUMAN_PHRASES = [
   'alguem do time',
 ]
 
-const SENSITIVE_PHRASES = ['contrato', 'lgpd', 'juridico', 'processo', 'dados pessoais']
+// Gatilhos sensíveis GLOBAIS (valem para todo tenant). "processo" saiu daqui: é
+// ambíguo — "processo judicial" é sensível, mas "processo de vendas/operacional" é
+// justamente o que uma software house atende, e escalava lead bom por engano. Quem
+// precisar dele (ex.: advogado) adiciona via TenantConfig.escalationPolicy.triggers.
+const SENSITIVE_PHRASES = ['contrato', 'lgpd', 'juridico', 'dados pessoais']
 
 function normalizeText(value: string): string {
   return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
