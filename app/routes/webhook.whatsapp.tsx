@@ -24,12 +24,15 @@ export async function loader({ request }: Route.LoaderArgs) {
 // motor do simulador e responde pela Cloud API. Roda em background (ver action).
 async function handleInbound(messages: InboundMessage[]): Promise<void> {
   for (const message of messages) {
-    const tenantSlug = await resolveTenantSlugByPhoneNumber(message.phoneNumberId)
-    if (!tenantSlug) {
-      console.warn('[whatsapp] número sem empresa mapeada:', message.phoneNumberId)
-      continue
-    }
+    // O resolve do tenant fica DENTRO do try: ele consulta o banco (pode falhar) e
+    // handleInbound roda como fire-and-forget (`void`), então uma exceção aqui viraria
+    // unhandled rejection e a mensagem se perderia sem log. Fail-safe: loga e segue.
     try {
+      const tenantSlug = await resolveTenantSlugByPhoneNumber(message.phoneNumberId)
+      if (!tenantSlug) {
+        console.warn('[whatsapp] número sem empresa mapeada:', message.phoneNumberId)
+        continue
+      }
       // contactId = telefone validado do canal (wa_id), NUNCA do form — fecha o item
       // de identity spoofing do SECURITY-BACKLOG.
       const result = await processIncomingMessage({
