@@ -1,7 +1,7 @@
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 import { db } from '../db.server'
-import { ensureInitialTenants } from './tenants.server'
+import { DEMO_TENANT_SLUGS, ensureInitialTenants } from './tenants.server'
 
 // Operadores (atendentes humanos) com senha. Hash via scrypt NATIVO do Node —
 // sem dependência externa. Cada operador pertence a um tenant; o login carrega
@@ -64,14 +64,25 @@ export async function authenticateOperator(
 }
 
 /**
- * Garante um operador por tenant demo (idempotente) — username = slug do tenant,
- * senha = `OPERATOR_SEED_PASSWORD` (default de dev). É a versão MVP do cadastro de
- * operadores; uma tela de gestão entra depois. Server-side.
+ * Garante um operador por tenant DE DEMONSTRAÇÃO (idempotente) — username = slug,
+ * senha = `OPERATOR_SEED_PASSWORD`. Tenant de cliente REAL fica de fora de
+ * propósito: cada cliente recebe credencial própria via `npm run operator:add`
+ * (senha compartilhada entre clientes era o bloqueio S2 do plano de entrega).
+ * Fail-closed em produção, como o SESSION_SECRET. Server-side.
  */
 export async function ensureSeedOperators(): Promise<void> {
   const tenants = await ensureInitialTenants()
-  const seedPassword = process.env.OPERATOR_SEED_PASSWORD ?? 'hermes-dev'
+  const seedPassword = process.env.OPERATOR_SEED_PASSWORD
+  if (!seedPassword && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'OPERATOR_SEED_PASSWORD é obrigatório em produção (senha dos operadores demo).',
+    )
+  }
+  const effectivePassword = seedPassword ?? 'hermes-dev'
   for (const tenant of tenants) {
+    if (!DEMO_TENANT_SLUGS.includes(tenant.slug)) {
+      continue
+    }
     const existing = await db.operator.findUnique({ where: { username: tenant.slug } })
     if (existing) {
       continue
@@ -79,7 +90,7 @@ export async function ensureSeedOperators(): Promise<void> {
     await db.operator.create({
       data: {
         username: tenant.slug,
-        passwordHash: await hashPassword(seedPassword),
+        passwordHash: await hashPassword(effectivePassword),
         tenantId: tenant.id,
       },
     })

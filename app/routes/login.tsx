@@ -4,7 +4,15 @@ import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
 import { createOperatorSession, getOperator, safeRedirect } from '../lib/auth.server'
 import { authenticateOperator, ensureSeedOperators } from '../lib/operators.server'
+import { checkRate, type RateState } from '../lib/rate-limit'
 import type { Route } from './+types/login'
+
+// Freio de força-bruta no login: teto GLOBAL de tentativas por janela (não dá pra
+// confiar em IP — atrás da ponte/funnel tudo chega como localhost). Um humano
+// digitando errado não encosta no teto; um script de força-bruta encosta em segundos.
+const LOGIN_MAX_ATTEMPTS = 15
+const LOGIN_WINDOW_MS = 60_000
+let loginRateState: RateState = { windowStart: 0, count: 0 }
 
 export async function loader({ request }: Route.LoaderArgs) {
   // Garante os operadores demo (idempotente) para o piloto/local funcionar.
@@ -18,6 +26,12 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
+  const rate = checkRate(Date.now(), loginRateState, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS)
+  loginRateState = rate.state
+  if (!rate.allowed) {
+    return { error: 'Muitas tentativas. Aguarde um minuto e tente de novo.' }
+  }
+
   const formData = await request.formData()
   const username = String(formData.get('username') ?? '').trim()
   const password = String(formData.get('password') ?? '')

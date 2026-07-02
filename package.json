@@ -11,6 +11,7 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "eval:motor": "vitest run --config vitest.eval.config.ts",
+    "operator:add": "npx tsx scripts/operator-add.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

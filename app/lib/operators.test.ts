@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { db } from '../db.server'
 import {
   authenticateOperator,
   ensureSeedOperators,
@@ -54,9 +55,34 @@ describe('authenticateOperator (integração com o banco)', () => {
     await ensureSeedOperators()
     // username é @unique no schema; rodar duas vezes não deve lançar nem duplicar.
     const ok = await authenticateOperator(
-      'prestacon',
+      'assistencia-tecnica-demo',
       process.env.OPERATOR_SEED_PASSWORD ?? 'hermes-dev',
     )
-    expect(ok?.tenantSlug).toBe('prestacon')
+    expect(ok?.tenantSlug).toBe('assistencia-tecnica-demo')
+  })
+
+  // Bloqueio S2 do plano de entrega: tenant de cliente REAL não nasce com a senha
+  // seed compartilhada — credencial dele só via `npm run operator:add`.
+  it('NÃO semeia operador para tenant de cliente real (prestacon/csmed)', async () => {
+    // Preserva a linha existente (o dono pode estar usando) e restaura no final.
+    const existing = await db.operator.findUnique({ where: { username: 'prestacon' } })
+    try {
+      if (existing) {
+        await db.operator.delete({ where: { username: 'prestacon' } })
+      }
+      await ensureSeedOperators()
+      expect(await db.operator.findUnique({ where: { username: 'prestacon' } })).toBeNull()
+    } finally {
+      if (existing) {
+        await db.operator.create({
+          data: {
+            id: existing.id,
+            username: existing.username,
+            passwordHash: existing.passwordHash,
+            tenantId: existing.tenantId,
+          },
+        })
+      }
+    }
   })
 })
