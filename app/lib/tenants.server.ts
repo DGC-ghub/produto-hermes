@@ -12,6 +12,12 @@ export const INITIAL_TENANTS = [
   { slug: 'csmed', name: 'Carvalho Serviços Médicos (CS MED)' },
 ] as const
 
+// Tenants expostos na DEMO PÚBLICA (/demo/chat, sem login). Lista EXPLÍCITA e
+// separada de INITIAL_TENANTS de propósito: registrar um cliente REAL no array
+// acima não pode publicá-lo na demo — visitante lendo a base do cliente e
+// escrevendo no banco de produção dele era o item 3 do SECURITY-BACKLOG.
+export const DEMO_TENANT_SLUGS: readonly string[] = ['dgc', 'assistencia-tecnica-demo']
+
 const SAFE_SLUG = /^[a-z0-9-]+$/
 
 /**

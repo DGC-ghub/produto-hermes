@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { ensureInitialTenants, ensureTenant, resolveTenant } from './tenants.server'
+import { DEMO_TENANT_SLUGS, ensureInitialTenants, ensureTenant, INITIAL_TENANTS, resolveTenant } from './tenants.server'
 
 const TEST_SLUG = 'zzz-test-tenant-task-9'
 
@@ -74,5 +74,19 @@ describe('resolveTenant', () => {
     const tenant = await resolveTenant('dgc')
     expect(tenant?.slug).toBe('dgc')
     expect(tenant?.name).toBe('DGC Hub')
+  })
+})
+
+describe('DEMO_TENANT_SLUGS', () => {
+  it('nunca expõe tenant de cliente real na demo pública', () => {
+    expect(DEMO_TENANT_SLUGS).not.toContain('csmed')
+    expect(DEMO_TENANT_SLUGS).not.toContain('prestacon')
+  })
+
+  it('só contém slugs que existem em INITIAL_TENANTS', () => {
+    const known = INITIAL_TENANTS.map((t) => t.slug) as readonly string[]
+    for (const slug of DEMO_TENANT_SLUGS) {
+      expect(known).toContain(slug)
+    }
   })
 })

@@ -7,11 +7,14 @@ import { Button } from '../components/ui/Button'
 import { db } from '../db.server'
 import { transcribeUploadedAudio } from '../lib/audio/upload.server'
 import { processIncomingMessage } from '../lib/conversation.server'
-import { ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
+import { DEMO_TENANT_SLUGS, ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
 import { conversationStatusMeta, cx } from '../lib/ui'
 import type { Route } from './+types/demo.chat'
 
-const ALLOWED_SLUGS: readonly string[] = INITIAL_TENANTS.map((tenant) => tenant.slug)
+// Só tenants de DEMONSTRAÇÃO nesta rota pública: cliente real nunca aparece aqui
+// (nem leitura da base dele, nem escrita anônima no banco de produção dele).
+const DEMO_TENANTS = INITIAL_TENANTS.filter((tenant) => DEMO_TENANT_SLUGS.includes(tenant.slug))
+const ALLOWED_SLUGS: readonly string[] = DEMO_TENANTS.map((tenant) => tenant.slug)
 const DEFAULT_SLUG = 'dgc'
 const RECENT_LIMIT = 10
 
@@ -69,7 +72,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   return {
     tenantSlug,
-    tenants: INITIAL_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
+    tenants: DEMO_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
     conversations: conversations.map((c) => ({
       id: c.id,
       contactId: c.contactId,
