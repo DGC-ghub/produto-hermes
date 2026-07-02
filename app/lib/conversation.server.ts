@@ -172,6 +172,49 @@ export async function processIncomingMessage(
     })
   }
 
+  // Guard-rail determinístico ANTES do cérebro — e com CURTO-CIRCUITO: pedido
+  // explícito de humano e tema sensível já decidem a resposta segura, então não
+  // pagamos a latência/custo do LLM nem executamos efeitos (lead/chamado) de uma
+  // proposta cuja resposta o cliente nunca veria.
+  const docs = await loadKnowledgeFromSource(config.knowledge.sourceDir)
+  const retrieved = retrieveRelevantChunks(message, docs)
+  const guard = decideHandoff({
+    message,
+    retrievedCount: retrieved.length,
+    extraSensitiveTriggers: config.escalationPolicy.triggers,
+  })
+  const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
+  if (guardForcesSafe) {
+    const reply = config.escalationPolicy.humanMessage
+    const assistantMessage = await db.message.create({
+      data: {
+        conversationId,
+        role: 'assistant',
+        content: reply,
+        confidence: 0,
+        sourcesJson: JSON.stringify([]),
+      },
+    })
+    await db.conversation.update({
+      where: { id: conversationId },
+      data: { status: 'needs_human' },
+    })
+    await db.handoffEvent.create({
+      data: { conversationId, reason: guard.reason ?? 'unknown', message },
+    })
+    return {
+      conversationId,
+      tenantSlug: input.tenantSlug,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      reply,
+      needsHuman: true,
+      handoffReason: guard.reason,
+      confidence: 0,
+      sources: [],
+    }
+  }
+
   const currentLead = await db.lead.findUnique({ where: { conversationId } })
 
   // Chamados SÓ deste contato (isolamento determinístico — o LLM nunca vê os de outros).
@@ -188,13 +231,6 @@ export async function processIncomingMessage(
   const enabledTools = config.tools
     .filter((tool) => tool.enabled)
     .map((tool) => ({ name: tool.name, limits: tool.limits }))
-  const docs = await loadKnowledgeFromSource(config.knowledge.sourceDir)
-  const retrieved = retrieveRelevantChunks(message, docs)
-  const guard = decideHandoff({
-    message,
-    retrievedCount: retrieved.length,
-    extraSensitiveTriggers: config.escalationPolicy.triggers,
-  })
 
   // O cérebro: atendente IA plugável. A saída já vem validada (com a policy do
   // tenant) e com fallback seguro se o provider falhar.
@@ -268,25 +304,17 @@ export async function processIncomingMessage(
     }
   }
 
-  // Camada de segurança determinística: só pedido explícito de humano e tema
-  // sensível forçam a resposta segura (com a mensagem de escalação do tenant).
-  const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
-  const useSafeReply = guardForcesSafe
-  const needsHuman = guardForcesSafe || decision.needsHuman
-  const handoffReason = needsHuman
-    ? guardForcesSafe
-      ? guard.reason
-      : (decision.handoffReason ?? 'unknown')
-    : undefined
-  const reply = useSafeReply ? config.escalationPolicy.humanMessage : decision.reply
-  const confidence = useSafeReply ? 0 : decision.confidence
-  const sources: ProcessIncomingMessageSource[] = useSafeReply
-    ? []
-    : retrieved.map((chunk) => ({
-        fileName: chunk.fileName,
-        title: chunk.title,
-        score: chunk.score,
-      }))
+  // Daqui pra baixo o guard não interfere (o curto-circuito acima já tratou os
+  // casos forçados): a decisão de escalar é do cérebro validado.
+  const needsHuman = decision.needsHuman
+  const handoffReason = needsHuman ? (decision.handoffReason ?? 'unknown') : undefined
+  const reply = decision.reply
+  const confidence = decision.confidence
+  const sources: ProcessIncomingMessageSource[] = retrieved.map((chunk) => ({
+    fileName: chunk.fileName,
+    title: chunk.title,
+    score: chunk.score,
+  }))
 
   const assistantMessage = await db.message.create({
     data: {
