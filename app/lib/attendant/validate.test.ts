@@ -41,6 +41,55 @@ describe('validateAttendantOutput', () => {
     expect(validateAttendantOutput({ ...good, reply: 'fica conserto garantido!' }).ok).toBe(false)
   })
 
+  // Negação: dizer que NÃO faz é a resposta certa, não uma promessa. O caso real é
+  // o csmed com 'diagnostico' em neverPromise — a base ENSINA a dizer "não fazemos
+  // diagnóstico pelo WhatsApp" e o validador derrubava a resposta certa pro fallback.
+  it('aceita a frase proibida quando NEGADA (ex.: "não fazemos diagnóstico")', () => {
+    const policy = { extraForbiddenClaims: ['diagnostico'] }
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Não fazemos diagnóstico pelo WhatsApp — a avaliação é presencial.' },
+        policy,
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Nunca damos diagnóstico por aqui, tá?' },
+        policy,
+      ).ok,
+    ).toBe(true)
+  })
+
+  it('continua rejeitando a frase proibida afirmativa', () => {
+    const policy = { extraForbiddenClaims: ['diagnostico'] }
+    expect(
+      validateAttendantOutput({ ...good, reply: 'O diagnóstico é bronquite leve.' }, policy).ok,
+    ).toBe(false)
+    expect(
+      validateAttendantOutput({ ...good, reply: 'Posso te passar o diagnóstico agora.' }, policy)
+        .ok,
+    ).toBe(false)
+  })
+
+  it('não deixa a negação de uma frase salvar OUTRA ocorrência afirmativa', () => {
+    const policy = { extraForbiddenClaims: ['diagnostico'] }
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Não cobramos consulta, mas o diagnóstico é gripe.' },
+        policy,
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('negação em sentença ANTERIOR não salva a afirmativa seguinte', () => {
+    expect(
+      validateAttendantOutput({
+        ...good,
+        reply: 'Não posso agendar hoje. O conserto garantido sai amanhã.',
+      }).ok,
+    ).toBe(false)
+  })
+
   it('exige motivo quando needsHuman é true', () => {
     expect(validateAttendantOutput({ ...good, needsHuman: true, handoffReason: null }).ok).toBe(
       false,

@@ -58,6 +58,32 @@ function normalize(value: string): string {
   return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 }
 
+// Negação ANTES da frase proibida, na mesma sentença e sem adversativa no meio:
+// "não fazemos diagnóstico" é a resposta CERTA (rejeitá-la derrubava a mensagem
+// inteira pro fallback — falso positivo grave no tenant de saúde), mas
+// "não posso agora, MAS garanto cura garantida" continua promessa.
+const NEGATION_BEFORE = /\b(?:nao|nunca|jamais|nem|sem)\b(?:(?!\b(?:mas|porem|contudo|entretanto)\b)[^.!?\n]){0,60}$/
+
+function claimIsNegated(normalizedReply: string, index: number): boolean {
+  return NEGATION_BEFORE.test(normalizedReply.slice(Math.max(0, index - 80), index))
+}
+
+/**
+ * A frase proibida aparece de forma AFIRMATIVA em algum lugar da resposta?
+ * Ocorrências negadas ("não fazemos X") não contam; basta uma afirmativa pra valer.
+ * Recebe reply e claim já normalizados.
+ */
+function hasAffirmativeClaim(normalizedReply: string, claim: string): boolean {
+  let index = normalizedReply.indexOf(claim)
+  while (index !== -1) {
+    if (!claimIsNegated(normalizedReply, index)) {
+      return true
+    }
+    index = normalizedReply.indexOf(claim, index + claim.length)
+  }
+  return false
+}
+
 // Sanitiza o leadPatch: mantém só as chaves permitidas com valor de texto, truncando
 // valores longos. Campos extras ou inválidos são IGNORADOS — nunca invalidam a resposta
 // inteira (o lead é enriquecimento, não o conteúdo principal).
@@ -176,7 +202,7 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
       ? [...FORBIDDEN_CLAIMS, ...policy.extraForbiddenClaims]
       : FORBIDDEN_CLAIMS
   for (const claim of forbidden) {
-    if (normalizedReply.includes(normalize(claim))) {
+    if (hasAffirmativeClaim(normalizedReply, normalize(claim))) {
       return { ok: false, reason: 'reply_promessa_proibida' }
     }
   }
