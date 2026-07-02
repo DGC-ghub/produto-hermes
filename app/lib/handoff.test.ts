@@ -79,4 +79,68 @@ describe('decideHandoff', () => {
       reason: 'sensitive_topic',
     })
   })
+
+  // Plural: a vertical saúde fala "dores", "sintomas", "exames" — o singular do
+  // config TEM que casar, senão o guard determinístico vira promessa falsa.
+  it('matches plural forms of tenant triggers (dor→dores, sintoma→sintomas)', () => {
+    const triggers = ['dor', 'sintoma', 'exame']
+    expect(
+      decideHandoff({
+        message: 'meu pai está com dores fortes no peito',
+        retrievedCount: 2,
+        extraSensitiveTriggers: triggers,
+      }).reason,
+    ).toBe('sensitive_topic')
+    expect(
+      decideHandoff({
+        message: 'quais sintomas devo observar?',
+        retrievedCount: 2,
+        extraSensitiveTriggers: triggers,
+      }).reason,
+    ).toBe('sensitive_topic')
+    expect(
+      decideHandoff({
+        message: 'preciso levar os exames?',
+        retrievedCount: 2,
+        extraSensitiveTriggers: triggers,
+      }).reason,
+    ).toBe('sensitive_topic')
+  })
+
+  it('matches plural inside a multi-word trigger (dor no peito→dores no peito)', () => {
+    expect(
+      decideHandoff({
+        message: 'estou com dores no peito',
+        retrievedCount: 2,
+        extraSensitiveTriggers: ['dor no peito'],
+      }).reason,
+    ).toBe('sensitive_topic')
+  })
+
+  it('does not throw (nor match everything) when a trigger has regex metachars', () => {
+    const decision = decideHandoff({
+      message: 'mensagem qualquer sem gatilho',
+      retrievedCount: 2,
+      extraSensitiveTriggers: ['pressao (alta)', 'c++', 'valor?'],
+    })
+    expect(decision).toEqual({ needsHuman: false })
+    // E o trigger com metachar continua ALCANÇÁVEL, casando literalmente.
+    expect(
+      decideHandoff({
+        message: 'minha pressao (alta) voltou',
+        retrievedCount: 2,
+        extraSensitiveTriggers: ['pressao (alta)'],
+      }).reason,
+    ).toBe('sensitive_topic')
+  })
+
+  it('ignores empty/whitespace triggers instead of matching everything', () => {
+    expect(
+      decideHandoff({
+        message: 'mensagem qualquer',
+        retrievedCount: 2,
+        extraSensitiveTriggers: ['', '   '],
+      }),
+    ).toEqual({ needsHuman: false })
+  })
 })

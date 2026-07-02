@@ -22,10 +22,33 @@ function normalizeText(value: string): string {
   return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 }
 
+// Escapa metacaracteres de regex — um trigger de tenant com '(' ou '+' no JSON não
+// pode derrubar o guard de TODA mensagem (mesmo padrão do lead.ts).
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 // Match por palavra inteira: evita falso positivo de substring (ex.: 'pessoa' dentro de
 // 'dados pessoais'/'pessoal'), garantindo que todos os gatilhos sejam alcançáveis.
+// Tolera plural simples em cada palavra ('dor'→'dores', 'exame'→'exames', 'dor no
+// peito'→'dores no peito'): a vertical saúde fala no plural, e sem isto o guard
+// determinístico viraria promessa falsa. Plural irregular (medicação→medicações)
+// entra como trigger explícito no config do tenant.
 function includesAny(value: string, phrases: string[]): boolean {
-  return phrases.some((phrase) => new RegExp(`\\b${phrase}\\b`).test(value))
+  return phrases.some((phrase) => {
+    const words = phrase
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word.length > 0)
+      .map(escapeRegex)
+    if (words.length === 0) {
+      return false
+    }
+    const pattern = words.map((word) => `${word}(?:e?s)?`).join('\\s+')
+    // Lookarounds em vez de \b: \b falha quando a borda do trigger é um símbolo
+    // (ex.: 'pressao (alta)' termina em ')'). Pra palavras, o efeito é o mesmo.
+    return new RegExp(`(?<!\\w)${pattern}(?!\\w)`).test(value)
+  })
 }
 
 /**
