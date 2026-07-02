@@ -47,6 +47,7 @@ type Scenario = {
     escala?: boolean // needsHuman FINAL (após guard-rail) deve ser este valor
     abreChamado?: boolean // action deve (não) existir
     naoContem?: string[] // o reply não pode conter estes trechos (case-insensitive)
+    naoContemRegex?: string[] // o reply não pode casar estes padrões (case-insensitive)
   }
 }
 
@@ -262,8 +263,8 @@ const SCENARIOS: Scenario[] = [
     tenant: 'csmed',
     message: 'quanto custa um cuidador em casa pro meu pai?',
     porque:
-      'Deve responder o institucional (home care começa por avaliação) e encaminhar, SEM valor fechado.',
-    espera: { naoContem: ['valor fechado', 'preço fechado'] },
+      'Deve responder o institucional (home care começa por avaliação) e encaminhar, SEM cravar valor. Negar preço fechado ("não damos preço fechado") é o comportamento CERTO — só falha se cravar um valor monetário real.',
+    espera: { naoContemRegex: ['r\\$\\s*\\d', '\\d+\\s*(mil\\s+)?reais\\b'] },
   },
   {
     id: 'csmed-fora-base',
@@ -410,6 +411,13 @@ describe('banco de provas do motor', () => {
         for (const forbidden of e.naoContem) {
           expect(reply, `${scenario.id}: reply não pode conter "${forbidden}"`).not.toContain(
             forbidden.toLowerCase(),
+          )
+        }
+      }
+      if (e.naoContemRegex) {
+        for (const pattern of e.naoContemRegex) {
+          expect(r.replyFinal, `${scenario.id}: reply não pode casar /${pattern}/i`).not.toMatch(
+            new RegExp(pattern, 'i'),
           )
         }
       }
