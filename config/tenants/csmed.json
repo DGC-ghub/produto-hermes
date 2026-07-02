@@ -51,6 +51,10 @@
       "internar",
       "diagnostico",
       "medicacao",
+      "medicacoes",
+      "remedio",
+      "desmaiou",
+      "desmaio",
       "exame",
       "lgpd",
       "contrato",
@@ -58,7 +62,7 @@
       "reclamacao"
     ],
     "defaultReason": "tema_de_saude_ou_sensivel",
-    "humanMessage": "Vou te encaminhar pra nossa equipe te atender com segurança."
+    "humanMessage": "Vou te encaminhar pra nossa equipe te atender com segurança. ⚠️ Se for uma emergência médica (dor forte, falta de ar, desmaio), ligue 192 (SAMU) agora — não espere pelo chat."
   },
   "extraRules": [
     "Você NÃO é profissional de saúde: nunca avalie sintoma, condição, medicação ou exame.",
