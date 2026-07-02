@@ -146,8 +146,9 @@ código.
 - [x] **Armar os alarmes**: `ALARM_WEBHOOK_URL` → ntfy (tópico `hermes-dgc-c59f3705`, provado
       ponta a ponta) + alarme quando `sendWhatsAppMessage` devolve `false`. *(C1)*
       ✅ *feito em 2026-07-02 — falta VOCÊ assinar o tópico no app ntfy do celular*
-- [ ] **Monitor externo grátis** (UptimeRobot/healthchecks.io) no GET do webhook — precisa de
-      conta, tarefa do dono. *(C1)*
+- [x] **Monitor externo grátis** (UptimeRobot, tipo *keyword* = `Forbidden` na URL pública do
+      webhook) — verde. Alerta por e-mail se a cadeia Pi→serviço→funnel→internet cair. *(C1)*
+      ✅ *2026-07-02*
 - [x] **Mitigar latência em minutos**: `ATTENDANT_TIMEOUT_MS=45000` no `.env` (pior caso medido
       era 30,7s) — elimina o fallback falso por timeout. *(M1 parcial)* ✅ *2026-07-02*
 - [x] **Curto-circuito do guard**: `requested_human`/`sensitive_topic` retornam a resposta segura
