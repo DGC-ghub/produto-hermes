@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type AlarmState, decideAlarm, formatAlarm } from './alarm.server'
+import { type AlarmState, decideAlarm, formatAlarm, formatSensitiveAlarm } from './alarm.server'
 
 const COOLDOWN = 10 * 60 * 1000 // 10 min
 const fresh: AlarmState = { lastSentAt: null, suppressed: 0 }
@@ -50,5 +50,17 @@ describe('formatAlarm', () => {
     expect(message).toContain('envio_whatsapp_falhou')
     expect(message).toContain('SEM resposta')
     expect(message).not.toContain('fallback')
+  })
+})
+
+describe('formatSensitiveAlarm', () => {
+  it('identifica o tenant e manda abrir a Central, sem conteúdo da conversa', () => {
+    const message = formatSensitiveAlarm('csmed', 0)
+    expect(message).toContain('csmed')
+    expect(message).toContain('/atendente')
+  })
+
+  it('conta as escalações suprimidas no intervalo', () => {
+    expect(formatSensitiveAlarm('csmed', 2)).toContain('+2')
   })
 })

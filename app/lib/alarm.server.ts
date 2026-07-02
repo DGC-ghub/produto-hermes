@@ -48,8 +48,55 @@ export function formatAlarm(reason: string, suppressed: number): string {
   return `[ALARM] Hermes degradou: o motor caiu no fallback (${reason})${extra}. O cliente recebeu a resposta genérica — verifique o claude_cli/credenciais.`
 }
 
+/**
+ * Mensagem do alarme de handoff SENSÍVEL (pura). Sem conteúdo da conversa — PII não
+ * sai do banco; o operador abre a Central pra ver.
+ */
+export function formatSensitiveAlarm(tenantSlug: string, suppressed: number): string {
+  const extra = suppressed > 0 ? ` (+${suppressed} escalação(ões) no intervalo)` : ''
+  return `🚨 [ALARM] Escalação SENSÍVEL no tenant ${tenantSlug}${extra} — pode ser emergência de saúde. Abra a Central (/atendente) agora.`
+}
+
 // Estado do throttle no processo (single-instance no Pi). Cada reinício zera.
 let state: AlarmState = { lastSentAt: null, suppressed: 0 }
+
+// Throttle PRÓPRIO do alarme sensível (não divide cooldown com degradação: um
+// não pode silenciar o outro) e mais curto — emergência não espera 10 min.
+const DEFAULT_SENSITIVE_COOLDOWN_MS = 2 * 60 * 1000
+let sensitiveState: AlarmState = { lastSentAt: null, suppressed: 0 }
+
+function sensitiveCooldownMs(): number {
+  const raw = Number(process.env.ALARM_SENSITIVE_COOLDOWN_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SENSITIVE_COOLDOWN_MS
+}
+
+/**
+ * Reporta um handoff sensível (ex.: gatilho de saúde no csmed). Mesmo contrato do
+ * reportDegradation: sempre loga, POST best-effort se ALARM_WEBHOOK_URL existir,
+ * nunca lança. Prioridade máxima no ntfy (fura o silencioso do celular).
+ */
+export async function reportSensitiveHandoff(tenantSlug: string): Promise<void> {
+  try {
+    const decision = decideAlarm(Date.now(), sensitiveState, sensitiveCooldownMs())
+    sensitiveState = decision.state
+    if (!decision.send) {
+      return
+    }
+    const message = formatSensitiveAlarm(tenantSlug, decision.suppressed)
+    console.error(message)
+
+    const url = process.env.ALARM_WEBHOOK_URL
+    if (url) {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain', Title: 'Escalação sensível', Priority: 'urgent' },
+        body: message,
+      }).catch(() => {})
+    }
+  } catch {
+    // engole tudo: alarme é secundário ao atendimento
+  }
+}
 
 /**
  * Reporta uma degradação do motor. SEMPRE loga um `[ALARM]` (visível no hermes.log)
@@ -80,7 +127,8 @@ export async function reportDegradation(reason: string): Promise<void> {
   }
 }
 
-/** Só para teste: reseta o throttle do processo. */
+/** Só para teste: reseta os throttles do processo. */
 export function __resetAlarmState(): void {
   state = { lastSentAt: null, suppressed: 0 }
+  sensitiveState = { lastSentAt: null, suppressed: 0 }
 }

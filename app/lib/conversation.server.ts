@@ -1,5 +1,5 @@
 import { db } from '../db.server'
-import { reportDegradation } from './alarm.server'
+import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
 import { generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
 import { loadTenantConfig, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
@@ -185,6 +185,11 @@ export async function processIncomingMessage(
   })
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
   if (guardForcesSafe) {
+    // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma
+    // emergência esperando na fila. Push no celular do operador (best-effort).
+    if (guard.reason === 'sensitive_topic') {
+      void reportSensitiveHandoff(input.tenantSlug)
+    }
     const reply = config.escalationPolicy.humanMessage
     const assistantMessage = await db.message.create({
       data: {
