@@ -1,3 +1,4 @@
+import { reportDegradation } from '../lib/alarm.server'
 import { processIncomingMessage } from '../lib/conversation.server'
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import {
@@ -47,7 +48,12 @@ async function handleInbound(messages: InboundMessage[]): Promise<void> {
       })
       // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
       if (result.reply.trim().length > 0) {
-        await sendWhatsAppMessage(message.from, result.reply, message.phoneNumberId)
+        const sent = await sendWhatsAppMessage(message.from, result.reply, message.phoneNumberId)
+        // Falha de envio não pode ser silenciosa: a resposta existe mas o cliente
+        // ficou sem ela — alarma o operador (best-effort, com o throttle do alarme).
+        if (!sent) {
+          void reportDegradation('envio_whatsapp_falhou')
+        }
       }
     } catch (error) {
       console.error(

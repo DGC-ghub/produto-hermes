@@ -42,6 +42,9 @@ export function decideAlarm(
 /** Mensagem do alarme (pura). Inclui os disparos suprimidos no intervalo. */
 export function formatAlarm(reason: string, suppressed: number): string {
   const extra = suppressed > 0 ? ` (+${suppressed} falha(s) suprimida(s) no intervalo)` : ''
+  if (reason === 'envio_whatsapp_falhou') {
+    return `[ALARM] Hermes gerou a resposta mas o ENVIO pelo WhatsApp falhou (envio_whatsapp_falhou)${extra}. O cliente ficou SEM resposta — verifique token/número no painel da Meta (detalhe no hermes.log).`
+  }
   return `[ALARM] Hermes degradou: o motor caiu no fallback (${reason})${extra}. O cliente recebeu a resposta genérica — verifique o claude_cli/credenciais.`
 }
 

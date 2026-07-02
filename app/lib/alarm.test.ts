@@ -44,4 +44,11 @@ describe('formatAlarm', () => {
   it('não menciona suprimidos quando for zero', () => {
     expect(formatAlarm('provider_error', 0)).not.toContain('suprimida')
   })
+
+  it('falha de ENVIO tem mensagem própria (cliente ficou sem resposta, não fallback)', () => {
+    const message = formatAlarm('envio_whatsapp_falhou', 0)
+    expect(message).toContain('envio_whatsapp_falhou')
+    expect(message).toContain('SEM resposta')
+    expect(message).not.toContain('fallback')
+  })
 })
