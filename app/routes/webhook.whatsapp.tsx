@@ -1,15 +1,11 @@
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
-import { drainPending, persistInbound, startQueueSweeper } from '../lib/whatsapp-queue.server'
+import { drainPending, persistInbound } from '../lib/whatsapp-queue.server'
 import {
   parseInboundMessages,
   verifyWebhookChallenge,
   verifyWebhookSignature,
 } from '../lib/whatsapp.server'
 import type { Route } from './+types/webhook.whatsapp'
-
-// O sweeper retoma eventos pendentes de antes de um restart, mesmo sem POST novo.
-// Módulo de rota é importado no boot do build de produção → liga junto do servidor.
-startQueueSweeper()
 
 // Teto global do webhook público (o app vê tudo como localhost atrás da ponte, então
 // não dá pra limitar por IP). Estado no processo — zera a cada reinício do serviço.

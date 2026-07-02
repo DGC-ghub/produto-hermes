@@ -148,3 +148,9 @@ export function startQueueSweeper(): void {
   timer.unref()
   globalThis.__hermesQueueSweeper = timer
 }
+
+// Auto-início na carga do módulo: este arquivo é .server (nunca vai pro client) e
+// é importado pela rota do webhook, que o build de produção carrega no boot — o
+// sweeper liga junto do servidor. Chamar da ROTA quebrava o build (módulo server
+// referenciado em escopo de client). Em teste/dev o timer é unref'd: inofensivo.
+startQueueSweeper()
