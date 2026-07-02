@@ -153,8 +153,11 @@ código.
 - [x] **Curto-circuito do guard**: `requested_human`/`sensitive_topic` retornam a resposta segura
       SEM chamar o LLM e sem executar lead/chamado da proposta descartada (mata o
       chamado-fantasma junto). Testes em `conversation.guard.test.ts`. ✅ *2026-07-02*
-- [ ] **`hermes.service` → build de produção**: `npm run build` + `npm start` com
-      `EnvironmentFile=` no unit; consertar o carregamento de `.env` fora do dev. *(C3)*
+- [x] **`hermes.service` → build de produção**: unit roda `node --env-file-if-exists=.env
+      server.js` (`NODE_ENV=production`), servindo o build congelado por HTTPS na 5173 —
+      topologia pública intacta (mesmo funnel, cookie Secure e mic preservados). `.env` via Node
+      nativo (some o gancho do vite-só-em-dev). Provado E2E: handshake da Meta pela URL pública →
+      200. Unit versionado em `deploy/`. *(C3)* ✅ *2026-07-02*
 - [x] **Commitar o que está solto**: `scripts/eval-motor.ts`, `docs/onboarding-colaborador.md`,
       `docs/tarefas/`. ✅ *2026-07-02*
 - [ ] **Decidir a estratégia de merge da branch** (69 commits à frente da main) — decisão do dono.
