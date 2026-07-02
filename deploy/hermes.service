@@ -1,0 +1,28 @@
+[Unit]
+Description=Hermes — atendente WhatsApp (build de produção, HTTPS)
+After=network-online.target
+Wants=network-online.target
+# Sem limite de burst: queremos que ele SEMPRE tente voltar.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/projects/produto-hermes
+# PATH precisa incluir ~/.local/bin senão o app não acha o binário `claude`
+# (o cérebro real) e toda mensagem cai no fallback "vou marcar uma pessoa".
+Environment=PATH=/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin
+# production: liga o build certo do React e o cookie Secure do operador (servimos
+# HTTPS). Precisa estar no ambiente ANTES do node avaliar os módulos (por isso aqui,
+# não só no process.env dentro do server.js).
+Environment=NODE_ENV=production
+# node direto (não `npm start`) pra o SIGTERM do systemd chegar limpo no processo e
+# o server.js encerrar o HTTPS de forma ordenada. O .env é carregado pelo Node nativo.
+ExecStart=/usr/bin/node --env-file-if-exists=.env server.js
+Restart=always
+RestartSec=5
+# Log em arquivo (o journald de usuário não persiste neste Pi) para diagnóstico.
+StandardOutput=append:/home/pi/projects/produto-hermes/hermes.log
+StandardError=append:/home/pi/projects/produto-hermes/hermes.log
+
+[Install]
+WantedBy=default.target
