@@ -1,15 +1,15 @@
-import { reportDegradation } from '../lib/alarm.server'
-import { processIncomingMessage } from '../lib/conversation.server'
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
+import { drainPending, persistInbound, startQueueSweeper } from '../lib/whatsapp-queue.server'
 import {
-  type InboundMessage,
   parseInboundMessages,
-  resolveTenantSlugByPhoneNumber,
-  sendWhatsAppMessage,
   verifyWebhookChallenge,
   verifyWebhookSignature,
 } from '../lib/whatsapp.server'
 import type { Route } from './+types/webhook.whatsapp'
+
+// O sweeper retoma eventos pendentes de antes de um restart, mesmo sem POST novo.
+// Módulo de rota é importado no boot do build de produção → liga junto do servidor.
+startQueueSweeper()
 
 // Teto global do webhook público (o app vê tudo como localhost atrás da ponte, então
 // não dá pra limitar por IP). Estado no processo — zera a cada reinício do serviço.
@@ -26,47 +26,10 @@ export async function loader({ request }: Route.LoaderArgs) {
   return new Response('Forbidden', { status: 403 })
 }
 
-// Processa as mensagens recebidas: resolve a empresa pelo número, chama o MESMO
-// motor do simulador e responde pela Cloud API. Roda em background (ver action).
-async function handleInbound(messages: InboundMessage[]): Promise<void> {
-  for (const message of messages) {
-    // O resolve do tenant fica DENTRO do try: ele consulta o banco (pode falhar) e
-    // handleInbound roda como fire-and-forget (`void`), então uma exceção aqui viraria
-    // unhandled rejection e a mensagem se perderia sem log. Fail-safe: loga e segue.
-    try {
-      const tenantSlug = await resolveTenantSlugByPhoneNumber(message.phoneNumberId)
-      if (!tenantSlug) {
-        console.warn('[whatsapp] número sem empresa mapeada:', message.phoneNumberId)
-        continue
-      }
-      // contactId = telefone validado do canal (wa_id), NUNCA do form — fecha o item
-      // de identity spoofing do SECURITY-BACKLOG.
-      const result = await processIncomingMessage({
-        tenantSlug,
-        message: message.text,
-        contactId: message.from,
-      })
-      // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
-      if (result.reply.trim().length > 0) {
-        const sent = await sendWhatsAppMessage(message.from, result.reply, message.phoneNumberId)
-        // Falha de envio não pode ser silenciosa: a resposta existe mas o cliente
-        // ficou sem ela — alarma o operador (best-effort, com o throttle do alarme).
-        if (!sent) {
-          void reportDegradation('envio_whatsapp_falhou')
-        }
-      }
-    } catch (error) {
-      console.error(
-        '[whatsapp] erro ao processar mensagem:',
-        error instanceof Error ? error.message : error,
-      )
-    }
-  }
-}
-
-// POST — mensagens recebidas. Valida a assinatura, então processa em BACKGROUND e
-// devolve 200 imediatamente: a Meta tem timeout curto e a IA pode levar ~15s; sem
-// isto a Meta reenviaria o evento. (Produção: trocar o fire-and-forget por uma fila.)
+// POST — mensagens recebidas. Valida a assinatura, PERSISTE os eventos (dedup por
+// wamid) e só então devolve 200: a Meta tem timeout curto e a IA pode levar ~20s.
+// O processamento sai da fila (drainPending) — restart não perde mensagem e
+// redelivery não gera resposta dupla.
 export async function action({ request }: Route.ActionArgs) {
   // Anti-flood: rejeita o excesso ANTES de ler o corpo ou validar assinatura (barato).
   const { max, windowMs } = rateConfig()
@@ -92,6 +55,9 @@ export async function action({ request }: Route.ActionArgs) {
     return new Response('Bad payload', { status: 400 })
   }
 
-  void handleInbound(parseInboundMessages(payload))
+  // Persistir ANTES do 200: se falhar (ex.: banco fora), a Meta recebe 500 e
+  // REENVIA depois — melhor um retry da Meta do que uma mensagem perdida.
+  await persistInbound(parseInboundMessages(payload))
+  void drainPending()
   return new Response('EVENT_RECEIVED', { status: 200 })
 }

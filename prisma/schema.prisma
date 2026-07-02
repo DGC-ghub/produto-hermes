@@ -128,3 +128,20 @@ model Ticket {
 
   @@index([tenantId, contactId])
 }
+
+// Evento recebido do webhook do WhatsApp, persistido ANTES do 200 pra Meta:
+// restart no meio do processamento não perde mensagem (a fila retoma), e o
+// @unique no messageId (wamid) mata resposta duplicada em redelivery.
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  messageId     String    @unique // wamid da Meta — dedup de redelivery
+  phoneNumberId String // número da empresa que recebeu → resolve o tenant
+  contactId     String // wa_id do remetente
+  text          String
+  status        String    @default("pending") // pending | done | failed
+  attempts      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  processedAt   DateTime?
+
+  @@index([status, createdAt])
+}
