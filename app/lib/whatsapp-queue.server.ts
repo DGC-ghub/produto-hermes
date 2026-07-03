@@ -35,6 +35,7 @@ export async function persistInbound(messages: InboundMessage[]): Promise<number
           phoneNumberId: message.phoneNumberId,
           contactId: message.from,
           text: message.text,
+          kind: message.kind,
         },
       })
       created += 1
@@ -49,12 +50,31 @@ export async function persistInbound(messages: InboundMessage[]): Promise<number
   return created
 }
 
+// Resposta de cortesia pra áudio/mídia — melhor que o vácuo que o público de home
+// care recebia. A transcrição de verdade (whisper) entra na 2ª quinzena de agosto.
+const UNSUPPORTED_MEDIA_REPLY =
+  'Recebi seu áudio/arquivo 🙏 Por enquanto eu só consigo ler mensagens de TEXTO por aqui — pode escrever o que você precisa?'
+
 async function processEvent(event: {
   id: string
   phoneNumberId: string
   contactId: string
   text: string
+  kind: string
 }): Promise<void> {
+  // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
+  // o conteúdo real a gente ainda não lê, então não há o que registrar.
+  if (event.kind === 'unsupported') {
+    const sent = await sendWhatsAppMessage(
+      event.contactId,
+      UNSUPPORTED_MEDIA_REPLY,
+      event.phoneNumberId,
+    )
+    if (!sent) {
+      void reportDegradation('envio_whatsapp_falhou')
+    }
+    return
+  }
   const tenantSlug = await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
   if (!tenantSlug) {
     throw new Error(`número sem empresa mapeada: ${event.phoneNumberId}`)

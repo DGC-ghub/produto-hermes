@@ -138,6 +138,7 @@ model WebhookEvent {
   phoneNumberId String // número da empresa que recebeu → resolve o tenant
   contactId     String // wa_id do remetente
   text          String
+  kind          String    @default("text") // text (roda o motor) | unsupported (cortesia)
   status        String    @default("pending") // pending | processing | done | failed
   attempts      Int       @default(0)
   createdAt     DateTime  @default(now())

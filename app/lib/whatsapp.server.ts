@@ -54,14 +54,23 @@ export function verifyWebhookSignature(rawBody: string, signatureHeader: string 
 
 export type InboundMessage = {
   from: string // wa_id do cliente (telefone validado) -> contactId
-  text: string // corpo da mensagem de texto
+  text: string // corpo da mensagem de texto ('' quando kind='unsupported')
   phoneNumberId: string // número da EMPRESA que recebeu -> resolve o tenant
   messageId: string
+  // 'text' roda o motor; 'unsupported' (áudio/mídia) ganha a resposta de cortesia
+  // "por aqui só leio texto" — o cliente NUNCA recebe vácuo.
+  kind: 'text' | 'unsupported'
+  mediaType?: string // tipo original da Meta quando unsupported (audio, image...)
 }
 
+// Tipos que ganham a auto-resposta de cortesia. Reação, status e localização ficam
+// DE FORA de propósito: auto-responder um 👍 é pior que silêncio.
+const UNSUPPORTED_REPLY_TYPES = ['audio', 'voice', 'image', 'video', 'document', 'sticker']
+
 /**
- * Extrai as mensagens de TEXTO de um payload de webhook da Meta. Ignora o que não
- * for texto (status, mídia etc.). Função pura e defensiva — entrada é JSON externo.
+ * Extrai as mensagens de um payload de webhook da Meta: texto (kind='text') e
+ * mídia que merece resposta de cortesia (kind='unsupported'). Status/reação/etc.
+ * continuam ignorados. Função pura e defensiva — entrada é JSON externo.
  */
 export function parseInboundMessages(payload: unknown): InboundMessage[] {
   const result: InboundMessage[] = []
@@ -77,8 +86,19 @@ export function parseInboundMessages(payload: unknown): InboundMessage[] {
         const msg = asRecord(rawMsg)
         const from = asString(msg?.from)
         const text = asString(asRecord(msg?.text)?.body)
-        if (msg?.type === 'text' && from && text) {
-          result.push({ from, text, phoneNumberId, messageId: asString(msg?.id) ?? '' })
+        const type = asString(msg?.type)
+        const messageId = asString(msg?.id) ?? ''
+        if (type === 'text' && from && text) {
+          result.push({ from, text, phoneNumberId, messageId, kind: 'text' })
+        } else if (type && from && UNSUPPORTED_REPLY_TYPES.includes(type)) {
+          result.push({
+            from,
+            text: '',
+            phoneNumberId,
+            messageId,
+            kind: 'unsupported',
+            mediaType: type,
+          })
         }
       }
     }

@@ -17,6 +17,7 @@ function inbound(
     text: 'Quais são os preços dos serviços?',
     phoneNumberId: TEST_PHONE_ID,
     messageId,
+    kind: 'text' as const,
     ...overrides,
   }
 }
@@ -90,6 +91,25 @@ describe('drainPending', () => {
       orderBy: { createdAt: 'asc' },
     })
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant'])
+  })
+
+  // Áudio/mídia: cortesia sem motor — marca done e NÃO cria conversa (o conteúdo
+  // real ainda não é lido; a transcrição entra na 2ª quinzena de agosto).
+  it('evento unsupported (áudio) vira done sem rodar o motor nem criar conversa', async () => {
+    await persistInbound([
+      inbound('wamid.test-audio-1', { kind: 'unsupported' as const, text: '' }),
+    ])
+    await drainPending()
+
+    const event = await db.webhookEvent.findUnique({
+      where: { messageId: 'wamid.test-audio-1' },
+    })
+    expect(event?.status).toBe('done')
+
+    const conversations = await db.conversation.findMany({
+      where: { contactId: TEST_CONTACT_ID },
+    })
+    expect(conversations.length).toBe(0)
   })
 
   it('evento sem tenant mapeado fica pending com retry e vira failed no teto', async () => {

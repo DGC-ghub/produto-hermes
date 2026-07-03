@@ -134,6 +134,44 @@ describe('parseInboundMessages', () => {
     expect(parseInboundMessages({})).toEqual([])
     expect(parseInboundMessages({ entry: 'nope' })).toEqual([])
   })
+
+  function mediaPayload(type: string) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: 'PHONE_123' },
+                messages: [{ from: '5511988887777', id: 'wamid.MEDIA', type, [type]: {} }],
+              },
+            },
+          ],
+        },
+      ],
+    }
+  }
+
+  // Áudio era descartado em SILÊNCIO — o cliente recebia vácuo. Agora vira evento
+  // 'unsupported' que ganha a resposta de cortesia na fila.
+  it('extrai áudio/imagem/documento como unsupported (com dedup id)', () => {
+    for (const type of ['audio', 'image', 'document']) {
+      const result = parseInboundMessages(mediaPayload(type))
+      expect(result).toHaveLength(1)
+      expect(result[0].kind).toBe('unsupported')
+      expect(result[0].mediaType).toBe(type)
+      expect(result[0].messageId).toBe('wamid.MEDIA')
+      expect(result[0].text).toBe('')
+    }
+  })
+
+  it('mensagem de texto sai com kind=text', () => {
+    expect(parseInboundMessages(payload)[0].kind).toBe('text')
+  })
+
+  it('reação continua ignorada (auto-responder um 👍 é pior que silêncio)', () => {
+    expect(parseInboundMessages(mediaPayload('reaction'))).toHaveLength(0)
+  })
 })
 
 describe('resolveTenantSlugByPhoneNumberId', () => {
