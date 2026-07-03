@@ -1,0 +1,79 @@
+<svg width="680" height="352" viewBox="0 0 680 352" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Fluxo do sistema de faturamento da CSMed</title>
+<desc>As entradas (escala do escalaApp e procedimentos, com tres opcoes de coleta) alimentam um motor de conciliacao configurado pelos contratos, que passa por uma conferencia humana e gera o mapa de horas, a fatura do cliente e o repasse dos medicos.</desc>
+<style>
+  text{font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif}
+  .h{font-size:16px;font-weight:600;fill:#2C2C2A}
+  .lane{font-size:11px;font-weight:600;fill:#888780;letter-spacing:1.5px}
+  .bt{font-size:13px;font-weight:600;fill:#2C2C2A}
+  .st{font-size:11px;fill:#5F5E5A}
+  .opt{font-size:12px;font-weight:600;fill:#3C3489}
+  .optn{font-size:12px;font-weight:600;fill:#2C2C2A}
+  .cap{font-size:11px;fill:#888780}
+  .box{fill:#FFFFFF;stroke:#B4B2A9;stroke-width:1}
+  .eng{fill:#F1EFE8;stroke:#888780;stroke-width:1.5}
+  .chip{fill:#FFFFFF;stroke:#B4B2A9;stroke-width:1}
+  .chipA{fill:#EEEDFE;stroke:#7F77DD;stroke-width:1.5}
+</style>
+<rect x="0" y="0" width="680" height="352" fill="#FFFFFF"/>
+<defs>
+  <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#888780"/>
+  </marker>
+</defs>
+
+<text class="h" x="20" y="24">Do dado a fatura — como o sistema funcionaria</text>
+
+<text class="lane" x="20" y="50">ENTRADAS</text>
+<text class="lane" x="248" y="50">O SISTEMA</text>
+<text class="lane" x="474" y="50">SAIDAS</text>
+
+<rect class="box" x="20" y="60" width="190" height="48" rx="8"/>
+<text class="bt" x="32" y="80">Escala (escalaApp)</text>
+<text class="st" x="32" y="97">importa o Excel</text>
+
+<rect class="box" x="20" y="120" width="190" height="48" rx="8"/>
+<text class="bt" x="32" y="140">Procedimentos</text>
+<text class="st" x="32" y="157">coleta — decisao em aberto</text>
+
+<rect class="chipA" x="30" y="178" width="170" height="30" rx="6"/>
+<text class="opt" x="40" y="197">1 · Foto + IA le a tela</text>
+<rect class="chip" x="30" y="214" width="170" height="30" rx="6"/>
+<text class="optn" x="40" y="233">2 · Formulario rapido</text>
+<rect class="chip" x="30" y="250" width="170" height="30" rx="6"/>
+<text class="optn" x="40" y="269">3 · Export do hospital</text>
+
+<rect class="box" x="245" y="60" width="190" height="48" rx="8"/>
+<text class="bt" x="257" y="80">Contratos e regras</text>
+<text class="st" x="257" y="97">valores, periodo, coordenador</text>
+
+<rect class="eng" x="245" y="146" width="190" height="60" rx="8"/>
+<text class="bt" x="257" y="172">Motor de conciliacao</text>
+<text class="st" x="257" y="190">junta tudo num lugar so</text>
+
+<rect class="box" x="245" y="236" width="190" height="46" rx="8"/>
+<text class="bt" x="257" y="258">Conferencia (humano)</text>
+<text class="st" x="257" y="273">confere antes de faturar</text>
+
+<rect class="box" x="470" y="70" width="190" height="44" rx="8"/>
+<text class="bt" x="482" y="96">Mapa de horas</text>
+
+<rect class="box" x="470" y="126" width="190" height="52" rx="8"/>
+<text class="bt" x="482" y="149">Relatorio gerencial</text>
+<text class="st" x="482" y="166">fatura do cliente</text>
+
+<rect class="box" x="470" y="190" width="190" height="48" rx="8"/>
+<text class="bt" x="482" y="212">Repasse dos medicos</text>
+<text class="st" x="482" y="229">ja com os 70%</text>
+
+<path d="M210,84 C227,84 230,170 245,173" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M200,193 C224,193 227,179 245,178" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M340,108 L340,146" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M340,206 L340,236" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M435,250 C456,250 456,96 470,96" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M435,258 C458,258 460,150 470,150" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+<path d="M435,266 C456,266 457,212 470,212" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<rect class="chipA" x="20" y="300" width="14" height="14" rx="3"/>
+<text class="cap" x="42" y="311">Base recomendada — funciona sem depender do hospital. As 3 opcoes podem coexistir.</text>
+</svg>
