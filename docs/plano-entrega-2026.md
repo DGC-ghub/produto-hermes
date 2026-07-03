@@ -195,6 +195,21 @@ código.
 > demo pública sem ocorrência de tenant real; evento pendente sobreviveu a restart e foi
 > retomado pelo sweeper (motor real, 30s) com alarme de envio falho disparando no ntfy.
 
+**Pós-revisão adversarial (2026-07-03)** — 3 lentes + verificação cética sobre o diff inteiro;
+5 achados refutados (já corrigidos dentro da própria quinzena), 5 confirmados e corrigidos:
+- [x] Seed fail-closed de VALOR (recusa o default de dev e senha <12 em produção) + senha do
+      `.env` trocada + operadores demo rotacionados
+- [x] Lockout por username no login (só falhas contam; atacante trava a própria chave, não todos)
+- [x] 🔴 **Testes rodavam no banco de produção** (vitest caía no default `file:./dev.db`) —
+      agora `.test.db` descartável por suíte, criado no setup e apagado no teardown
+- [x] Claim atômico por linha na fila (`pending→processing` condicional) + `done` com retry
+      próprio (não reprocessa quem já foi respondido) + faxina de órfãos/zumbis + **banco de
+      produção migrado pra WAL** (leitor não bloqueia mais o escritor)
+- [x] Escopo da negação no `neverPromise` quebra em vírgula/conjunção ("Não fazemos X, e o
+      diagnóstico é Y" não passa mais)
+- Backlog baixa: senha do `operator:add` via argv fica no histórico do shell; validação de força
+  da senha fornecida.
+
 ### 1ª quinzena de agosto — 🤝 Piloto CS MED acordado + caminho crítico da Meta
 - [ ] **MARCO DE NEGÓCIO — reunião com a mãe do Danilo**: demo no simulador, confirmar a dor
       nº1, acordar piloto GRÁTIS com prazo (ex: 60 dias) e critério de sucesso combinado. Sem
@@ -359,6 +374,7 @@ Antes da 1ª cobrança, TODOS marcados:
 | Quando | Decisão |
 |---|---|
 | Julho | Estratégia de merge da branch `feat/danilo-tenant-csmed` (merge integral vs promover a main) |
+| Julho | Topologia do banco no Pi: mover o serviço pra arquivo próprio (ex.: `data/hermes.db`) vs disciplina de nunca rodar `npm run dev` com o serviço no ar (testes já estão isolados; o claim atômico protege a fila, mas dev e serviço ainda dividem o mesmo arquivo) |
 | 1ª quinz. agosto | Modelo WhatsApp: número sob a WABA da DGC vs WABA própria da CS MED |
 | 1ª quinz. agosto | Enquadramento do piloto: duração (30/60/90d), critério de sucesso, quem opera a Central |
 | Setembro | **Preço e modelo de cobrança** (flat vs faixa de conversas; desconto simbólico vs preço cheio pra CS MED) |

@@ -62,4 +62,4 @@ Guard-rails são determinísticos, no código — nunca confiados ao prompt.
 - `npm run dev` — roda o projeto local
 - `npm run typecheck` · `npm test` · `npm run lint` — checagens
 - `npm run build` — build de produção
-- `npx prisma migrate dev --name <x>` — cria/atualiza o banco
+- `npx prisma migrate dev --name <x>` — cria/atualiza o banco. **Depois rode `npx prisma generate`**: o client fica em `generated/prisma` (saída customizada) e NÃO regenera sozinho no migrate — sem isso o model novo chega `undefined` em runtime.
