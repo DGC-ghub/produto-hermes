@@ -134,6 +134,19 @@ describe('decideHandoff', () => {
     ).toBe('sensitive_topic')
   })
 
+  // 'pessoa' solto saiu dos gatilhos globais: no home care, "uma pessoa pra cuidar"
+  // é LEAD, não pedido de atendente. Pedido de gente exige contexto ('falar com...').
+  it('does not escalate "preciso de uma pessoa pra cuidar da minha mãe"', () => {
+    expect(decide('preciso de uma pessoa pra cuidar da minha mãe')).toEqual({
+      needsHuman: false,
+    })
+  })
+
+  it('still escalates explicit requests to talk to a person', () => {
+    expect(decide('posso falar com uma pessoa?').reason).toBe('requested_human')
+    expect(decide('quero falar com pessoas de verdade').reason).toBe('requested_human')
+  })
+
   it('ignores empty/whitespace triggers instead of matching everything', () => {
     expect(
       decideHandoff({

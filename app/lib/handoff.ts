@@ -4,10 +4,14 @@ export type HandoffDecision = {
 }
 
 // Gatilhos já em forma normalizada (minúsculas, sem acento), pois a mensagem é normalizada antes do match.
+// 'pessoa' solto SAIU: no home care (csmed), "preciso de uma pessoa pra cuidar da
+// minha mãe" é o lead mais valioso do tenant — escalar isso como pedido de humano
+// sequestrava a venda. Pedido de gente vira frase com contexto ('falar com...').
 const REQUESTED_HUMAN_PHRASES = [
   'humano',
   'atendente',
-  'pessoa',
+  'falar com pessoa',
+  'falar com uma pessoa',
   'falar com alguem',
   'alguem do time',
 ]
