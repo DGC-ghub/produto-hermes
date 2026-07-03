@@ -2,8 +2,13 @@
 
 > Ordem de **construção** (≠ ordem de prioridade): a base precisa existir antes da IA.
 
-## Fase 0 — Base (encanamento)
-Conectar no WhatsApp (API oficial da Meta) + receber/enviar mensagem. Sem isso, nada funciona.
+## Fase 0 — MVP simulado antes do WhatsApp real
+Antes da API oficial da Meta, criar simulador web para provar conversa, base de conhecimento, RAG simples, guardrails, lead e handoff.
+
+Plano detalhado: `docs/plano-tecnico-mvp-simulado.md`.
+
+## Fase 0.1 — Base WhatsApp (encanamento real)
+Conectar no WhatsApp (API oficial da Meta) + receber/enviar mensagem. Sem isso, o produto vendido não funciona, mas isso entra depois do simulador para evitar bloquear a demo em custo/aprovação.
 
 ## Fase 1 — Núcleo: Hermes (IA)  ⭐ prioridade nº1
 IA atendendo via base de conhecimento (RAG): tirar dúvidas + vender. Passagem pra humano mínima e configurável.

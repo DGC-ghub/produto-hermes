@@ -8,7 +8,7 @@ Negócios pequenos atendem no WhatsApp manualmente: não escala, demora e perde 
 ## Público
 - Pequenos/médios negócios que vendem e atendem por WhatsApp.
 - 1º usuário: a própria DGC (dogfooding).
-- _(Em aberto: focar num nicho específico no começo?)_
+- Nicho inicial de demo: **serviços locais com agendamento/orçamento via WhatsApp**, começando por **assistência técnica / serviço residencial** para reduzir risco LGPD e facilitar demonstração.
 
 ## O que o produto faz
 Prioridade do Gabriel: **IA > CRM > caixa de entrada > campanhas**.
@@ -31,9 +31,12 @@ Prioridade do Gabriel: **IA > CRM > caixa de entrada > campanhas**.
 
 ## Em aberto (próximas conversas)
 - ~~O Hermes já existe ou construir?~~ → **Construir do zero** (não existe nada ainda). ✅
-- Nicho-alvo do v1.
+- ~~Nicho-alvo do v1/demo.~~ → **Assistência técnica / serviço residencial** como primeira demo vertical. ✅
 - O que exatamente é "personalizável" por cliente.
 - Preço / modelo de cobrança.
 - WhatsApp: confirmar **API oficial** (custo/aprovação).
 - Onde roda em produção (Pi vs nuvem).
 - LGPD: a gente guarda conversa de cliente — precisa de cuidado legal.
+
+## Plano técnico
+- MVP simulado documentado em `docs/plano-tecnico-mvp-simulado.md`.
