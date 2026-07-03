@@ -58,12 +58,15 @@ function normalize(value: string): string {
   return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 }
 
-// Negação ANTES da frase proibida, na mesma sentença e sem adversativa no meio:
-// "não fazemos diagnóstico" é a resposta CERTA (rejeitá-la derrubava a mensagem
-// inteira pro fallback — falso positivo grave no tenant de saúde), mas
-// "não posso agora, MAS garanto cura garantida" continua promessa.
+// Negação ANTES da frase proibida, na MESMA CLÁUSULA: "não fazemos diagnóstico" é
+// a resposta CERTA (rejeitá-la derrubava a mensagem inteira pro fallback — falso
+// positivo grave no tenant de saúde). O escopo da negação quebra em pontuação de
+// cláusula (,;:—) e em conjunção (e/ou/mas/porém...): "Não fazemos cirurgia, e o
+// diagnóstico é gripe" NÃO está negado (achado alta da revisão adversarial).
+// Viés de segurança: na dúvida, rejeita — falso positivo vira fallback + alarme;
+// falso negativo viraria promessa proibida entregue ao cliente.
 const NEGATION_BEFORE =
-  /\b(?:nao|nunca|jamais|nem|sem)\b(?:(?!\b(?:mas|porem|contudo|entretanto)\b)[^.!?\n]){0,60}$/
+  /\b(?:nao|nunca|jamais|nem|sem)\b(?:(?!\b(?:mas|porem|contudo|entretanto|e|ou)\b)[^.!?\n,;:()—–-]){0,60}$/
 
 function claimIsNegated(normalizedReply: string, index: number): boolean {
   return NEGATION_BEFORE.test(normalizedReply.slice(Math.max(0, index - 80), index))

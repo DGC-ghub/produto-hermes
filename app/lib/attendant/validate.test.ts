@@ -88,6 +88,24 @@ describe('validateAttendantOutput', () => {
     ).toBe(false)
   })
 
+  // Achado da revisão adversarial: vírgula e conjunção quebram o escopo da negação
+  // — "Não fazemos X, e o diagnóstico é Y" NÃO está negado.
+  it('vírgula/conjunção quebram o escopo da negação (afirmativa depois é barrada)', () => {
+    const policy = { extraForbiddenClaims: ['diagnostico'] }
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Não fazemos cirurgia, e o diagnóstico é gripe.' },
+        policy,
+      ).ok,
+    ).toBe(false)
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Não cobramos nada: o diagnóstico é bronquite.' },
+        policy,
+      ).ok,
+    ).toBe(false)
+  })
+
   it('exige motivo quando needsHuman é true', () => {
     expect(validateAttendantOutput({ ...good, needsHuman: true, handoffReason: null }).ok).toBe(
       false,
