@@ -6,7 +6,9 @@
 
 ## Antes de entrar (checklist)
 - [ ] Reler `regra-de-negocio.md`; levar o `fluxo.svg` aberto (é o "eu entendi" visual).
-- [ ] **Definir preço e duração do diagnóstico** (não cravar na hora — ver Em aberto).
+- [x] **Preço e duração do diagnóstico DEFINIDOS** (2026-07-04): **R$ 4.500 · 3 semanas ·
+      100% vira crédito na fase 2 se fechar em até 60 dias**. Se ela pedir desconto, mexer
+      no ESCOPO (ex.: diagnóstico só do módulo plantão), nunca no preço por constrangimento.
 - [ ] Conferir a lista de nomes/valores incertos do `README.md` — não usar nenhum com ela
       antes de ela confirmar.
 - [ ] Simulador do Hermes pronto no tenant csmed (parte B) — mas só abrir se houver clima.
@@ -80,8 +82,13 @@ quebra a gente no meio. O passo certo é um diagnóstico."*
 - **Orçamento fechado do sistema, por fase** — preço de verdade, não chute.
 
 **Por que pago:** compromisso dos dois lados; ela recebe um documento que vale sozinho
-(mesmo que não feche o sistema, sai com o negócio mapeado). Se fechar a fase 2, o valor do
-diagnóstico [vira crédito / abate — decidir antes, ver Em aberto].
+(mesmo que não feche o sistema, sai com o negócio mapeado).
+
+**O número (decidido em 2026-07-04):** **R$ 4.500, 3 semanas.** E o gancho que facilita o
+sim: *"se a gente seguir pro sistema em até 60 dias, esses R$ 4.500 viram crédito — descontam
+integral do projeto. Se você parar no diagnóstico, saiu com o negócio mapeado e um orçamento
+de verdade na mão."* Âncora se precisar: é menos que ⅓ de um mês do coordenador — e elimina
+o risco de errar uma fatura de R$ 580 mil na mão.
 
 **Próximo passo concreto (sair combinado):** ela envia o export do escalaApp + as planilhas
 de 2 meses fechados (ex.: o exemplo de Itaituba) + 1 exemplo de fatura de procedimento →
@@ -110,9 +117,8 @@ com o WhatsApp de vocês."*
 - [ ] Piloto Hermes: sim / depois / não
 
 ## Em aberto / a confirmar
-- **Preço e duração do diagnóstico** — decidir ANTES da reunião (Gabriel). Não cravar na hora
-  se não estiver definido.
-- Se o valor do diagnóstico vira crédito na fase 2 (decisão comercial do Gabriel).
+- ~~Preço e duração do diagnóstico~~ → **decidido: R$ 4.500 · 3 semanas · crédito 100% na
+  fase 2 (até 60 dias)** (2026-07-04).
 - Nomes/valores da transcrição (lista no `README.md`) — confirmar com ela na A1.
 - Repasse de plantão/hora (pergunta 9) — o áudio não cobre.
 - Formato da reunião (presencial/vídeo) e se o Danilo participa.
