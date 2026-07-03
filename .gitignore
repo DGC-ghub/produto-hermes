@@ -33,3 +33,7 @@ eval-report.md
 
 # Log de runtime do serviço (voo de teste)
 hermes.log
+
+# WAL do SQLite (produção roda journal_mode=WAL desde 2026-07-03)
+*.db-wal
+*.db-shm
