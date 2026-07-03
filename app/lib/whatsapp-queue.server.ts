@@ -101,44 +101,87 @@ export async function drainPending(): Promise<void> {
       await drainBatch()
     } while (drainRequested)
   } catch (error) {
-    console.error('[whatsapp-queue] drain falhou:', error instanceof Error ? error.message : error)
+    // Se a mensagem vier vazia (ex.: PrismaClientValidationError), loga o objeto
+    // inteiro — mensagem vazia já escondeu um erro de client desatualizado aqui.
+    const message = error instanceof Error && error.message ? error.message : error
+    console.error('[whatsapp-queue] drain falhou:', message)
   } finally {
     draining = false
   }
 }
 
+// 'processing' órfão (crash entre claim e desfecho) volta pra fila depois disto.
+const STALE_PROCESSING_MS = 10 * 60 * 1000
+
 async function drainBatch(): Promise<void> {
+  // Faxina antes do lote: (a) 'processing' órfão de crash volta pra 'pending';
+  // (b) 'pending' que já estourou as tentativas (crash na última) vira 'failed'
+  // — sem isto ele ficava zumbi, invisível pro filtro e nunca alarmado.
+  await db.webhookEvent.updateMany({
+    where: { status: 'processing', claimedAt: { lt: new Date(Date.now() - STALE_PROCESSING_MS) } },
+    data: { status: 'pending' },
+  })
+  await db.webhookEvent.updateMany({
+    where: { status: 'pending', attempts: { gte: MAX_ATTEMPTS } },
+    data: { status: 'failed' },
+  })
+
   const pending = await db.webhookEvent.findMany({
     where: { status: 'pending', attempts: { lt: MAX_ATTEMPTS } },
     orderBy: { createdAt: 'asc' },
     take: DRAIN_BATCH,
   })
   for (const event of pending) {
-    await db.webhookEvent.update({
-      where: { id: event.id },
-      data: { attempts: { increment: 1 } },
+    // Claim ATÔMICO por linha: o lock `draining` é por processo, mas o banco pode
+    // ter outro escritor (outro drain, `npm run dev` no mesmo Pi). Só quem virou a
+    // linha 'pending'→'processing' processa — updateMany condicional decide.
+    const claimed = await db.webhookEvent.updateMany({
+      where: { id: event.id, status: 'pending' },
+      data: { status: 'processing', claimedAt: new Date(), attempts: { increment: 1 } },
     })
+    if (claimed.count === 0) {
+      continue
+    }
     try {
       await processEvent(event)
-      await db.webhookEvent.update({
-        where: { id: event.id },
-        data: { status: 'done', processedAt: new Date() },
-      })
+      await markDone(event.id)
     } catch (error) {
       console.error(
         `[whatsapp-queue] falha ao processar ${event.messageId} (tentativa ${event.attempts + 1}):`,
         error instanceof Error ? error.message : error,
       )
-      if (event.attempts + 1 >= MAX_ATTEMPTS) {
-        await db.webhookEvent.update({
+      const exhausted = event.attempts + 1 >= MAX_ATTEMPTS
+      await db.webhookEvent
+        .update({
           where: { id: event.id },
-          data: { status: 'failed' },
+          data: { status: exhausted ? 'failed' : 'pending' },
         })
+        .catch(() => {})
+      if (exhausted) {
         void reportDegradation('webhook_evento_descartado')
       }
-      // < MAX_ATTEMPTS: continua 'pending'; o próximo drain tenta de novo.
     }
   }
+}
+
+// 'Processou mas não consegui marcar' NÃO é 'processamento falhou': o cliente já
+// recebeu a resposta — voltar pra fila reprocessaria o LLM e mandaria mensagem
+// DUPLA. Retry local (SQLITE_BUSY é transitório); se esgotar, fica 'processing'
+// e o requeue de órfãos decide em 10 min — janela pequena e alarmada.
+async function markDone(id: string): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await db.webhookEvent.update({
+        where: { id },
+        data: { status: 'done', processedAt: new Date() },
+      })
+      return
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)))
+    }
+  }
+  console.error(`[whatsapp-queue] CRÍTICO: evento ${id} processado mas não marcado como done`)
+  void reportDegradation('webhook_done_nao_marcado')
 }
 
 // Sweeper: retoma pendências deixadas por um restart mesmo sem POST novo chegar.

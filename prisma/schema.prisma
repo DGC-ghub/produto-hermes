@@ -138,9 +138,10 @@ model WebhookEvent {
   phoneNumberId String // número da empresa que recebeu → resolve o tenant
   contactId     String // wa_id do remetente
   text          String
-  status        String    @default("pending") // pending | done | failed
+  status        String    @default("pending") // pending | processing | done | failed
   attempts      Int       @default(0)
   createdAt     DateTime  @default(now())
+  claimedAt     DateTime? // quando um drain reivindicou a linha (requeue de órfão)
   processedAt   DateTime?
 
   @@index([status, createdAt])
