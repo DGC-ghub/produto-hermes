@@ -63,6 +63,7 @@ async function processEvent(event: {
     tenantSlug,
     message: event.text,
     contactId: event.contactId,
+    channel: 'whatsapp',
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
@@ -78,6 +79,7 @@ async function processEvent(event: {
 // Uma passada de drain por vez (single-instance no Pi). O lock é do processo:
 // dois POSTs simultâneos não processam o mesmo evento em paralelo.
 let draining = false
+let drainRequested = false
 
 /**
  * Processa os eventos pendentes, mais antigos primeiro. Cada tentativa incrementa
@@ -86,48 +88,56 @@ let draining = false
  */
 export async function drainPending(): Promise<void> {
   if (draining) {
+    // POST chegou NO MEIO de um drain: sinaliza pra rodar de novo ao terminar.
+    // Sem isto, a mensagem nova ficava esperando o sweeper — até 60s de latência
+    // extra pro cliente, justamente no horário de movimento.
+    drainRequested = true
     return
   }
   draining = true
   try {
-    const pending = await db.webhookEvent.findMany({
-      where: { status: 'pending', attempts: { lt: MAX_ATTEMPTS } },
-      orderBy: { createdAt: 'asc' },
-      take: DRAIN_BATCH,
-    })
-    for (const event of pending) {
-      await db.webhookEvent.update({
-        where: { id: event.id },
-        data: { attempts: { increment: 1 } },
-      })
-      try {
-        await processEvent(event)
-        await db.webhookEvent.update({
-          where: { id: event.id },
-          data: { status: 'done', processedAt: new Date() },
-        })
-      } catch (error) {
-        console.error(
-          `[whatsapp-queue] falha ao processar ${event.messageId} (tentativa ${event.attempts + 1}):`,
-          error instanceof Error ? error.message : error,
-        )
-        if (event.attempts + 1 >= MAX_ATTEMPTS) {
-          await db.webhookEvent.update({
-            where: { id: event.id },
-            data: { status: 'failed' },
-          })
-          void reportDegradation('webhook_evento_descartado')
-        }
-        // < MAX_ATTEMPTS: continua 'pending'; o próximo drain tenta de novo.
-      }
-    }
+    do {
+      drainRequested = false
+      await drainBatch()
+    } while (drainRequested)
   } catch (error) {
-    console.error(
-      '[whatsapp-queue] drain falhou:',
-      error instanceof Error ? error.message : error,
-    )
+    console.error('[whatsapp-queue] drain falhou:', error instanceof Error ? error.message : error)
   } finally {
     draining = false
+  }
+}
+
+async function drainBatch(): Promise<void> {
+  const pending = await db.webhookEvent.findMany({
+    where: { status: 'pending', attempts: { lt: MAX_ATTEMPTS } },
+    orderBy: { createdAt: 'asc' },
+    take: DRAIN_BATCH,
+  })
+  for (const event of pending) {
+    await db.webhookEvent.update({
+      where: { id: event.id },
+      data: { attempts: { increment: 1 } },
+    })
+    try {
+      await processEvent(event)
+      await db.webhookEvent.update({
+        where: { id: event.id },
+        data: { status: 'done', processedAt: new Date() },
+      })
+    } catch (error) {
+      console.error(
+        `[whatsapp-queue] falha ao processar ${event.messageId} (tentativa ${event.attempts + 1}):`,
+        error instanceof Error ? error.message : error,
+      )
+      if (event.attempts + 1 >= MAX_ATTEMPTS) {
+        await db.webhookEvent.update({
+          where: { id: event.id },
+          data: { status: 'failed' },
+        })
+        void reportDegradation('webhook_evento_descartado')
+      }
+      // < MAX_ATTEMPTS: continua 'pending'; o próximo drain tenta de novo.
+    }
   }
 }
 

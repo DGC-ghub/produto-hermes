@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { drainPending, persistInbound } from './whatsapp-queue.server'
 import { registerWhatsappNumber } from './whatsapp.server'
+import { drainPending, persistInbound } from './whatsapp-queue.server'
 
 const TEST_CONTACT_ID = 'test-queue-5511999990000'
 const TEST_PHONE_ID = 'test-queue-phone-id'
 const UNMAPPED_PHONE_ID = 'test-queue-phone-desconhecido'
 
-function inbound(messageId: string, overrides: Partial<Parameters<typeof persistInbound>[0][0]> = {}) {
+function inbound(
+  messageId: string,
+  overrides: Partial<Parameters<typeof persistInbound>[0][0]> = {},
+) {
   return {
     from: TEST_CONTACT_ID,
     text: 'Quais são os preços dos serviços?',
@@ -71,11 +74,13 @@ describe('drainPending', () => {
     expect(event?.processedAt).not.toBeNull()
 
     // O motor rodou UMA vez: uma conversa com [user, assistant], sem dupla resposta.
+    // E a conversa nasce com o canal REAL (não 'simulator') — métrica por canal.
     const conversations = await db.conversation.findMany({
       where: { contactId: TEST_CONTACT_ID },
-      select: { id: true },
+      select: { id: true, channel: true },
     })
     expect(conversations.length).toBe(1)
+    expect(conversations[0].channel).toBe('whatsapp')
     const messages = await db.message.findMany({
       where: { conversationId: conversations[0].id },
       orderBy: { createdAt: 'asc' },
@@ -84,9 +89,7 @@ describe('drainPending', () => {
   })
 
   it('evento sem tenant mapeado fica pending com retry e vira failed no teto', async () => {
-    await persistInbound([
-      inbound('wamid.test-veneno', { phoneNumberId: UNMAPPED_PHONE_ID }),
-    ])
+    await persistInbound([inbound('wamid.test-veneno', { phoneNumberId: UNMAPPED_PHONE_ID })])
 
     // 4 tentativas: ainda pending (vai tentar de novo).
     for (let i = 0; i < 4; i++) {

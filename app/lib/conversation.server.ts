@@ -16,6 +16,10 @@ export type ProcessIncomingMessageInput = {
   message: string
   conversationId?: string
   contactId?: string
+  // Canal REAL da mensagem. Além de corrigir a métrica por canal, decide o alarme:
+  // handoff sensível só alarma vindo do WhatsApp — visitante anônimo da demo
+  // pública não pode disparar push urgente no celular do operador.
+  channel?: 'simulator' | 'whatsapp'
 }
 
 export type ProcessIncomingMessageSource = {
@@ -111,7 +115,12 @@ export async function processIncomingMessage(
       conversationStatus = active.status
     } else {
       const created = await db.conversation.create({
-        data: { tenantId: tenant.id, channel: 'simulator', contactId: contact, status: 'open' },
+        data: {
+          tenantId: tenant.id,
+          channel: input.channel ?? 'simulator',
+          contactId: contact,
+          status: 'open',
+        },
       })
       conversationId = created.id
       contactId = created.contactId
@@ -186,8 +195,9 @@ export async function processIncomingMessage(
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
   if (guardForcesSafe) {
     // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma
-    // emergência esperando na fila. Push no celular do operador (best-effort).
-    if (guard.reason === 'sensitive_topic') {
+    // emergência esperando na fila. Push no celular do operador (best-effort) —
+    // SÓ do canal real: a demo pública é anônima e viraria botão de spam urgente.
+    if (guard.reason === 'sensitive_topic' && input.channel === 'whatsapp') {
       void reportSensitiveHandoff(input.tenantSlug)
     }
     const reply = config.escalationPolicy.humanMessage
