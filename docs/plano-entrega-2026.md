@@ -217,13 +217,17 @@ código.
 - [ ] **Iniciar HOJE o processo Meta** (leva dias a semanas — caminho crítico do calendário):
       verificação do negócio, número de produção, display name. Decidir: número sob a WABA da
       DGC ou WABA própria da CS MED. *(R1)*
-- [ ] **Mitigação de áudio em horas**: auto-resposta "recebi seu áudio, por aqui só consigo ler
-      texto" pra qualquer não-texto — nunca mais vácuo. *(M2 parcial)*
-- [ ] **Provar `abrir_chamado` ponta a ponta no csmed**: conversa multi-turno real em que a
-      confirmação gera `Ticket` no banco — é a metade do pitch nunca comprovada. *(M3)*
-- [ ] `channel:'whatsapp'` correto na Conversation (1 linha) — separa uso real de demo.
-- [ ] 🟢 *Danilo:* script CLI `tenant:add` + registro de número (`registerWhatsappNumber` já
-      existe testada, só não tem chamador).
+- [x] **Mitigação de áudio**: áudio/imagem/documento entram na fila (dedup por wamid) e ganham
+      a resposta de cortesia "por aqui só leio texto" sem rodar o motor; reação/status seguem
+      ignorados. *(M2 parcial)* ✅ *2026-07-03*
+- [x] **Provar `abrir_chamado` ponta a ponta no csmed**: `npm run prova:chamado` (cérebro REAL,
+      banco descartável) — Ticket no banco após a confirmação. A prova expôs e corrigiu 2 bugs:
+      categoria inválida matava a action inteira em silêncio, e o cérebro dizia "já registrei"
+      sem action (agora guard determinístico rejeita e degrada honesto). *(M3)* ✅ *2026-07-03*
+- [x] `channel:'whatsapp'` correto na Conversation — separa uso real de demo. ✅ *2026-07-03 (adiantado na revisão da 2ª quinzena)*
+- [x] 🟢 ~~*Danilo:*~~ script CLI `tenant:add` + registro de número — feito adiantado pelo
+      agente (sobra pro Danilo: eval `fellToFallback` + knowledge csmed, da 2ª quinz. de julho).
+      ✅ *2026-07-03*
 
 > **Pronto quando:** piloto aceito verbalmente com prazo e critério anotados; verificação
 > submetida na Meta; registro de um chamado csmed nascendo no banco via conversa com
