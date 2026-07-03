@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
+import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistInbound } from './whatsapp-queue.server'
 
@@ -21,6 +22,9 @@ function inbound(
 }
 
 beforeEach(async () => {
+  // Banco de teste nasce vazio: garante os tenants antes de mapear o número
+  // (registerWhatsappNumber não cria tenant por demanda — onboarding é explícito).
+  await ensureInitialTenants()
   // Mapeia o número de teste pro tenant dgc (o caminho REAL de resolução).
   await registerWhatsappNumber(TEST_PHONE_ID, 'dgc')
 })
