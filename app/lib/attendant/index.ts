@@ -54,6 +54,10 @@ export async function generateAttendantReply(
   const result = validateAttendantOutput(raw, opts.policy)
   if (!result.ok) {
     console.warn(`[attendant] validação recusou a resposta (${result.reason}) -> fallback seguro`)
+    // Diagnóstico pontual (tem PII do reply): só atrás da flag, nunca em produção.
+    if (process.env.ATTENDANT_DEBUG === '1') {
+      console.warn('[attendant] saída crua recusada:', JSON.stringify(raw))
+    }
     return safeFallback('validacao_falhou')
   }
   return result.value

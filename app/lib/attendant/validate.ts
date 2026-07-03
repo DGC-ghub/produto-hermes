@@ -26,6 +26,11 @@ const LEAK_PATTERNS: RegExp[] = [
   /begin (?:rsa|openssh) private key/i,
 ]
 
+// Reply (normalizado) que afirma registro consumado ou em curso. Formas em aberto
+// ("posso registrar?", "vou registrar") NÃO casam — condicional é oferta, não registro.
+const CLAIMS_TICKET_OPENED =
+  /\b(?:registrei|registramos|registrad[oa]|registrando)\b|\babri (?:o|um) chamado\b|\bchamado (?:foi )?abert[oa]\b/
+
 const MAX_REPLY_LENGTH = 2000
 const MAX_LEAD_VALUE_LENGTH = 120
 const MAX_SUBJECT_LENGTH = 200
@@ -135,14 +140,18 @@ function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | n
   if (typeof description !== 'string' || description.trim().length === 0) {
     return null
   }
-  const cat =
+  let cat =
     typeof category === 'string' && category.trim().length > 0 ? category.trim() : undefined
 
   const limits = toolPolicy?.limits
-  // allowedCategories: se uma categoria foi fornecida, ela precisa estar na lista.
+  // allowedCategories: categoria fora da lista DERRUBA SÓ A CATEGORIA, não a
+  // action — descartar o registro inteiro por um rótulo inválido matou um chamado
+  // real na prova de 2026-07-03 ("escala_medica" ≠ "demanda_escala") e o cliente
+  // ouviria "registrei" com nada no banco. Se o tenant EXIGE categoria
+  // (requiredFields), a checagem abaixo ainda barra a action sem categoria válida.
   if (limits?.allowedCategories && limits.allowedCategories.length > 0 && cat) {
     if (!limits.allowedCategories.includes(cat)) {
-      return null
+      cat = undefined
     }
   }
   // requiredFields: cada campo obrigatório precisa estar presente e não-vazio.
@@ -221,6 +230,19 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
     return { ok: false, reason: 'handoff_sem_motivo' }
   }
 
+  const validatedAction = validateAction(action, policy?.tools)
+
+  // A IA não pode AFIRMAR que registrou/abriu chamado sem propor a action: o
+  // cliente acharia que está registrado e não está (visto ao vivo na prova de
+  // 2026-07-03 — "Já registrei sua solicitação" com action null). Só vale quando
+  // o tenant TEM a tool abrir_chamado; rejeitar aqui degrada pro fallback honesto.
+  const canOpenTicket = policy?.tools?.some((tool) => tool.name === 'abrir_chamado') ?? false
+  if (canOpenTicket && validatedAction?.type !== 'abrir_chamado') {
+    if (CLAIMS_TICKET_OPENED.test(normalizedReply)) {
+      return { ok: false, reason: 'reply_afirma_registro_sem_action' }
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -229,7 +251,7 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
       handoffReason: needsHuman ? handoffReason : null,
       leadPatch: sanitizeLeadPatch(leadPatch),
       confidence: clampConfidence(confidence),
-      action: validateAction(action, policy?.tools),
+      action: validatedAction,
     },
   }
 }

@@ -106,6 +106,49 @@ describe('validateAttendantOutput', () => {
     ).toBe(false)
   })
 
+  // Visto ao vivo na prova de 2026-07-03: "Já registrei sua solicitação" com
+  // action null — o cliente acharia que está registrado e não está.
+  it('rejeita reply que AFIRMA registro sem propor a action (tenant com a tool)', () => {
+    const policy = { tools: [{ name: 'abrir_chamado' }] }
+    expect(
+      validateAttendantOutput(
+        { ...good, reply: 'Perfeito! Já registrei sua solicitação, o time retorna em breve.' },
+        policy,
+      ),
+    ).toEqual({ ok: false, reason: 'reply_afirma_registro_sem_action' })
+    expect(
+      validateAttendantOutput({ ...good, reply: 'Pronto, chamado aberto!' }, policy).ok,
+    ).toBe(false)
+  })
+
+  it('aceita "registrei" quando a action abrir_chamado VEM junto', () => {
+    const policy = { tools: [{ name: 'abrir_chamado' }] }
+    const result = validateAttendantOutput(
+      {
+        ...good,
+        reply: 'Registrei sua solicitação! O time retorna em breve.',
+        action: { type: 'abrir_chamado', subject: 'plantão fim de semana', description: 'd' },
+      },
+      policy,
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it('formas em aberto ("posso registrar?", "vou registrar") não são barradas', () => {
+    const policy = { tools: [{ name: 'abrir_chamado' }] }
+    expect(
+      validateAttendantOutput({ ...good, reply: 'Quer que eu registre? Posso registrar agora.' }, policy)
+        .ok,
+    ).toBe(true)
+  })
+
+  it('tenant SEM a tool abrir_chamado não sofre o guard de registro', () => {
+    expect(
+      validateAttendantOutput({ ...good, reply: 'Seu e-mail foi registrado na nossa lista.' }, { tools: [] })
+        .ok,
+    ).toBe(true)
+  })
+
   it('exige motivo quando needsHuman é true', () => {
     expect(validateAttendantOutput({ ...good, needsHuman: true, handoffReason: null }).ok).toBe(
       false,
@@ -184,10 +227,30 @@ describe('validateAttendantOutput', () => {
     }
   })
 
-  it('descarta ação com categoria fora de allowedCategories', () => {
+  // Categoria fora da lista derruba SÓ a categoria — descartar a action inteira
+  // por um rótulo inválido matou um chamado real na prova de 2026-07-03.
+  it('categoria fora de allowedCategories vira null, mas a action SOBREVIVE', () => {
     const action = { type: 'abrir_chamado', subject: 's', description: 'd', category: 'xpto' }
     const policy = {
       tools: [{ name: 'abrir_chamado', limits: { allowedCategories: ['documento', 'guia'] } }],
+    }
+    const result = validateAttendantOutput({ ...good, action }, policy)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action?.type).toBe('abrir_chamado')
+      expect(result.value.action?.category).toBeUndefined()
+    }
+  })
+
+  it('mas se o tenant EXIGE categoria (requiredFields), a inválida ainda barra a action', () => {
+    const action = { type: 'abrir_chamado', subject: 's', description: 'd', category: 'xpto' }
+    const policy = {
+      tools: [
+        {
+          name: 'abrir_chamado',
+          limits: { allowedCategories: ['documento'], requiredFields: ['category'] },
+        },
+      ],
     }
     const result = validateAttendantOutput({ ...good, action }, policy)
     expect(result.ok).toBe(true)

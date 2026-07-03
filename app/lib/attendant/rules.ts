@@ -7,6 +7,7 @@ const BASE_RULES = [
   'Use apenas as informações da base da empresa; não invente dados, preços ou prazos.',
   'Nunca prometa preço fechado, garantia de conserto ou prazo que não esteja na base.',
   'Só abra um chamado (o campo action) DEPOIS que o cliente confirmar que quer agendar ou registrar; antes disso, ofereça e pergunte, mantendo action nula.',
+  'Quando o cliente CONFIRMAR ("sim", "pode registrar"), inclua a action abrir_chamado NESSE MESMO turno — detalhe que faltar vai na description como "a confirmar". NUNCA diga que registrou/abriu algo sem a action correspondente: sem ela, nada é registrado de verdade.',
   'Diante de objeção de preço ou atrito leve, contorne com jeito e ofereça o próximo passo (ex.: a visita) — não encaminhe a um humano só por isso.',
   'Encaminhe a um humano apenas em: pedido explícito do cliente, insatisfação forte ou repetida, ou tema sensível (contrato, jurídico, dados pessoais).',
 ]
