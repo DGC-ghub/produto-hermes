@@ -1,10 +1,10 @@
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
-import { drainPending, persistInbound } from '../lib/whatsapp-queue.server'
 import {
   parseInboundMessages,
   verifyWebhookChallenge,
   verifyWebhookSignature,
 } from '../lib/whatsapp.server'
+import { drainPending, persistInbound } from '../lib/whatsapp-queue.server'
 import type { Route } from './+types/webhook.whatsapp'
 
 // Teto global do webhook público (o app vê tudo como localhost atrás da ponte, então

@@ -62,7 +62,8 @@ function normalize(value: string): string {
 // "não fazemos diagnóstico" é a resposta CERTA (rejeitá-la derrubava a mensagem
 // inteira pro fallback — falso positivo grave no tenant de saúde), mas
 // "não posso agora, MAS garanto cura garantida" continua promessa.
-const NEGATION_BEFORE = /\b(?:nao|nunca|jamais|nem|sem)\b(?:(?!\b(?:mas|porem|contudo|entretanto)\b)[^.!?\n]){0,60}$/
+const NEGATION_BEFORE =
+  /\b(?:nao|nunca|jamais|nem|sem)\b(?:(?!\b(?:mas|porem|contudo|entretanto)\b)[^.!?\n]){0,60}$/
 
 function claimIsNegated(normalizedReply: string, index: number): boolean {
   return NEGATION_BEFORE.test(normalizedReply.slice(Math.max(0, index - 80), index))

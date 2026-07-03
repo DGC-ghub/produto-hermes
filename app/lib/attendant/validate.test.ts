@@ -53,10 +53,8 @@ describe('validateAttendantOutput', () => {
       ).ok,
     ).toBe(true)
     expect(
-      validateAttendantOutput(
-        { ...good, reply: 'Nunca damos diagnóstico por aqui, tá?' },
-        policy,
-      ).ok,
+      validateAttendantOutput({ ...good, reply: 'Nunca damos diagnóstico por aqui, tá?' }, policy)
+        .ok,
     ).toBe(true)
   })
 

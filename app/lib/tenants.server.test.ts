@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { DEMO_TENANT_SLUGS, ensureInitialTenants, ensureTenant, INITIAL_TENANTS, resolveTenant } from './tenants.server'
+import {
+  DEMO_TENANT_SLUGS,
+  ensureInitialTenants,
+  ensureTenant,
+  INITIAL_TENANTS,
+  resolveTenant,
+} from './tenants.server'
 
 const TEST_SLUG = 'zzz-test-tenant-task-9'
 
