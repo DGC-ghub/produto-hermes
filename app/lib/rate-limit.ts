@@ -42,3 +42,33 @@ export function checkRate(
   const retryAfterSec = Math.ceil((windowMs - (now - state.windowStart)) / 1000)
   return { allowed: false, state, retryAfterSec }
 }
+
+// ── Freio de força-bruta POR CHAVE (ex.: username no login) ─────────────────
+// Só FALHAS consomem o orçamento: login certo não gasta, e um atacante só trava
+// a chave que ele mesmo ataca — não o processo inteiro (achado da revisão: o teto
+// global sozinho permitia negar o login de todos os tenants com ~15 req/min).
+
+/** A chave está travada AGORA? (não consome tentativa — só consulta) */
+export function isLockedOut(
+  now: number,
+  state: RateState | undefined,
+  maxFailures: number,
+  windowMs: number,
+): boolean {
+  if (!state) {
+    return false
+  }
+  return now - state.windowStart < windowMs && state.count >= maxFailures
+}
+
+/** Registra uma FALHA da chave (janela fixa; expira sozinha). Pura. */
+export function recordFailure(
+  now: number,
+  state: RateState | undefined,
+  windowMs: number,
+): RateState {
+  if (!state || now - state.windowStart >= windowMs) {
+    return { windowStart: now, count: 1 }
+  }
+  return { windowStart: state.windowStart, count: state.count + 1 }
+}

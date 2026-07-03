@@ -4,14 +4,20 @@ import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
 import { createOperatorSession, getOperator, safeRedirect } from '../lib/auth.server'
 import { authenticateOperator, ensureSeedOperators } from '../lib/operators.server'
-import { checkRate, type RateState } from '../lib/rate-limit'
+import { checkRate, isLockedOut, type RateState, recordFailure } from '../lib/rate-limit'
 import type { Route } from './+types/login'
 
-// Freio de força-bruta no login: teto GLOBAL de tentativas por janela (não dá pra
-// confiar em IP — atrás da ponte/funnel tudo chega como localhost). Um humano
-// digitando errado não encosta no teto; um script de força-bruta encosta em segundos.
-const LOGIN_MAX_ATTEMPTS = 15
-const LOGIN_WINDOW_MS = 60_000
+// Freio de força-bruta em DUAS camadas (achado da revisão adversarial: o teto
+// global sozinho deixava 15 req/min travarem o login de TODOS os tenants):
+// 1. Por username, contando só FALHAS — atacante trava a própria chave, não o mundo.
+// 2. Teto global alto, só como rede anti-flood do processo.
+const FAILURES_PER_USERNAME = 5
+const FAILURE_WINDOW_MS = 60_000
+const GLOBAL_MAX_ATTEMPTS = 60
+const GLOBAL_WINDOW_MS = 60_000
+const MAX_TRACKED_USERNAMES = 1000
+
+const failuresByUsername = new Map<string, RateState>()
 let loginRateState: RateState = { windowStart: 0, count: 0 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -26,7 +32,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-  const rate = checkRate(Date.now(), loginRateState, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS)
+  const now = Date.now()
+  const rate = checkRate(now, loginRateState, GLOBAL_MAX_ATTEMPTS, GLOBAL_WINDOW_MS)
   loginRateState = rate.state
   if (!rate.allowed) {
     return { error: 'Muitas tentativas. Aguarde um minuto e tente de novo.' }
@@ -37,11 +44,28 @@ export async function action({ request }: Route.ActionArgs) {
   const password = String(formData.get('password') ?? '')
   const redirectTo = safeRedirect(String(formData.get('redirectTo') ?? ''))
 
+  // Chave travada por falhas? Nem consulta o banco (e a mensagem é a MESMA do
+  // erro comum — não revela que a conta existe nem que há lockout ativo).
+  if (
+    isLockedOut(now, failuresByUsername.get(username), FAILURES_PER_USERNAME, FAILURE_WINDOW_MS)
+  ) {
+    return { error: 'Usuário ou senha incorretos.' }
+  }
+
   const operator = await authenticateOperator(username, password)
   if (!operator) {
+    // Teto de memória: usernames aleatórios de scanner não crescem o Map pra sempre.
+    if (failuresByUsername.size >= MAX_TRACKED_USERNAMES) {
+      failuresByUsername.clear()
+    }
+    failuresByUsername.set(
+      username,
+      recordFailure(now, failuresByUsername.get(username), FAILURE_WINDOW_MS),
+    )
     // Mensagem genérica: não revela se foi o usuário ou a senha.
     return { error: 'Usuário ou senha incorretos.' }
   }
+  failuresByUsername.delete(username)
   return createOperatorSession(operator, redirectTo)
 }
 

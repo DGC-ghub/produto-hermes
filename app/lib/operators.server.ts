@@ -71,13 +71,18 @@ export async function authenticateOperator(
  * Fail-closed em produção, como o SESSION_SECRET. Server-side.
  */
 export async function ensureSeedOperators(): Promise<void> {
-  const tenants = await ensureInitialTenants()
   const seedPassword = process.env.OPERATOR_SEED_PASSWORD
-  if (!seedPassword && process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'OPERATOR_SEED_PASSWORD é obrigatório em produção (senha dos operadores demo).',
-    )
+  // Fail-closed de VALOR, não só de presença: em produção, o default de dev do
+  // código-fonte (público pra quem tem o repo) e senha curta são recusados —
+  // "presente mas fraco" era porta aberta com sensação de trancada.
+  if (process.env.NODE_ENV === 'production') {
+    if (!seedPassword || seedPassword === 'hermes-dev' || seedPassword.length < 12) {
+      throw new Error(
+        'OPERATOR_SEED_PASSWORD em produção precisa existir, ter 12+ caracteres e não ser o default de dev.',
+      )
+    }
   }
+  const tenants = await ensureInitialTenants()
   const effectivePassword = seedPassword ?? 'hermes-dev'
   for (const tenant of tenants) {
     if (!DEMO_TENANT_SLUGS.includes(tenant.slug)) {

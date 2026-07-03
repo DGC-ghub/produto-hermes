@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkRate, type RateState } from './rate-limit'
+import { checkRate, isLockedOut, type RateState, recordFailure } from './rate-limit'
 
 const MAX = 3
 const WINDOW = 60_000
@@ -34,5 +34,37 @@ describe('checkRate', () => {
     const later = checkRate(1000 + WINDOW, s, MAX, WINDOW) // janela expirou
     expect(later.allowed).toBe(true)
     expect(later.state.count).toBe(1)
+  })
+})
+
+describe('isLockedOut / recordFailure (freio por chave)', () => {
+  const WINDOW = 60_000
+
+  it('sem estado não está travado', () => {
+    expect(isLockedOut(1000, undefined, 5, WINDOW)).toBe(false)
+  })
+
+  it('trava a chave após N falhas na janela e destrava quando a janela expira', () => {
+    let state
+    for (let i = 0; i < 5; i++) {
+      state = recordFailure(1000 + i, state, WINDOW)
+    }
+    expect(isLockedOut(2000, state, 5, WINDOW)).toBe(true)
+    // Janela expirou: destrava sozinho.
+    expect(isLockedOut(1000 + WINDOW, state, 5, WINDOW)).toBe(false)
+  })
+
+  it('falhas abaixo do teto não travam', () => {
+    let state
+    for (let i = 0; i < 4; i++) {
+      state = recordFailure(1000 + i, state, WINDOW)
+    }
+    expect(isLockedOut(2000, state, 5, WINDOW)).toBe(false)
+  })
+
+  it('falha após a janela expirar recomeça a contagem do zero', () => {
+    let state = recordFailure(1000, undefined, WINDOW)
+    state = recordFailure(1000 + WINDOW + 1, state, WINDOW)
+    expect(state.count).toBe(1)
   })
 })

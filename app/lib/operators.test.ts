@@ -61,6 +61,34 @@ describe('authenticateOperator (integração com o banco)', () => {
     expect(ok?.tenantSlug).toBe('assistencia-tecnica-demo')
   })
 
+  // Achado da revisão adversarial: fail-closed de presença não basta — o valor
+  // default de dev ('hermes-dev', público no código-fonte) e senha curta têm que
+  // ser recusados em produção.
+  it('recusa em produção o default de dev e senha curta (fail-closed de valor)', async () => {
+    const prevNodeEnv = process.env.NODE_ENV
+    const prevSeed = process.env.OPERATOR_SEED_PASSWORD
+    try {
+      process.env.NODE_ENV = 'production'
+      process.env.OPERATOR_SEED_PASSWORD = 'hermes-dev'
+      await expect(ensureSeedOperators()).rejects.toThrow(/12\+/)
+      process.env.OPERATOR_SEED_PASSWORD = 'curta'
+      await expect(ensureSeedOperators()).rejects.toThrow(/12\+/)
+      delete process.env.OPERATOR_SEED_PASSWORD
+      await expect(ensureSeedOperators()).rejects.toThrow(/12\+/)
+    } finally {
+      if (prevNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = prevNodeEnv
+      }
+      if (prevSeed === undefined) {
+        delete process.env.OPERATOR_SEED_PASSWORD
+      } else {
+        process.env.OPERATOR_SEED_PASSWORD = prevSeed
+      }
+    }
+  })
+
   // Bloqueio S2 do plano de entrega: tenant de cliente REAL não nasce com a senha
   // seed compartilhada — credencial dele só via `npm run operator:add`.
   it('NÃO semeia operador para tenant de cliente real (prestacon/csmed)', async () => {
