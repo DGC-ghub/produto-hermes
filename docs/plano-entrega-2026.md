@@ -171,23 +171,29 @@ código.
 > comportamento; eval csmed sem fallback por timeout.
 
 ### 2ª quinzena de julho — Segurança mínima multi-tenant + guard de saúde
-- [ ] **Credencial por tenant**: script `npm run operator:add` (senha própria),
-      `OPERATOR_SEED_PASSWORD` fail-closed em produção (como o `SESSION_SECRET`), rate-limit
-      no `/login`. *(S2/R2)*
-- [ ] **Tirar csmed/prestacon da demo pública** — lista explícita de tenants demo. *(R3)*
-- [ ] **Guard de saúde à prova**: variantes de plural nos triggers; 192/SAMU na `humanMessage`
-      do csmed; alarme ntfy também em handoff `sensitive_topic`. *(M4)*
-- [ ] **Webhook confiável fase 1**: persistir o evento ANTES do 200 + fila simples no SQLite
-      (restart não perde mensagem) + dedup por `messageId` com unique (redelivery não duplica).
-      *(C2)*
-- [ ] **Consertar `neverPromise`** (contexto afirmativo ou curar a lista do csmed) e **escapar
-      regex** nos triggers.
+- [x] **Credencial por tenant**: `npm run operator:add` (cria/rotaciona com senha própria;
+      csmed e prestacon JÁ rotacionados), seed fail-closed em produção e restrito aos tenants
+      DEMO, rate-limit no `/login` (15/min). *(S2/R2)* ✅ *2026-07-02*
+- [x] **Tirar csmed/prestacon da demo pública** — `DEMO_TENANT_SLUGS` explícita: registrar
+      cliente novo não o publica na demo. *(R3)* ✅ *2026-07-02*
+- [x] **Guard de saúde à prova**: plural por palavra + escape de regex nos triggers; 192/SAMU
+      na `humanMessage` do csmed; alarme URGENTE (throttle próprio, 2 min) em handoff
+      `sensitive_topic`. *(M4)* ✅ *2026-07-02*
+- [x] **Webhook confiável fase 1**: `WebhookEvent` persistido ANTES do 200; dedup por wamid
+      `@unique`; drain no POST + sweeper 60s; evento-veneno vira `failed` após 5 tentativas.
+      *(C2)* ✅ *2026-07-02*
+- [x] **Consertar `neverPromise`** (negação na mesma sentença libera "não fazemos diagnóstico";
+      "não X, mas garanto Y" continua barrado) e **escapar regex** nos triggers. ✅ *2026-07-02*
 - [ ] 🟢 *Danilo:* assertar `fellToFallback=false` por default no eval (com opt-out) + expandir
       `knowledge/csmed` com base na conversa com a mãe.
 
 > **Pronto quando:** login da CS MED não abre nenhum outro tenant (teste cross-tenant manual);
 > `/demo/chat` não lista tenants reais; "dores fortes no peito" escala deterministicamente com
 > 192 na resposta; `kill` no meio do processamento não perde a mensagem.
+>
+> ✅ **Verificado ao vivo em 2026-07-02**: seed antiga rejeitada no csmed e senha nova logando;
+> demo pública sem ocorrência de tenant real; evento pendente sobreviveu a restart e foi
+> retomado pelo sweeper (motor real, 30s) com alarme de envio falho disparando no ntfy.
 
 ### 1ª quinzena de agosto — 🤝 Piloto CS MED acordado + caminho crítico da Meta
 - [ ] **MARCO DE NEGÓCIO — reunião com a mãe do Danilo**: demo no simulador, confirmar a dor
