@@ -2,6 +2,7 @@ import { db } from '../db.server'
 import { startEmailVerification } from './email-verification.server'
 import { hashPassword } from './operators.server'
 import { provisionTenant } from './provisioning.server'
+import { startTrial } from './subscription.server'
 
 // Cadastro self-service (marco M2.6b): transforma nome+email+senha numa empresa provisionada
 // com dono owner e um e-mail de confirmação a caminho. Lógica pura de orquestração (a rota
@@ -64,6 +65,7 @@ export async function registerOwner(input: RegisterInput): Promise<RegisterResul
     ownerEmail: email,
     ownerPasswordHash: await hashPassword(password),
   })
+  await startTrial(tenantId, 'essencial') // 14 dias de trial já no cadastro
   await startEmailVerification({ id: accountId, email }, input.baseUrl)
 
   return { ok: true, accountId, tenantId, slug, email }

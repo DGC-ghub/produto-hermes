@@ -12,6 +12,7 @@ async function cleanup() {
     await db.membership.deleteMany({ where: { tenantId: t.id } })
     await db.tenantConfigRecord.deleteMany({ where: { tenantId: t.id } })
     await db.knowledgeDoc.deleteMany({ where: { tenantId: t.id } })
+    await db.subscription.deleteMany({ where: { tenantId: t.id } })
     await db.tenant.delete({ where: { id: t.id } })
   }
   await db.account.deleteMany({ where: { email: { in: [EMAIL, 'zzz-m26-outro@x.local'] } } })
@@ -45,6 +46,9 @@ describe('registerOwner (M2.6b)', () => {
     const acc = await db.account.findUnique({ where: { email: EMAIL } })
     expect(acc?.emailVerifyToken).not.toBeNull() // verificação disparada
     expect(acc?.emailVerifiedAt).toBeNull()
+
+    const sub = await db.subscription.findUnique({ where: { tenantId: tenant?.id ?? '' } })
+    expect(sub?.status).toBe('trialing') // trial de 14 dias no cadastro
   })
 
   it('rejeita e-mail inválido', async () => {
