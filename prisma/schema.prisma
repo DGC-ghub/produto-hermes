@@ -22,6 +22,7 @@ model Tenant {
   tickets         Ticket[]
   operators       Operator[]
   whatsappNumbers WhatsappNumber[]
+  memberships     Membership[]
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
@@ -146,4 +147,37 @@ model WebhookEvent {
   processedAt   DateTime?
 
   @@index([status, createdAt])
+}
+
+// Conta de LOGIN — a pessoa que acessa o Hermes (dono pagante ou atendente). Separada
+// do Tenant: uma conta pode ter papel em mais de uma empresa (via Membership). O signup
+// self-service (marco M2) cria uma Account nova; o billing (M3) liga a assinatura aqui.
+model Account {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String?
+  legacyUsername  String?   @unique // login antigo por username=slug (operadores migrados)
+  emailVerifiedAt DateTime? //          marco M2 (verificação de e-mail); null = não verificado
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships Membership[]
+}
+
+// Liga uma Account a um Tenant COM um papel. "owner" administra (config, billing);
+// "operator" só atende. Uma conta = no máximo um vínculo por tenant.
+model Membership {
+  id        String   @id @default(cuid())
+  accountId String
+  tenantId  String
+  role      String   @default("operator") // "owner" | "operator"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@unique([accountId, tenantId])
+  @@index([tenantId])
 }
