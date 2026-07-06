@@ -1,0 +1,45 @@
+# Rede de segurança do Hermes (marco M0): nenhum código quebrado entra na branch.
+# Roda os MESMOS checks que o CLAUDE.md exige — typecheck, testes e lint — em toda
+# push e todo pull_request. Antes disto não havia CI: em 2026-07-06 o baseline
+# revelou 5 erros de lint que entraram na branch sem ninguém ver.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: typecheck · test · lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # espelha o Pi (v22.x)
+          cache: npm
+
+      # O global-setup dos testes chama o binário `sqlite3` (PRAGMA WAL no .test.db).
+      # No ubuntu-latest ele já existe, mas garantimos para não quebrar em silêncio.
+      - name: Garante o sqlite3 CLI
+        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
+
+      # npm ci roda o postinstall (prisma generate) → client em generated/prisma.
+      - name: Instala dependências
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # vitest injeta um DATABASE_URL próprio (.test.db) e cria/derruba o schema
+      # sozinho (vitest.global-setup.ts) — não precisa de .env nem do banco de produção.
+      - name: Testes
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
