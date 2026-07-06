@@ -161,6 +161,8 @@ model Account {
   name            String?
   legacyUsername  String?   @unique // login antigo por username=slug (operadores migrados)
   emailVerifiedAt DateTime? //          marco M2 (verificação de e-mail); null = não verificado
+  emailVerifyToken     String?   @unique // token do link de confirmação por e-mail (M2.6)
+  emailVerifyExpiresAt DateTime? //         validade do token de confirmação
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
