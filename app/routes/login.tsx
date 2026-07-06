@@ -122,6 +122,12 @@ export default function Login({ loaderData }: Route.ComponentProps) {
             <Button type="submit" variant="primary" className="w-full">
               Entrar
             </Button>
+            <p className="text-center text-sm text-ink-soft">
+              Não tem conta?{' '}
+              <a href="/signup" className="text-brand underline">
+                Criar conta
+              </a>
+            </p>
           </Form>
         </div>
       </div>

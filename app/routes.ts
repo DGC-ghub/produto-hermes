@@ -8,5 +8,7 @@ export default [
   route('configuracoes', 'routes/configuracoes.tsx'),
   route('login', 'routes/login.tsx'),
   route('logout', 'routes/logout.tsx'),
+  route('signup', 'routes/signup.tsx'),
+  route('verificar-email', 'routes/verificar-email.tsx'),
   route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
 ] satisfies RouteConfig
