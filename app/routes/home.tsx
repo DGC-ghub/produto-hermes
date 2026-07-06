@@ -89,7 +89,7 @@ export default function Home() {
                 certa, com a ficha do cliente na mão. Sem desenhar fluxo nenhum.
               </p>
               <div className="mt-6 flex flex-wrap gap-3">
-                <Link to="/login">
+                <Link to="/signup">
                   <Button variant="primary">Testar grátis</Button>
                 </Link>
                 <Link to="/demo/chat">
@@ -150,7 +150,7 @@ export default function Home() {
               Configure em minutos, descrevendo seu negócio. Sem cartão pra testar.
             </p>
             <Link
-              to="/login"
+              to="/signup"
               className="mt-6 inline-block rounded-lg bg-brand-vivid px-6 py-3 font-display text-base font-semibold text-brand-deep transition-colors hover:bg-white"
             >
               Testar grátis
