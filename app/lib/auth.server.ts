@@ -1,5 +1,5 @@
 import { createCookieSessionStorage, redirect } from 'react-router'
-import type { AuthedOperator } from './operators.server'
+import type { AuthedAccount } from './accounts.server'
 
 // Gate do operador: sessão por cookie assinado. A sessão carrega a identidade do
 // operador (incl. o tenant), e os loaders das telas internas escopam tudo por esse
@@ -29,8 +29,9 @@ const storage = createCookieSessionStorage({
 })
 
 export type OperatorSession = {
-  operatorId: string
-  username: string
+  accountId: string
+  username: string // e-mail da conta, para exibição no painel
+  role: string // "owner" | "operator"
   tenantId: string
   tenantSlug: string
 }
@@ -49,19 +50,21 @@ export function safeRedirect(to: string | null | undefined, fallback = '/atenden
 /** Lê a sessão do operador, se válida e completa. */
 export async function getOperator(request: Request): Promise<OperatorSession | null> {
   const session = await storage.getSession(request.headers.get('Cookie'))
-  const operatorId = session.get('operatorId')
+  const accountId = session.get('accountId')
   const username = session.get('username')
+  const role = session.get('role')
   const tenantId = session.get('tenantId')
   const tenantSlug = session.get('tenantSlug')
   if (
-    typeof operatorId !== 'string' ||
+    typeof accountId !== 'string' ||
     typeof username !== 'string' ||
+    typeof role !== 'string' ||
     typeof tenantId !== 'string' ||
     typeof tenantSlug !== 'string'
   ) {
     return null
   }
-  return { operatorId, username, tenantId, tenantSlug }
+  return { accountId, username, role, tenantId, tenantSlug }
 }
 
 /**
@@ -78,16 +81,29 @@ export async function requireOperator(request: Request): Promise<OperatorSession
   throw redirect(`/login?redirectTo=${encodeURIComponent(url.pathname + url.search)}`)
 }
 
+/**
+ * Como requireOperator, mas exige papel "owner". Telas de administração (config, billing)
+ * usam isto — um operador comum é mandado de volta pra fila. Marco M1.4.
+ */
+export async function requireOwner(request: Request): Promise<OperatorSession> {
+  const operator = await requireOperator(request)
+  if (operator.role !== 'owner') {
+    throw redirect('/atendente')
+  }
+  return operator
+}
+
 /** Cria a sessão do operador autenticado e redireciona para o destino. */
 export async function createOperatorSession(
-  operator: AuthedOperator,
+  account: AuthedAccount,
   redirectTo: string,
 ): Promise<Response> {
   const session = await storage.getSession()
-  session.set('operatorId', operator.id)
-  session.set('username', operator.username)
-  session.set('tenantId', operator.tenantId)
-  session.set('tenantSlug', operator.tenantSlug)
+  session.set('accountId', account.accountId)
+  session.set('username', account.email)
+  session.set('role', account.role)
+  session.set('tenantId', account.tenantId)
+  session.set('tenantSlug', account.tenantSlug)
   return redirect(redirectTo, {
     headers: { 'Set-Cookie': await storage.commitSession(session) },
   })

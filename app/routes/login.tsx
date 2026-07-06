@@ -2,8 +2,8 @@ import { Form, redirect, useActionData } from 'react-router'
 import { Logo, WingMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
+import { authenticateAccount, ensureSeedAccounts } from '../lib/accounts.server'
 import { createOperatorSession, getOperator, safeRedirect } from '../lib/auth.server'
-import { authenticateOperator, ensureSeedOperators } from '../lib/operators.server'
 import { checkRate, isLockedOut, type RateState, recordFailure } from '../lib/rate-limit'
 import type { Route } from './+types/login'
 
@@ -21,8 +21,8 @@ const failuresByUsername = new Map<string, RateState>()
 let loginRateState: RateState = { windowStart: 0, count: 0 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  // Garante os operadores demo (idempotente) para o piloto/local funcionar.
-  await ensureSeedOperators()
+  // Garante as contas demo (idempotente) para o piloto/local funcionar.
+  await ensureSeedAccounts()
   // Já logado: não faz sentido mostrar o login de novo.
   if (await getOperator(request)) {
     throw redirect('/atendente')
@@ -52,8 +52,8 @@ export async function action({ request }: Route.ActionArgs) {
     return { error: 'Usuário ou senha incorretos.' }
   }
 
-  const operator = await authenticateOperator(username, password)
-  if (!operator) {
+  const account = await authenticateAccount(username, password)
+  if (!account) {
     // Teto de memória: usernames aleatórios de scanner não crescem o Map pra sempre.
     if (failuresByUsername.size >= MAX_TRACKED_USERNAMES) {
       failuresByUsername.clear()
@@ -66,7 +66,7 @@ export async function action({ request }: Route.ActionArgs) {
     return { error: 'Usuário ou senha incorretos.' }
   }
   failuresByUsername.delete(username)
-  return createOperatorSession(operator, redirectTo)
+  return createOperatorSession(account, redirectTo)
 }
 
 export function meta(_args: Route.MetaArgs) {
@@ -103,12 +103,12 @@ export default function Login({ loaderData }: Route.ComponentProps) {
           <Form method="post" className="space-y-4">
             <input type="hidden" name="redirectTo" value={loaderData.redirectTo} />
             <TextField
-              label="Usuário"
+              label="E-mail ou usuário"
               type="text"
               name="username"
               required
               autoComplete="username"
-              placeholder="a sua empresa"
+              placeholder="voce@empresa.com"
             />
             <TextField
               label="Senha"
