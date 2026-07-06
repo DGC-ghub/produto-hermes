@@ -25,6 +25,7 @@ model Tenant {
   memberships     Membership[]
   configRecord    TenantConfigRecord?
   knowledgeDocs   KnowledgeDoc[]
+  subscription    Subscription?
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
@@ -196,6 +197,24 @@ model TenantConfigRecord {
   json      String // TenantConfig serializado (sem o slug, igual ao arquivo)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// Assinatura do tenant (marco M3) — agnóstica de gateway: os campos provider* servem pra Stripe,
+// Mercado Pago, Asaas ou Pix manual. O webhook do gateway escolhido sincroniza status/período.
+// Um registro por tenant. O "S" de SaaS pago mora aqui.
+model Subscription {
+  id                 String    @id @default(cuid())
+  tenantId           String    @unique
+  provider           String    @default("none") // none | stripe | mercadopago | asaas | manual
+  providerCustomerId String? //                    id do cliente no gateway
+  providerSubId      String?   @unique //           id da assinatura no gateway (dedup de webhook)
+  status             String    @default("trialing") // trialing | active | past_due | canceled
+  planId             String? //                       referência ao catálogo em código (PLANS)
+  currentPeriodEnd   DateTime? //                     fim do período pago/trial
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
