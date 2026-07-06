@@ -14,6 +14,7 @@
     "operator:add": "npx tsx scripts/operator-add.ts",
     "tenant:add": "npx tsx scripts/tenant-add.ts",
     "prova:chamado": "npx tsx scripts/prova-chamado.ts",
+    "prova:signup": "npx tsx scripts/prova-signup.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
