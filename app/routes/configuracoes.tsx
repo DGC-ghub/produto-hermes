@@ -9,7 +9,7 @@ import {
   parseTenantConfig,
   saveTenantConfig,
 } from '../lib/attendant/tenant-config'
-import { requireOperator } from '../lib/auth.server'
+import { requireOwner } from '../lib/auth.server'
 import { cx } from '../lib/ui'
 import type { Route } from './+types/configuracoes'
 
@@ -30,7 +30,7 @@ const OBJECTIVE_OPTIONS = [
 ] as const
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const operator = await requireOperator(request)
+  const operator = await requireOwner(request)
   const config = loadTenantConfig(operator.tenantSlug)
   return { config, operator: { username: operator.username, tenantSlug: operator.tenantSlug } }
 }
@@ -43,7 +43,7 @@ export function meta(_args: Route.MetaArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-  const operator = await requireOperator(request)
+  const operator = await requireOwner(request)
   const form = await request.formData()
   const str = (name: string) => String(form.get(name) ?? '').trim()
   // Campos de lista vêm como textarea (uma por linha).
