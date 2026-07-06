@@ -23,6 +23,8 @@ model Tenant {
   operators       Operator[]
   whatsappNumbers WhatsappNumber[]
   memberships     Membership[]
+  configRecord    TenantConfigRecord?
+  knowledgeDocs   KnowledgeDoc[]
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
@@ -179,5 +181,35 @@ model Membership {
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
 
   @@unique([accountId, tenantId])
+  @@index([tenantId])
+}
+
+// Config do tenant no BANCO (marco M2) — hoje a fonte é config/tenants/<slug>.json.
+// Guardamos o JSON já validado (parseTenantConfig segue sendo a validação); tirar do
+// arquivo é o que destrava o provisionamento self-service (um signup HTTP não escreve
+// arquivo no host). Um registro por tenant.
+model TenantConfigRecord {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  json      String // TenantConfig serializado (sem o slug, igual ao arquivo)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// Documento de conhecimento do tenant no BANCO (marco M2) — hoje espelha knowledge/<slug>/*.md.
+// O dono edita pela tela em vez de subir arquivo.
+model KnowledgeDoc {
+  id        String   @id @default(cuid())
+  tenantId  String
+  title     String
+  content   String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   @@index([tenantId])
 }
