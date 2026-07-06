@@ -45,7 +45,7 @@ describe('isLockedOut / recordFailure (freio por chave)', () => {
   })
 
   it('trava a chave após N falhas na janela e destrava quando a janela expira', () => {
-    let state
+    let state: RateState | undefined
     for (let i = 0; i < 5; i++) {
       state = recordFailure(1000 + i, state, WINDOW)
     }
@@ -55,7 +55,7 @@ describe('isLockedOut / recordFailure (freio por chave)', () => {
   })
 
   it('falhas abaixo do teto não travam', () => {
-    let state
+    let state: RateState | undefined
     for (let i = 0; i < 4; i++) {
       state = recordFailure(1000 + i, state, WINDOW)
     }

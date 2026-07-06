@@ -116,9 +116,9 @@ describe('validateAttendantOutput', () => {
         policy,
       ),
     ).toEqual({ ok: false, reason: 'reply_afirma_registro_sem_action' })
-    expect(
-      validateAttendantOutput({ ...good, reply: 'Pronto, chamado aberto!' }, policy).ok,
-    ).toBe(false)
+    expect(validateAttendantOutput({ ...good, reply: 'Pronto, chamado aberto!' }, policy).ok).toBe(
+      false,
+    )
   })
 
   it('aceita "registrei" quando a action abrir_chamado VEM junto', () => {
@@ -137,15 +137,19 @@ describe('validateAttendantOutput', () => {
   it('formas em aberto ("posso registrar?", "vou registrar") não são barradas', () => {
     const policy = { tools: [{ name: 'abrir_chamado' }] }
     expect(
-      validateAttendantOutput({ ...good, reply: 'Quer que eu registre? Posso registrar agora.' }, policy)
-        .ok,
+      validateAttendantOutput(
+        { ...good, reply: 'Quer que eu registre? Posso registrar agora.' },
+        policy,
+      ).ok,
     ).toBe(true)
   })
 
   it('tenant SEM a tool abrir_chamado não sofre o guard de registro', () => {
     expect(
-      validateAttendantOutput({ ...good, reply: 'Seu e-mail foi registrado na nossa lista.' }, { tools: [] })
-        .ok,
+      validateAttendantOutput(
+        { ...good, reply: 'Seu e-mail foi registrado na nossa lista.' },
+        { tools: [] },
+      ).ok,
     ).toBe(true)
   })
 

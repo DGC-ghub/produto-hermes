@@ -26,7 +26,9 @@ const { processIncomingMessage } = await import('../app/lib/conversation.server'
 const CONTACT = 'prova-chamado-hospital'
 
 try {
-  console.log(`[prova] provider=${process.env.ATTENDANT_PROVIDER ?? 'mock'} — turno 1 (demanda B2B)…`)
+  console.log(
+    `[prova] provider=${process.env.ATTENDANT_PROVIDER ?? 'mock'} — turno 1 (demanda B2B)…`,
+  )
   const t0 = Date.now()
   const first = await processIncomingMessage({
     tenantSlug: 'csmed',

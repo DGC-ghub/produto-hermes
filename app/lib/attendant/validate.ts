@@ -140,8 +140,7 @@ function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | n
   if (typeof description !== 'string' || description.trim().length === 0) {
     return null
   }
-  let cat =
-    typeof category === 'string' && category.trim().length > 0 ? category.trim() : undefined
+  let cat = typeof category === 'string' && category.trim().length > 0 ? category.trim() : undefined
 
   const limits = toolPolicy?.limits
   // allowedCategories: categoria fora da lista DERRUBA SÓ A CATEGORIA, não a
