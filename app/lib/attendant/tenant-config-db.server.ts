@@ -1,5 +1,10 @@
 import { db } from '../../db.server'
-import { parseTenantConfig, serializeTenantConfig, type TenantConfig } from './tenant-config'
+import {
+  loadTenantConfig,
+  parseTenantConfig,
+  serializeTenantConfig,
+  type TenantConfig,
+} from './tenant-config'
 
 // Acesso ao TenantConfig pelo BANCO (marco M2.2). Espelha loadTenantConfig/saveTenantConfig
 // (que usam arquivo) reusando parseTenantConfig/serializeTenantConfig — a validação é a MESMA,
@@ -32,4 +37,21 @@ export async function saveTenantConfigToDb(config: TenantConfig): Promise<void> 
     create: { tenantId: tenant.id, json },
     update: { json },
   })
+}
+
+/**
+ * Estratégia C do marco M2.5: resolve o config do tenant pelo BANCO primeiro e, se ainda não
+ * estiver lá, cai no ARQUIVO (reserva). Retorna null só quando nenhuma fonte tem. Assim a
+ * migração é gradual e nada falta durante a transição — o arquivo cobre o que o banco não tem.
+ */
+export async function resolveTenantConfig(slug: string): Promise<TenantConfig | null> {
+  const fromDb = await loadTenantConfigFromDb(slug)
+  if (fromDb) {
+    return fromDb
+  }
+  try {
+    return loadTenantConfig(slug) // reserva: arquivo
+  } catch {
+    return null
+  }
 }

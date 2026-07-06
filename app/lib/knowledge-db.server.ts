@@ -1,5 +1,5 @@
 import { db } from '../db.server'
-import type { KnowledgeDocument } from './knowledge.server'
+import { type KnowledgeDocument, loadKnowledgeFromSource } from './knowledge.server'
 
 // Acesso à knowledge pelo BANCO (marco M2.2). Retorna o MESMO shape KnowledgeDocument de
 // loadKnowledgeBase (arquivo), pra ser drop-in — knowledge já era async, então trocar o caller
@@ -61,4 +61,19 @@ export async function writeKnowledgeDoc(
       data: { tenantId: tenant.id, title, content, position },
     })
   }
+}
+
+/**
+ * Estratégia C do marco M2.5: resolve a knowledge do tenant pelo BANCO primeiro; se o tenant
+ * ainda não tem docs no banco, cai no ARQUIVO (sourceDir, ex.: "knowledge/<slug>"). Mesmo shape.
+ */
+export async function resolveKnowledge(
+  slug: string,
+  sourceDir: string,
+): Promise<KnowledgeDocument[]> {
+  const fromDb = await loadKnowledgeFromDb(slug)
+  if (fromDb.length > 0) {
+    return fromDb
+  }
+  return loadKnowledgeFromSource(sourceDir)
 }

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../../db.server'
 import { safeDefaultConfig } from './tenant-config'
-import { loadTenantConfigFromDb, saveTenantConfigToDb } from './tenant-config-db.server'
+import {
+  loadTenantConfigFromDb,
+  resolveTenantConfig,
+  saveTenantConfigToDb,
+} from './tenant-config-db.server'
 
 const SLUG = 'zzz-m22-cfg'
 
@@ -35,5 +39,22 @@ describe('config no banco (M2.2)', () => {
 
   it('save lança se o tenant não existe', async () => {
     await expect(saveTenantConfigToDb(safeDefaultConfig(SLUG))).rejects.toThrow()
+  })
+})
+
+describe('resolveTenantConfig — estratégia C (M2.5)', () => {
+  it('usa o BANCO quando existe registro', async () => {
+    await db.tenant.create({ data: { slug: SLUG, name: 'M22 Cfg' } })
+    await saveTenantConfigToDb({
+      ...safeDefaultConfig(SLUG),
+      businessProfile: { name: 'Do Banco', segment: 'x', tone: 'y' },
+    })
+    const config = await resolveTenantConfig(SLUG)
+    expect(config?.businessProfile.name).toBe('Do Banco')
+  })
+
+  it('devolve null quando não há banco nem arquivo (cai no default no chamador)', async () => {
+    await db.tenant.create({ data: { slug: SLUG, name: 'M22 Cfg' } })
+    expect(await resolveTenantConfig(SLUG)).toBeNull()
   })
 })

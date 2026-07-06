@@ -2,10 +2,11 @@ import { db } from '../db.server'
 import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
 import { generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
-import { loadTenantConfig, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
+import { safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
+import { resolveTenantConfig } from './attendant/tenant-config-db.server'
 import { isHumanHandling } from './conversation-status'
 import { decideHandoff } from './handoff'
-import { loadKnowledgeFromSource } from './knowledge.server'
+import { resolveKnowledge } from './knowledge-db.server'
 import { extractLeadPatch } from './lead'
 import { retrieveRelevantChunks } from './retrieval'
 import { resolveTenant } from './tenants.server'
@@ -44,19 +45,20 @@ export type ProcessIncomingMessageResult = {
 
 const HISTORY_LIMIT = 12
 
-// Carrega o TenantConfig com fallback SEGURO: se o config faltar ou estiver
-// inválido, degrada para um default conservador (sem ações, escala humano),
-// nunca para comportamento solto.
-function loadConfigSafe(slug: string): TenantConfig {
+// Resolve o TenantConfig com fallback em camadas (estratégia C do M2.5): BANCO primeiro,
+// ARQUIVO como reserva, e se nada existir/estiver válido, um default conservador (sem ações,
+// escala humano) — nunca comportamento solto.
+async function loadConfigSafe(slug: string): Promise<TenantConfig> {
   try {
-    return loadTenantConfig(slug)
+    const config = await resolveTenantConfig(slug)
+    if (config) {
+      return config
+    }
+    console.error(`[hermes] TenantConfig ausente para "${slug}" — usando default seguro`)
   } catch (error) {
-    console.error(
-      `[hermes] TenantConfig inválido/ausente para "${slug}" — usando default seguro`,
-      error,
-    )
-    return safeDefaultConfig(slug)
+    console.error(`[hermes] TenantConfig inválido para "${slug}" — usando default seguro`, error)
   }
+  return safeDefaultConfig(slug)
 }
 
 /**
@@ -82,7 +84,7 @@ export async function processIncomingMessage(
   if (!tenant) {
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
-  const config = loadConfigSafe(input.tenantSlug)
+  const config = await loadConfigSafe(input.tenantSlug)
 
   // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE
   // do contato. No WhatsApp a identidade é o número (contactId) e a mensagem chega
@@ -185,7 +187,7 @@ export async function processIncomingMessage(
   // explícito de humano e tema sensível já decidem a resposta segura, então não
   // pagamos a latência/custo do LLM nem executamos efeitos (lead/chamado) de uma
   // proposta cuja resposta o cliente nunca veria.
-  const docs = await loadKnowledgeFromSource(config.knowledge.sourceDir)
+  const docs = await resolveKnowledge(config.slug, config.knowledge.sourceDir)
   const retrieved = retrieveRelevantChunks(message, docs)
   const guard = decideHandoff({
     message,

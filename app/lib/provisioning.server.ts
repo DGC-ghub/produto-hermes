@@ -28,35 +28,40 @@ export async function provisionTenant(
   }
   const name = input.name.trim() || slug
 
-  return db.$transaction(async (tx) => {
-    const tenant = await tx.tenant.upsert({
-      where: { slug },
-      create: { slug, name },
-      update: {}, // idempotente: não sobrescreve um tenant já existente
-    })
-
-    const hasConfig = await tx.tenantConfigRecord.findUnique({ where: { tenantId: tenant.id } })
-    if (!hasConfig) {
-      await tx.tenantConfigRecord.create({
-        data: { tenantId: tenant.id, json: serializeTenantConfig(safeDefaultConfig(slug)) },
+  return db.$transaction(
+    async (tx) => {
+      const tenant = await tx.tenant.upsert({
+        where: { slug },
+        create: { slug, name },
+        update: {}, // idempotente: não sobrescreve um tenant já existente
       })
-    }
 
-    const account = await tx.account.upsert({
-      where: { email },
-      create: { email, passwordHash: input.ownerPasswordHash },
-      update: {}, // não sobrescreve a senha de uma conta já existente
-    })
+      const hasConfig = await tx.tenantConfigRecord.findUnique({ where: { tenantId: tenant.id } })
+      if (!hasConfig) {
+        await tx.tenantConfigRecord.create({
+          data: { tenantId: tenant.id, json: serializeTenantConfig(safeDefaultConfig(slug)) },
+        })
+      }
 
-    const hasMembership = await tx.membership.findUnique({
-      where: { accountId_tenantId: { accountId: account.id, tenantId: tenant.id } },
-    })
-    if (!hasMembership) {
-      await tx.membership.create({
-        data: { accountId: account.id, tenantId: tenant.id, role: 'owner' },
+      const account = await tx.account.upsert({
+        where: { email },
+        create: { email, passwordHash: input.ownerPasswordHash },
+        update: {}, // não sobrescreve a senha de uma conta já existente
       })
-    }
 
-    return { tenantId: tenant.id, accountId: account.id }
-  })
+      const hasMembership = await tx.membership.findUnique({
+        where: { accountId_tenantId: { accountId: account.id, tenantId: tenant.id } },
+      })
+      if (!hasMembership) {
+        await tx.membership.create({
+          data: { accountId: account.id, tenantId: tenant.id, role: 'owner' },
+        })
+      }
+
+      return { tenantId: tenant.id, accountId: account.id }
+    },
+    // Folga no timeout/maxWait: sob escrita concorrente (SQLite serializa escritores), o default
+    // de 5s estoura "Operation has timed out"; 15s dá margem segura — vale também pra produção.
+    { maxWait: 15_000, timeout: 15_000 },
+  )
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { loadKnowledgeFromDb, writeKnowledgeDoc } from './knowledge-db.server'
+import { loadKnowledgeFromDb, resolveKnowledge, writeKnowledgeDoc } from './knowledge-db.server'
 
 const SLUG = 'zzz-m22-kb'
 
@@ -38,5 +38,20 @@ describe('knowledge no banco (M2.2)', () => {
   it('load devolve [] para tenant sem docs', async () => {
     await db.tenant.create({ data: { slug: SLUG, name: 'M22 KB' } })
     expect(await loadKnowledgeFromDb(SLUG)).toEqual([])
+  })
+})
+
+describe('resolveKnowledge — estratégia C (M2.5)', () => {
+  it('usa o BANCO quando o tenant tem docs', async () => {
+    await db.tenant.create({ data: { slug: SLUG, name: 'M22 KB' } })
+    await writeKnowledgeDoc(SLUG, { title: 'Do Banco', content: 'conteúdo' })
+    const docs = await resolveKnowledge(SLUG, `knowledge/${SLUG}`)
+    expect(docs).toHaveLength(1)
+    expect(docs[0]?.title).toBe('Do Banco')
+  })
+
+  it('cai no arquivo quando o banco não tem docs (pasta inexistente → [])', async () => {
+    await db.tenant.create({ data: { slug: SLUG, name: 'M22 KB' } })
+    expect(await resolveKnowledge(SLUG, `knowledge/${SLUG}`)).toEqual([])
   })
 })

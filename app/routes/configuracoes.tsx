@@ -4,11 +4,8 @@ import { AppShell } from '../components/layout/AppShell'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { TextField } from '../components/ui/TextField'
-import {
-  loadTenantConfig,
-  parseTenantConfig,
-  saveTenantConfig,
-} from '../lib/attendant/tenant-config'
+import { parseTenantConfig, safeDefaultConfig } from '../lib/attendant/tenant-config'
+import { resolveTenantConfig, saveTenantConfigToDb } from '../lib/attendant/tenant-config-db.server'
 import { requireOwner } from '../lib/auth.server'
 import { cx } from '../lib/ui'
 import type { Route } from './+types/configuracoes'
@@ -31,7 +28,8 @@ const OBJECTIVE_OPTIONS = [
 
 export async function loader({ request }: Route.LoaderArgs) {
   const operator = await requireOwner(request)
-  const config = loadTenantConfig(operator.tenantSlug)
+  const config =
+    (await resolveTenantConfig(operator.tenantSlug)) ?? safeDefaultConfig(operator.tenantSlug)
   return { config, operator: { username: operator.username, tenantSlug: operator.tenantSlug } }
 }
 
@@ -55,7 +53,8 @@ export async function action({ request }: Route.ActionArgs) {
 
   // Parte do config atual (limits das tools, sourceDir, opcionais) é PRESERVADA —
   // a tela edita só o que mostra, sem apagar o resto.
-  const current = loadTenantConfig(operator.tenantSlug)
+  const current =
+    (await resolveTenantConfig(operator.tenantSlug)) ?? safeDefaultConfig(operator.tenantSlug)
 
   const raw = {
     businessProfile: {
@@ -99,7 +98,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   try {
     const parsed = parseTenantConfig(operator.tenantSlug, raw)
-    saveTenantConfig(parsed)
+    await saveTenantConfigToDb(parsed)
     return { ok: true as const }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Erro ao salvar.'

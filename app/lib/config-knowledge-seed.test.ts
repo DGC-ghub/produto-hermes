@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { db } from '../db.server'
 import { safeDefaultConfig } from './attendant/tenant-config'
 import { loadTenantConfigFromDb, saveTenantConfigToDb } from './attendant/tenant-config-db.server'
 import { seedConfigAndKnowledgeToDb } from './config-knowledge-seed.server'
-import { db } from '../db.server'
 
 // SLUG de teste SEM arquivo de config/knowledge — e escopamos o seed a ele (nunca slug real
 // como 'dgc', que outras suítes criam via ensureInitialTenants, e nem o seed global).
@@ -44,8 +44,6 @@ describe('seedConfigAndKnowledgeToDb (M2.4)', () => {
 
     expect(r.configs).toBe(0)
     expect(r.docs).toBe(0)
-    expect(
-      await db.tenantConfigRecord.findUnique({ where: { tenantId: tenant.id } }),
-    ).toBeNull()
+    expect(await db.tenantConfigRecord.findUnique({ where: { tenantId: tenant.id } })).toBeNull()
   })
 })

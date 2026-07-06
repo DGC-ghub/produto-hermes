@@ -8,7 +8,9 @@ declare global {
 }
 
 if (!global.__db) {
-  const adapter = new PrismaBetterSqlite3({ url: dbUrl })
+  // timeout = busy_timeout do SQLite (15s): sob escrita concorrente (webhook + provisionamento;
+  // e workers de teste no mesmo .test.db) espera o lock liberar em vez de estourar SQLITE_BUSY.
+  const adapter = new PrismaBetterSqlite3({ url: dbUrl, timeout: 15_000 })
   global.__db = new PrismaClient({ adapter })
 }
 
