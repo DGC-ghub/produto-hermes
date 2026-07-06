@@ -34,4 +34,20 @@ chmod 600 "$out" "$DEST/env-$stamp.bak"
 ls -1t "$DEST"/dev-*.db 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
 ls -1t "$DEST"/env-*.bak 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
 
+# ── Off-site (marco M0.4): sobe pro remote rclone CIFRADO, se configurado ─────
+# Backup no MESMO disco não protege contra falha de disco / roubo / perda do Pi.
+# O remote deve ser um `crypt` do rclone (cifra em repouso) — configurar uma vez
+# com `rclone config` (passo a passo em deploy/backup-offsite.md). Enquanto não
+# existir, o backup LOCAL segue funcionando normalmente; só registra que pulou.
+REMOTE="${HERMES_BACKUP_REMOTE:-hermes-crypt:}"
+if command -v rclone >/dev/null 2>&1 && rclone listremotes 2>/dev/null | grep -qx "${REMOTE%%:*}:"; then
+  if rclone copy "$DEST" "$REMOTE" --include 'dev-*.db' --include 'env-*.bak'; then
+    echo "[backup-hermes] off-site ok: enviado pra $REMOTE (cifrado)"
+  else
+    echo "[backup-hermes] off-site FALHOU (rclone copy) — backup local preservado" >&2
+  fi
+else
+  echo "[backup-hermes] off-site PULADO: remote '$REMOTE' não configurado (ver deploy/backup-offsite.md)"
+fi
+
 echo "[backup-hermes] ok: $out ($(stat -c%s "$out") bytes, integrity ok)"
