@@ -10,5 +10,7 @@ export default [
   route('logout', 'routes/logout.tsx'),
   route('signup', 'routes/signup.tsx'),
   route('verificar-email', 'routes/verificar-email.tsx'),
+  route('assinar', 'routes/assinar.tsx'),
+  route('webhook/mercadopago', 'routes/webhook.mercadopago.tsx'),
   route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
 ] satisfies RouteConfig
