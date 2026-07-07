@@ -15,6 +15,7 @@
     "tenant:add": "npx tsx scripts/tenant-add.ts",
     "prova:chamado": "npx tsx scripts/prova-chamado.ts",
     "prova:signup": "npx tsx scripts/prova-signup.ts",
+    "email:test": "npx tsx scripts/send-test-email.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
