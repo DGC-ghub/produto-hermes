@@ -16,6 +16,7 @@
     "prova:chamado": "npx tsx scripts/prova-chamado.ts",
     "prova:signup": "npx tsx scripts/prova-signup.ts",
     "email:test": "npx tsx scripts/send-test-email.ts",
+    "mp:test": "npx tsx scripts/mp-test.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

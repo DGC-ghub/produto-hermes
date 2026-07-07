@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createPreapproval, getPreapproval, mapMpStatus } from './mercadopago.server'
+import { createPreapproval, getMpAccount, getPreapproval, mapMpStatus } from './mercadopago.server'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -29,5 +29,10 @@ describe('cliente MP em modo stub (sem MP_ACCESS_TOKEN)', () => {
   it('getPreapproval → null', async () => {
     vi.stubEnv('MP_ACCESS_TOKEN', '')
     expect(await getPreapproval('abc')).toBeNull()
+  })
+
+  it('getMpAccount → null (não valida sem token)', async () => {
+    vi.stubEnv('MP_ACCESS_TOKEN', '')
+    expect(await getMpAccount()).toBeNull()
   })
 })

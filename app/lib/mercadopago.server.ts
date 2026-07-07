@@ -79,6 +79,47 @@ export async function getPreapproval(id: string): Promise<PreapprovalStatus | nu
   }
 }
 
+export type MpAccount = {
+  id: number
+  nickname: string | null
+  siteId: string | null // MLB = Brasil
+  email: string | null
+}
+
+/**
+ * Valida o `MP_ACCESS_TOKEN` chamando `/users/me` (read-only — não cria nada, não move
+ * dinheiro). Retorna os dados da conta conectada, ou null (sem token / inválido / rede).
+ * Serve pra provar que a conta está plugada antes de abrir cobrança. Server-side.
+ */
+export async function getMpAccount(): Promise<MpAccount | null> {
+  const token = process.env.MP_ACCESS_TOKEN
+  if (!token) {
+    return null
+  }
+  try {
+    const res = await fetch(`${MP_API}/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      return null
+    }
+    const data = (await res.json()) as {
+      id: number
+      nickname?: string
+      site_id?: string
+      email?: string
+    }
+    return {
+      id: data.id,
+      nickname: data.nickname ?? null,
+      siteId: data.site_id ?? null,
+      email: data.email ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Traduz o status do Mercado Pago pro status interno da Subscription. */
 export function mapMpStatus(mpStatus: string): 'active' | 'past_due' | 'canceled' | 'trialing' {
   switch (mpStatus) {
