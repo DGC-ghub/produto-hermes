@@ -25,4 +25,15 @@ describe('cifra de segredos (M4)', () => {
   it('formato inválido → lança', () => {
     expect(() => decryptSecret('nao-e-um-segredo')).toThrow()
   })
+
+  it('context (AAD) amarra a cifra ao escopo — roundtrip com o mesmo context', () => {
+    const enc = encryptSecret('token-do-tenant-A', 'tenant:aaa')
+    expect(decryptSecret(enc, 'tenant:aaa')).toBe('token-do-tenant-A')
+  })
+
+  it('decifrar com context de OUTRO tenant → lança (anti confused-deputy)', () => {
+    const enc = encryptSecret('token-do-tenant-A', 'tenant:aaa')
+    expect(() => decryptSecret(enc, 'tenant:bbb')).toThrow()
+    expect(() => decryptSecret(enc, '')).toThrow() // sem context também falha
+  })
 })
