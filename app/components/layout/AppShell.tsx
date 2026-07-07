@@ -12,6 +12,7 @@ const NAV = [
   { to: '/atendente', label: 'Central' },
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/configuracoes', label: 'Configurações' },
+  { to: '/assinar', label: 'Assinatura' },
 ]
 
 type AppShellProps = {
