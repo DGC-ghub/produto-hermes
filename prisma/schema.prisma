@@ -36,6 +36,10 @@ model WhatsappNumber {
   phoneNumberId String   @unique
   tenantId      String
   label         String? // ajuda o operador a saber de qual número se trata
+  // Credenciais PRÓPRIAS do tenant, cifradas em repouso (crypto.server, AAD `tenant:<id>`).
+  // Null = usa o env global (fallback de transição — estratégia C, igual ao config/knowledge).
+  accessTokenEnc String? // token de envio da Cloud API deste número (cifrado)
+  appSecretEnc   String? // App Secret p/ validar a assinatura do webhook deste número (cifrado)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

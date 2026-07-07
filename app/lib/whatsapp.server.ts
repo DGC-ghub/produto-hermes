@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { db } from '../db.server'
+import { resolveWhatsappCredential } from './whatsapp-credential.server'
 
 // Integração com o WhatsApp Business Platform (Meta Cloud API). O webhook reutiliza
 // `processIncomingMessage` — aqui ficam só as peças do canal: handshake, validação
@@ -174,10 +175,16 @@ export async function sendWhatsAppMessage(
   text: string,
   phoneNumberId?: string,
 ): Promise<boolean> {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN
   const numberId = phoneNumberId ?? process.env.WHATSAPP_PHONE_NUMBER_ID
-  if (!token || !numberId) {
-    console.warn('[whatsapp] envio ignorado — WHATSAPP_ACCESS_TOKEN/PHONE_NUMBER_ID ausentes')
+  if (!numberId) {
+    console.warn('[whatsapp] envio ignorado — PHONE_NUMBER_ID ausente')
+    return false
+  }
+  // Credencial do tenant dono do número (banco, cifrada) com fallback pro env global —
+  // permite o 2º cliente enviar pelo próprio token sem que os pilotos (no env) mudem.
+  const { accessToken: token } = await resolveWhatsappCredential(numberId)
+  if (!token) {
+    console.warn('[whatsapp] envio ignorado — sem WHATSAPP_ACCESS_TOKEN (banco/env) para o número')
     return false
   }
   try {
