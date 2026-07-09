@@ -447,7 +447,7 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
             </Button>
           </Form>
           <p className="text-xs text-ink-soft/60">
-            A transcrição roda local (faster-whisper). No Pi leva ~15s por áudio curto.
+            Você também pode mandar um áudio — a transcrição leva alguns segundos.
           </p>
         </section>
       </main>

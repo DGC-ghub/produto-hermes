@@ -1,6 +1,6 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
-
 import type { Route } from './+types/root'
+import { WingMark } from './components/brand/BrandMark'
 import './app.css'
 
 export const links: Route.LinksFunction = () => [
@@ -61,25 +61,30 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = 'Oops!'
-  let details = 'An unexpected error occurred.'
-  let stack: string | undefined
+  const is404 = isRouteErrorResponse(error) && error.status === 404
+  const title = is404 ? 'Página não encontrada' : 'Algo deu errado'
+  const detail = is404
+    ? 'A página que você procurou não existe ou foi movida.'
+    : 'Tivemos um problema inesperado. Tente de novo em instantes.'
 
-  if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : 'Error'
-    details =
-      error.status === 404 ? 'The requested page could not be found.' : error.statusText || details
-  } else if (import.meta.env.DEV && error && error instanceof Error) {
-    details = error.message
-    stack = error.stack
-  }
+  // Stack só em desenvolvimento — nunca vaza detalhe técnico pro cliente em produção.
+  const stack = import.meta.env.DEV && error instanceof Error ? error.stack : undefined
 
   return (
-    <main className="pt-16 p-4 container mx-auto">
-      <h1>{message}</h1>
-      <p>{details}</p>
+    <main className="flex min-h-screen flex-col items-center justify-center bg-bg px-6 py-16 text-center text-ink">
+      <span className="flex size-14 items-center justify-center rounded-2xl bg-brand-deep">
+        <WingMark accent className="size-7 text-white" />
+      </span>
+      <h1 className="mt-5 font-display text-2xl font-bold tracking-tight text-ink">{title}</h1>
+      <p className="mt-2 max-w-sm text-sm text-ink-soft">{detail}</p>
+      <a
+        href="/"
+        className="mt-6 inline-flex items-center rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-deep"
+      >
+        Voltar ao início
+      </a>
       {stack && (
-        <pre className="w-full p-4 overflow-x-auto">
+        <pre className="mt-8 w-full max-w-2xl overflow-x-auto rounded-lg bg-surface p-4 text-left text-xs text-ink-soft">
           <code>{stack}</code>
         </pre>
       )}
