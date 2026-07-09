@@ -3,7 +3,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
 import { ensureTenant } from './tenants.server'
 import {
+  getWhatsappNumberOwnerSlug,
   type InboundMessage,
+  listTenantWhatsappNumbers,
   parseInboundMessages,
   registerWhatsappNumber,
   resolveTenantSlugByPhoneNumber,
@@ -11,6 +13,7 @@ import {
   verifyWebhookChallenge,
   verifyWebhookSignature,
 } from './whatsapp.server'
+import { setWhatsappCredential } from './whatsapp-credential.server'
 
 const ORIGINAL = { ...process.env }
 afterEach(() => {
@@ -251,5 +254,39 @@ describe('registerWhatsappNumber', () => {
     expect(await resolveTenantSlugByPhoneNumber('WA_REG_1')).toBe(WA_B)
     const rows = await db.whatsappNumber.findMany({ where: { phoneNumberId: 'WA_REG_1' } })
     expect(rows.length).toBe(1)
+  })
+})
+
+describe('listTenantWhatsappNumbers + getWhatsappNumberOwnerSlug (tela Conectar WhatsApp)', () => {
+  const T = 'zzz-test-wa-conn'
+
+  beforeAll(async () => {
+    await ensureTenant({ slug: T, name: 'WA Conn' })
+  })
+  afterEach(async () => {
+    await db.whatsappNumber.deleteMany({ where: { phoneNumberId: { startsWith: 'WA_CONN_' } } })
+  })
+  afterAll(async () => {
+    await db.whatsappNumber.deleteMany({ where: { tenant: { slug: T } } })
+    await db.tenant.deleteMany({ where: { slug: T } })
+  })
+
+  it('lista os números do tenant com hasOwnToken e NÃO vaza o token cifrado', async () => {
+    await registerWhatsappNumber('WA_CONN_1', T, 'Principal')
+    let nums = await listTenantWhatsappNumbers(T)
+    expect(nums).toHaveLength(1)
+    expect(nums[0]?.label).toBe('Principal')
+    expect(nums[0]?.hasOwnToken).toBe(false)
+    expect(nums[0]).not.toHaveProperty('accessTokenEnc') // o cifrado nunca sai do servidor
+
+    await setWhatsappCredential('WA_CONN_1', { accessToken: 'tok-proprio' })
+    nums = await listTenantWhatsappNumbers(T)
+    expect(nums[0]?.hasOwnToken).toBe(true)
+  })
+
+  it('getWhatsappNumberOwnerSlug devolve o dono no banco, ou null se livre', async () => {
+    await registerWhatsappNumber('WA_CONN_2', T)
+    expect(await getWhatsappNumberOwnerSlug('WA_CONN_2')).toBe(T)
+    expect(await getWhatsappNumberOwnerSlug('WA_CONN_LIVRE')).toBeNull()
   })
 })

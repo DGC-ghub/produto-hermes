@@ -166,6 +166,47 @@ export async function registerWhatsappNumber(
   })
 }
 
+export type TenantWhatsappNumber = {
+  phoneNumberId: string
+  label: string | null
+  hasOwnToken: boolean // tem token próprio cifrado? (nunca devolvemos o token em si)
+}
+
+/**
+ * Lista os números de WhatsApp de um tenant — é o que a tela "Conectar WhatsApp" mostra.
+ * NUNCA devolve o token (só se existe um próprio); o segredo não sai do servidor. Server-side.
+ */
+export async function listTenantWhatsappNumbers(
+  tenantSlug: string,
+): Promise<TenantWhatsappNumber[]> {
+  const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } })
+  if (!tenant) {
+    return []
+  }
+  const rows = await db.whatsappNumber.findMany({
+    where: { tenantId: tenant.id },
+    select: { phoneNumberId: true, label: true, accessTokenEnc: true },
+    orderBy: { createdAt: 'asc' },
+  })
+  return rows.map((row) => ({
+    phoneNumberId: row.phoneNumberId,
+    label: row.label,
+    hasOwnToken: Boolean(row.accessTokenEnc),
+  }))
+}
+
+/**
+ * Slug do tenant dono de um número NO BANCO (ignora o env), ou null se livre. A tela de conexão
+ * usa isto pra RECUSAR reatribuir um número que já é de outra empresa (anti-sequestro). Server-side.
+ */
+export async function getWhatsappNumberOwnerSlug(phoneNumberId: string): Promise<string | null> {
+  const row = await db.whatsappNumber.findUnique({
+    where: { phoneNumberId },
+    select: { tenant: { select: { slug: true } } },
+  })
+  return row?.tenant.slug ?? null
+}
+
 /**
  * Envia uma mensagem de texto pela Cloud API. Best-effort: sem credenciais ou em
  * erro, loga e devolve false (o webhook nunca quebra por causa do envio). Server-side.

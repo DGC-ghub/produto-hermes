@@ -13,6 +13,7 @@ const NAV = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/configuracoes', label: 'Configurações' },
   { to: '/conhecimento', label: 'Conhecimento' },
+  { to: '/conectar-whatsapp', label: 'WhatsApp' },
   { to: '/assinar', label: 'Assinatura' },
 ]
 
