@@ -1,4 +1,4 @@
-import { Form, redirect, useActionData } from 'react-router'
+import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
 import { Logo, WingMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
@@ -75,6 +75,8 @@ export function meta(_args: Route.MetaArgs) {
 
 export default function Login({ loaderData }: Route.ComponentProps) {
   const actionData = useActionData<typeof action>()
+  const navigation = useNavigation()
+  const submitting = navigation.state !== 'idle'
 
   return (
     <main className="flex min-h-screen">
@@ -119,14 +121,14 @@ export default function Login({ loaderData }: Route.ComponentProps) {
               placeholder="••••••••"
             />
             {actionData?.error && <p className="text-sm text-urgent">{actionData.error}</p>}
-            <Button type="submit" variant="primary" className="w-full">
-              Entrar
+            <Button type="submit" variant="primary" className="w-full" disabled={submitting}>
+              {submitting ? 'Entrando…' : 'Entrar'}
             </Button>
             <p className="text-center text-sm text-ink-soft">
               Não tem conta?{' '}
-              <a href="/signup" className="text-brand underline">
+              <Link to="/signup" className="text-brand underline">
                 Criar conta
-              </a>
+              </Link>
             </p>
           </Form>
         </div>
