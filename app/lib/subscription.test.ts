@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
-import { isSubscriptionActive, PLANS, startTrial } from './subscription.server'
+import {
+  getSubscriptionStatus,
+  isSubscriptionActive,
+  PLANS,
+  startTrial,
+} from './subscription.server'
 
 const SLUG = 'zzz-m3-sub'
 
@@ -60,5 +65,40 @@ describe('PLANS', () => {
   it('tem os planos com preço em centavos', () => {
     expect(PLANS.essencial.precoCentavos).toBeGreaterThan(0)
     expect(PLANS.pro.precoCentavos).toBeGreaterThan(PLANS.essencial.precoCentavos)
+  })
+
+  it('cada plano tem features e a flag de destaque', () => {
+    expect(PLANS.essencial.features.length).toBeGreaterThan(0)
+    expect(PLANS.pro.destaque).toBe(true)
+  })
+})
+
+describe('getSubscriptionStatus (tela de billing)', () => {
+  it('sem assinatura → status none, não ativo', async () => {
+    const t = await makeTenant()
+    const v = await getSubscriptionStatus(t.id)
+    expect(v.status).toBe('none')
+    expect(v.active).toBe(false)
+    expect(v.planName).toBeNull()
+  })
+
+  it('trial → trialing, ativo, com plano e dias restantes', async () => {
+    const t = await makeTenant()
+    await startTrial(t.id, 'essencial', 14)
+    const v = await getSubscriptionStatus(t.id)
+    expect(v.status).toBe('trialing')
+    expect(v.active).toBe(true)
+    expect(v.planName).toBe('Essencial')
+    expect(v.daysLeft).toBeGreaterThan(0)
+    expect(v.daysLeft).toBeLessThanOrEqual(14)
+  })
+
+  it('trial expirado → não ativo, daysLeft 0', async () => {
+    const t = await makeTenant()
+    await startTrial(t.id, 'essencial', 14)
+    const futuro = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000)
+    const v = await getSubscriptionStatus(t.id, futuro)
+    expect(v.active).toBe(false)
+    expect(v.daysLeft).toBe(0)
   })
 })
