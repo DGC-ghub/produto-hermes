@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Form, Link, redirect, useActionData } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { AppShell } from '../components/layout/AppShell'
+import { OnboardingChecklist } from '../components/OnboardingChecklist'
 import { Avatar } from '../components/ui/Avatar'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -15,6 +16,7 @@ import {
   getContactDossier,
   getHandoffQueue,
 } from '../lib/dossier.server'
+import { getOnboardingStatus } from '../lib/onboarding.server'
 import { generateConversationSummary } from '../lib/summary.server'
 import { isTicketStatus } from '../lib/ticket'
 import { cx } from '../lib/ui'
@@ -29,10 +31,12 @@ export async function loader({ request }: Route.LoaderArgs) {
   // dados de outra empresa trocando a URL. Um contactId de fora simplesmente não casa.
   const queue = await getHandoffQueue(operator.tenantId)
   const dossier = contactId ? await getContactDossier(operator.tenantSlug, contactId) : null
+  const onboarding = await getOnboardingStatus(operator.tenantSlug)
 
   return {
     queue,
     dossier,
+    onboarding,
     operator: { username: operator.username, tenantSlug: operator.tenantSlug },
     selected: { contactId },
   }
@@ -334,7 +338,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
 }
 
 export default function Atendente({ loaderData }: Route.ComponentProps) {
-  const { queue, dossier, operator, selected } = loaderData
+  const { queue, dossier, onboarding, operator, selected } = loaderData
   const actionData = useActionData<typeof action>()
   const needsCount = queue.filter((item) => item.status === 'needs_human').length
 
@@ -353,6 +357,7 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
       </header>
 
       <div className="p-6">
+        {!onboarding.allDone && <OnboardingChecklist status={onboarding} />}
         {actionData?.error && (
           <div className="mb-4 rounded-lg border border-urgent/30 bg-urgent/10 px-3 py-2 text-sm text-urgent">
             {actionData.error}
