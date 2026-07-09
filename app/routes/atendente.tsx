@@ -137,6 +137,7 @@ const REASON_LABEL: Record<string, string> = {
   no_knowledge_match: 'Sem resposta na base de conhecimento',
   provider_error: 'Falha técnica na IA — revisar',
   validacao_falhou: 'Resposta da IA barrada pela validação — revisar',
+  billing_inactive: 'Assinatura inativa — responda ou regularize o pagamento',
 }
 function reasonLabel(reason: string | null): string {
   if (!reason) {

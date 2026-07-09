@@ -4,6 +4,7 @@ import { generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
 import { safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
+import { checkBillingGate } from './billing-gate.server'
 import { isHumanHandling } from './conversation-status'
 import { decideHandoff } from './handoff'
 import { resolveKnowledge } from './knowledge-db.server'
@@ -151,6 +152,32 @@ export async function processIncomingMessage(
       confidence: 0,
       sources: [],
       humanHandling: true,
+    }
+  }
+
+  // Gate de cobrança: se a assinatura existe mas não está ativa (E o flag está ligado), o
+  // Hermes não gasta o cérebro caro — registra a mensagem e escala pra humano (o dono resolve:
+  // paga ou responde manual). Grandfathering + flag desligado por padrão garantem que pilotos/
+  // legado nunca são bloqueados. Ver app/lib/billing-gate.server.ts.
+  const gate = await checkBillingGate(tenant.id)
+  if (!gate.allowed) {
+    const userMessage = await db.message.create({
+      data: { conversationId, role: 'user', content: message },
+    })
+    await db.conversation.update({
+      where: { id: conversationId },
+      data: { status: 'needs_human', updatedAt: new Date() },
+    })
+    return {
+      conversationId,
+      tenantSlug: input.tenantSlug,
+      userMessageId: userMessage.id,
+      assistantMessageId: '',
+      reply: '',
+      needsHuman: true,
+      handoffReason: 'billing_inactive',
+      confidence: 0,
+      sources: [],
     }
   }
 
