@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Form, Link, redirect, useActionData } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
+import { EmptyState } from '../components/EmptyState'
 import { AppShell } from '../components/layout/AppShell'
 import { OnboardingChecklist } from '../components/OnboardingChecklist'
 import { Avatar } from '../components/ui/Avatar'
@@ -404,7 +405,9 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
           <aside>
             <h2 className="mb-3 text-sm font-medium text-ink">Fila ({queue.length})</h2>
             {queue.length === 0 ? (
-              <Card className="p-4 text-sm text-ink-soft">Ninguém na fila. Tudo em dia.</Card>
+              <EmptyState image="/brand/empty-caught-up.svg">
+                Ninguém na fila. Tudo em dia.
+              </EmptyState>
             ) : (
               <ul className="space-y-2">
                 {queue.map((item) => {
@@ -447,11 +450,11 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
             {dossier ? (
               <Dossier dossier={dossier} />
             ) : (
-              <Card className="p-8 text-center text-sm text-ink-soft">
+              <EmptyState image="/brand/empty-no-conversations.svg">
                 {queue.length === 0
                   ? 'Sem atendimentos encaminhados no momento.'
                   : 'Selecione um atendimento na fila para ver a ficha do cliente.'}
-              </Card>
+              </EmptyState>
             )}
           </section>
         </div>
