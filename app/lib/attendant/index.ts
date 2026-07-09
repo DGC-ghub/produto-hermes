@@ -22,9 +22,15 @@ function safeFallback(reason: string): AttendantOutput {
 // carregado sob demanda para não trazer dependências de servidor (child_process)
 // quando se usa só o mock.
 export async function resolveProvider(): Promise<AttendantProvider> {
+  // Motor via assinatura pessoal do Claude (CLI logado na máquina).
   if (process.env.ATTENDANT_PROVIDER === 'claude_cli') {
     const { claudeCliProvider } = await import('./providers/claude-cli.server')
     return claudeCliProvider
+  }
+  // Motor via API da Anthropic (o cliente paga os tokens que usa).
+  if (process.env.ATTENDANT_PROVIDER === 'anthropic_api') {
+    const { anthropicApiProvider } = await import('./providers/anthropic-api.server')
+    return anthropicApiProvider
   }
   return mockProvider
 }
