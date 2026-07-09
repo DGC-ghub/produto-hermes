@@ -30,8 +30,14 @@ export async function action({ request }: Route.ActionArgs) {
     backUrl,
   })
   if (!checkout) {
+    // Distingue "sem gateway" de "gateway recusou": senão a tela mente "não configurado"
+    // quando o token existe mas o MP barrou a cobrança (ex.: payer/collector incompatíveis
+    // no sandbox). O motivo real fica no log do servidor ([mp] falha ao criar preapproval).
+    const configured = Boolean(process.env.MP_ACCESS_TOKEN)
     return {
-      error: 'Pagamento indisponível agora (Mercado Pago não configurado). Tente mais tarde.',
+      error: configured
+        ? 'Não foi possível iniciar o pagamento agora. Tente novamente em instantes.'
+        : 'Pagamento indisponível (gateway não configurado). Tente mais tarde.',
     }
   }
   return redirect(checkout)
