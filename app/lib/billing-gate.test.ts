@@ -16,6 +16,9 @@ beforeEach(() => {
   process.env = { ...ORIGINAL }
 })
 afterEach(async () => {
+  // Restaura o env DEPOIS de cada teste também — senão o último teste (que liga o flag)
+  // vaza BILLING_GATE_ENABLED pro próximo arquivo no mesmo worker (fonte de flaky).
+  process.env = { ...ORIGINAL }
   const tenant = await db.tenant.findUnique({ where: { slug: SLUG } })
   if (tenant) {
     await db.subscription.deleteMany({ where: { tenantId: tenant.id } })
