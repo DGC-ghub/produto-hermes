@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { Form, NavLink } from 'react-router'
 import { cx, initials } from '../../lib/ui'
 import { WingMark } from '../brand/BrandMark'
@@ -26,15 +26,54 @@ type AppShellProps = {
 }
 
 /**
- * Casca do app interno: barra lateral fixa (marca, navegação, empresa) + área de
- * conteúdo. As telas internas envolvem o próprio conteúdo com este componente
- * conforme vão sendo repaginadas.
+ * Casca do app interno: barra lateral com a marca, navegação e empresa. No desktop ela é
+ * fixa; no mobile vira um drawer (hamburger + overlay) — o produto é sobre WhatsApp, então
+ * a maioria do uso é no celular.
  */
 export function AppShell({ operator, children, sidebarSlot }: AppShellProps) {
+  const [open, setOpen] = useState(false)
+  const close = () => setOpen(false)
+
   return (
     <div className="flex min-h-screen bg-bg text-ink">
+      {/* Topbar só no mobile: hamburger + marca */}
+      <header className="fixed inset-x-0 top-0 z-30 flex items-center gap-2 bg-brand-deep px-4 py-3 text-white md:hidden">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Abrir menu"
+          className="-ml-1 rounded-lg p-1 transition-colors hover:bg-white/10"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="size-6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden
+          >
+            <path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round" />
+          </svg>
+        </button>
+        <WingMark accent className="size-6 text-white" />
+        <span className="font-display text-lg font-bold tracking-tight">Hermes</span>
+      </header>
+
+      {/* Overlay: toque fora fecha o drawer (só mobile) */}
+      {open && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          onClick={close}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      )}
+
       <aside
-        className="flex w-52 shrink-0 flex-col px-3 py-4 text-white"
+        className={cx(
+          'fixed inset-y-0 left-0 z-40 flex w-52 shrink-0 flex-col px-3 py-4 text-white transition-transform duration-200 md:static md:z-auto md:translate-x-0',
+          open ? 'translate-x-0' : '-translate-x-full',
+        )}
         style={{ backgroundImage: 'linear-gradient(to bottom, #0a3c2e, #072a20)' }}
       >
         <div className="flex items-center gap-2 px-2">
@@ -47,6 +86,7 @@ export function AppShell({ operator, children, sidebarSlot }: AppShellProps) {
             <NavLink
               key={item.to}
               to={item.to}
+              onClick={close}
               className={({ isActive }) =>
                 cx(
                   'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
@@ -82,7 +122,7 @@ export function AppShell({ operator, children, sidebarSlot }: AppShellProps) {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1">{children}</main>
+      <main className="min-w-0 flex-1 pt-14 md:pt-0">{children}</main>
     </div>
   )
 }
