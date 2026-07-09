@@ -17,6 +17,7 @@ import {
   getHandoffQueue,
 } from '../lib/dossier.server'
 import { getOnboardingStatus } from '../lib/onboarding.server'
+import { sendOperatorReply } from '../lib/operator-reply.server'
 import { generateConversationSummary } from '../lib/summary.server'
 import { isTicketStatus } from '../lib/ticket'
 import { cx } from '../lib/ui'
@@ -58,6 +59,20 @@ export async function action({ request }: Route.ActionArgs) {
       return { error: 'Conversa não encontrada.' }
     }
     await generateConversationSummary(conversation.id, operator.tenantId)
+    return redirect(`/atendente?contactId=${contactId}`)
+  }
+
+  // Ação de RESPOSTA: o operador responde o cliente pelo WhatsApp direto da Central.
+  if (String(formData.get('intent') ?? '') === 'reply') {
+    const result = await sendOperatorReply({
+      tenantId: operator.tenantId,
+      tenantSlug: operator.tenantSlug,
+      contactId,
+      text: String(formData.get('text') ?? ''),
+    })
+    if (!result.ok) {
+      return { error: result.error }
+    }
     return redirect(`/atendente?contactId=${contactId}`)
   }
 
@@ -321,6 +336,26 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           })}
         </div>
       </div>
+
+      <Form method="post" className="border-t border-border pt-4">
+        <input type="hidden" name="intent" value="reply" />
+        <input type="hidden" name="contactId" value={dossier.contactId} />
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-ink">Responder o cliente</span>
+          <textarea
+            name="text"
+            rows={2}
+            required
+            placeholder="Escreva a resposta que vai pelo WhatsApp…"
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-ink focus-visible:border-brand focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
+          />
+        </label>
+        <div className="mt-2">
+          <Button type="submit" variant="primary" size="sm">
+            Enviar resposta
+          </Button>
+        </div>
+      </Form>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
         <ConversationAction contactId={dossier.contactId} action="encerrar">
