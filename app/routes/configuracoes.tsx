@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Form, useActionData, useNavigation } from 'react-router'
+import { Form, Link, useActionData, useNavigation } from 'react-router'
 import { AppShell } from '../components/layout/AppShell'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -192,10 +192,7 @@ export default function Configuracoes({ loaderData }: Route.ComponentProps) {
             </div>
           </Section>
 
-          <Section
-            title="Base de conhecimento"
-            hint={`Documentos em ${config.knowledge.sourceDir}/ (edite os arquivos por enquanto).`}
-          >
+          <Section title="Base de conhecimento" hint="Como a IA usa os documentos da sua empresa.">
             <label className="block">
               <FieldLabel>Política de resposta</FieldLabel>
               <select
@@ -211,6 +208,12 @@ export default function Configuracoes({ loaderData }: Route.ComponentProps) {
                 </option>
               </select>
             </label>
+            <Link
+              to="/conhecimento"
+              className="inline-block text-sm font-medium text-brand hover:underline"
+            >
+              Gerenciar documentos →
+            </Link>
           </Section>
 
           <Section

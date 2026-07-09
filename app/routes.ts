@@ -6,6 +6,7 @@ export default [
   route('dashboard', 'routes/dashboard.tsx'),
   route('atendente', 'routes/atendente.tsx'),
   route('configuracoes', 'routes/configuracoes.tsx'),
+  route('conhecimento', 'routes/conhecimento.tsx'),
   route('login', 'routes/login.tsx'),
   route('logout', 'routes/logout.tsx'),
   route('signup', 'routes/signup.tsx'),

@@ -63,6 +63,49 @@ export async function writeKnowledgeDoc(
   }
 }
 
+export type KnowledgeDocRow = { id: string; title: string; content: string; position: number }
+
+/**
+ * Lista os docs de conhecimento do tenant COM o id real — é o que a tela de gestão precisa
+ * pra editar/remover (diferente de loadKnowledgeFromDb, que devolve o shape do motor). Server-side.
+ */
+export async function listKnowledgeDocs(tenantSlug: string): Promise<KnowledgeDocRow[]> {
+  if (!SAFE_SLUG.test(tenantSlug)) {
+    throw new Error(`Invalid tenant slug: ${tenantSlug}`)
+  }
+  const tenant = await db.tenant.findUnique({
+    where: { slug: tenantSlug },
+    include: { knowledgeDocs: { orderBy: { position: 'asc' } } },
+  })
+  if (!tenant) {
+    return []
+  }
+  return tenant.knowledgeDocs.map((doc) => ({
+    id: doc.id,
+    title: doc.title,
+    content: doc.content,
+    position: doc.position,
+  }))
+}
+
+/**
+ * Remove um doc de conhecimento do tenant. Escopado por tenantId — nunca apaga o de outra
+ * empresa. Lança se o doc não pertence ao tenant (ou não existe). Server-side.
+ */
+export async function deleteKnowledgeDoc(tenantSlug: string, id: string): Promise<void> {
+  if (!SAFE_SLUG.test(tenantSlug)) {
+    throw new Error(`Invalid tenant slug: ${tenantSlug}`)
+  }
+  const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } })
+  if (!tenant) {
+    throw new Error(`Tenant não encontrado: ${tenantSlug}`)
+  }
+  const deleted = await db.knowledgeDoc.deleteMany({ where: { id, tenantId: tenant.id } })
+  if (deleted.count === 0) {
+    throw new Error('Documento não encontrado neste tenant.')
+  }
+}
+
 /**
  * Estratégia C do marco M2.5: resolve a knowledge do tenant pelo BANCO primeiro; se o tenant
  * ainda não tem docs no banco, cai no ARQUIVO (sourceDir, ex.: "knowledge/<slug>"). Mesmo shape.
