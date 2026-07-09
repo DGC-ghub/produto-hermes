@@ -3,8 +3,15 @@ import { Logo, WingMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
 import { createOperatorSession, getOperator } from '../lib/auth.server'
+import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import { registerOwner } from '../lib/signup.server'
 import type { Route } from './+types/signup'
+
+// Teto global anti-spam de cadastro: cada conta nova provisiona um tenant + dispara um
+// e-mail (Resend), então limitamos o volume por janela. Sem IP confiável atrás da ponte
+// do Tailscale, o teto é por processo — zera a cada reinício. Barra flood em massa.
+const SIGNUP_MAX_PER_WINDOW = 10
+let signupRateState: RateState = { windowStart: 0, count: 0 }
 
 export async function loader({ request }: Route.LoaderArgs) {
   if (await getOperator(request)) {
@@ -14,6 +21,15 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
+  // Anti-spam: rejeita o excesso ANTES de provisionar tenant / disparar e-mail.
+  const rate = checkRate(Date.now(), signupRateState, SIGNUP_MAX_PER_WINDOW, rateConfig().windowMs)
+  signupRateState = rate.state
+  if (!rate.allowed) {
+    return {
+      error: `Muitas tentativas de cadastro agora. Tente de novo em ${rate.retryAfterSec}s.`,
+    }
+  }
+
   const form = await request.formData()
   const companyName = String(form.get('companyName') ?? '')
   const email = String(form.get('email') ?? '')

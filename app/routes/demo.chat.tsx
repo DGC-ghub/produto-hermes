@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button'
 import { db } from '../db.server'
 import { transcribeUploadedAudio } from '../lib/audio/upload.server'
 import { processIncomingMessage } from '../lib/conversation.server'
+import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import { DEMO_TENANT_SLUGS, ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
 import { conversationStatusMeta, cx } from '../lib/ui'
 import type { Route } from './+types/demo.chat'
@@ -17,6 +18,12 @@ const DEMO_TENANTS = INITIAL_TENANTS.filter((tenant) => DEMO_TENANT_SLUGS.includ
 const ALLOWED_SLUGS: readonly string[] = DEMO_TENANTS.map((tenant) => tenant.slug)
 const DEFAULT_SLUG = 'dgc'
 const RECENT_LIMIT = 10
+
+// Teto global anti-abuso da demo pública: cada envio spawna o cérebro (~15-30s) e/ou a
+// transcrição local (whisper, CPU-intensiva no Pi). Sem IP confiável atrás da ponte, um
+// teto por processo baixo protege a máquina de flood. Zera a cada reinício do serviço.
+const DEMO_MAX_PER_WINDOW = 20
+let demoRateState: RateState = { windowStart: 0, count: 0 }
 
 function resolveTenantSlug(value: string | null): string {
   return value && ALLOWED_SLUGS.includes(value) ? value : DEFAULT_SLUG
@@ -98,6 +105,13 @@ export async function loader({ request }: Route.LoaderArgs) {
 const MAX_BODY_BYTES = Number(process.env.MAX_AUDIO_BYTES ?? 15_000_000) + 1_000_000
 
 export async function action({ request }: Route.ActionArgs) {
+  // Anti-abuso: rejeita o excesso ANTES de tocar IA/whisper (o custo caro que derruba o Pi).
+  const rate = checkRate(Date.now(), demoRateState, DEMO_MAX_PER_WINDOW, rateConfig().windowMs)
+  demoRateState = rate.state
+  if (!rate.allowed) {
+    return { error: `Muitas mensagens na demo agora. Tente de novo em ${rate.retryAfterSec}s.` }
+  }
+
   const contentLength = Number(request.headers.get('content-length') ?? 0)
   if (contentLength > MAX_BODY_BYTES) {
     return { error: 'Áudio grande demais. Grave/escolha um áudio mais curto.' }
