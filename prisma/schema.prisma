@@ -22,6 +22,7 @@ model Tenant {
   tickets         Ticket[]
   operators       Operator[]
   whatsappNumbers WhatsappNumber[]
+  channelSessions ChannelSession[]
   memberships     Membership[]
   configRecord    TenantConfigRecord?
   knowledgeDocs   KnowledgeDoc[]
@@ -46,6 +47,29 @@ model WhatsappNumber {
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
+}
+
+// Sessão de canal NÃO-oficial (Baileys/QR) de UMA empresa — self-service: o cliente
+// escaneia um QR e conecta o próprio WhatsApp em minutos (sem o processo da Meta).
+// O socket é persistente e vive no processo (ver plano vendável v1 §1.4). O
+// auth-state do Baileys fica CIFRADO aqui (crypto.server, AAD `channel-session:<id>`),
+// pra reconectar sem re-escanear. Vários por tenant (ex.: números diferentes).
+model ChannelSession {
+  id           String    @id @default(cuid())
+  tenantId     String
+  kind         String    @default("baileys") // canal; hoje só baileys
+  label        String? // ex.: "WhatsApp da recepção"
+  waNumber     String? // número conectado (preenchido após parear) — exibição
+  status       String    @default("desconectado") // desconectado|pareando|conectado|derrubado
+  authStateEnc String? // auth-state do Baileys CIFRADO (creds+keys), null = ainda não pareou
+  lastConnAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([status])
 }
 
 // Operador (atendente humano) de UMA empresa. O login identifica o operador e a
