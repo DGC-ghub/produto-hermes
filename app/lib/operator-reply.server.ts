@@ -1,5 +1,7 @@
 import { db } from '../db.server'
-import { listTenantWhatsappNumbers, sendWhatsAppMessage } from './whatsapp.server'
+import { sendReply } from './channels/dispatch.server'
+import { metaRef } from './channels/types'
+import { listTenantWhatsappNumbers } from './whatsapp.server'
 
 // Resposta do operador humano ao cliente pela Central (Tier 2 — a "última milha" do handoff).
 // Quando o atendente assume, ele digita aqui e a mensagem VAI pelo WhatsApp e fica registrada
@@ -28,7 +30,7 @@ export async function sendOperatorReply(input: {
   }
   // Número da empresa que envia (o primeiro registrado; cai no env global se não houver).
   const numbers = await listTenantWhatsappNumbers(input.tenantSlug)
-  const sent = await sendWhatsAppMessage(input.contactId, text, numbers[0]?.phoneNumberId)
+  const sent = await sendReply(metaRef(numbers[0]?.phoneNumberId), input.contactId, text)
 
   // Registra a fala do operador na conversa mesmo se o envio falhar — o histórico não mente.
   await db.message.create({

@@ -8,12 +8,10 @@
 // o que ficou pendente de antes de um restart). Bloqueio C2 do plano de entrega.
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
+import { sendReply } from './channels/dispatch.server'
+import { metaRef } from './channels/types'
 import { processIncomingMessage } from './conversation.server'
-import {
-  type InboundMessage,
-  resolveTenantSlugByPhoneNumber,
-  sendWhatsAppMessage,
-} from './whatsapp.server'
+import { type InboundMessage, resolveTenantSlugByPhoneNumber } from './whatsapp.server'
 
 // Depois de MAX_ATTEMPTS o evento vira 'failed' e sai da fila: um evento-veneno
 // (ex.: tenant não mapeado) não pode entupir o drain pra sempre.
@@ -65,10 +63,10 @@ async function processEvent(event: {
   // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
   // o conteúdo real a gente ainda não lê, então não há o que registrar.
   if (event.kind === 'unsupported') {
-    const sent = await sendWhatsAppMessage(
+    const sent = await sendReply(
+      metaRef(event.phoneNumberId),
       event.contactId,
       UNSUPPORTED_MEDIA_REPLY,
-      event.phoneNumberId,
     )
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')
@@ -87,7 +85,7 @@ async function processEvent(event: {
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendWhatsAppMessage(event.contactId, result.reply, event.phoneNumberId)
+    const sent = await sendReply(metaRef(event.phoneNumberId), event.contactId, result.reply)
     // Falha de ENVIO não marca o evento como falho: a mensagem FOI processada
     // (reprocessar duplicaria chamado/lead). Alarma e segue.
     if (!sent) {
