@@ -160,6 +160,35 @@ describe('gerente Baileys (ciclo de vida)', () => {
     })
   })
 
+  it('responde ao remoteJid @lid original, não aos dígitos reconstruídos', async () => {
+    // O WhatsApp novo entrega de um jid @lid (número oculto). Se responder aos dígitos
+    // reconstruídos (<lid>@s.whatsapp.net), a resposta vai pro vácuo. Deve responder ao
+    // jid @lid ORIGINAL, lembrado da entrada.
+    const inbound = vi.fn()
+    setInboundHandler(inbound)
+    await startPairing('s5')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    const lid = '183709290479830'
+    fake._emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { remoteJid: `${lid}@lid`, fromMe: false, id: 'm-lid' },
+          message: { conversation: 'oi' },
+          messageTimestamp: nowSec(),
+        },
+      ],
+    })
+    expect(inbound.mock.calls[0][0]).toMatchObject({ contactId: lid, remoteJid: `${lid}@lid` })
+
+    // o motor responde passando o contactId (só dígitos) → deve sair pro @lid original
+    const ok = await sendText('s5', lid, 'pronto')
+    expect(ok).toBe(true)
+    expect(fake.sendMessage).toHaveBeenCalledWith(`${lid}@lid`, { text: 'pronto' })
+  })
+
   it('close com loggedOut = derrubado, sem reconectar', async () => {
     await startPairing('s3')
     fake._emit('connection.update', { connection: 'open' })

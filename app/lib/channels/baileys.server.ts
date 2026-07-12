@@ -44,6 +44,39 @@ type SessionEntry = {
 
 const sessions = new Map<string, SessionEntry>()
 
+// contactId → remoteJid da última mensagem, por sessão. O WhatsApp novo endereça por
+// @lid (número oculto), NÃO pelo telefone: responder aos dígitos reconstruídos
+// (`<lid>@s.whatsapp.net`) manda a resposta pro vácuo (o cliente não recebe nada e o
+// envio nem acusa erro). Guardamos o jid ORIGINAL de entrada e respondemos exatamente
+// a ele. Em memória: a resposta é reativa e no MESMO processo da entrada, então o mapa
+// sempre tem a chave na hora de responder; some no restart, mas a próxima entrada
+// repovoa antes da próxima resposta.
+const jidByContact = new Map<string, Map<string, string>>()
+function rememberInboundJid(sessionId: string, contactId: string, remoteJid: string): void {
+  let perSession = jidByContact.get(sessionId)
+  if (!perSession) {
+    perSession = new Map()
+    jidByContact.set(sessionId, perSession)
+  }
+  perSession.set(contactId, remoteJid)
+}
+
+/**
+ * Resolve o jid de RESPOSTA de uma sessão Baileys: um jid explícito (já tem `@`) vale;
+ * senão o remoteJid ORIGINAL lembrado da entrada (cobre @lid); senão o telefone
+ * reconstruído dos dígitos (contato só-número, ex. legado). Exportado p/ teste.
+ */
+export function resolveReplyJid(sessionId: string, to: string): string {
+  if (to.includes('@')) {
+    return to
+  }
+  const remembered = jidByContact.get(sessionId)?.get(to)
+  if (remembered) {
+    return remembered
+  }
+  return `${to.replace(/\D/g, '')}@s.whatsapp.net`
+}
+
 // onInbound é fiado pelo Passo 5 (persistInbound + fila). Aqui só produzimos o evento.
 let onInbound: (event: InboundEvent) => void = () => {}
 export function setInboundHandler(handler: (event: InboundEvent) => void): void {
@@ -170,6 +203,7 @@ async function connect(sessionId: string): Promise<void> {
       existing.sock.end(undefined)
     } catch {}
   }
+  // biome-ignore lint/correctness/useHookAtTopLevel: não é hook React — função de servidor que lê o auth-state cifrado
   const auth = await useDbAuthState(sessionId) // lança se auth corrompido → tratado pelo chamador
   // Versão atual do WA Web (só com o socket real; senão o pareamento é recusado).
   const version = usingRealSocket ? await getWaVersion() : undefined
@@ -213,6 +247,8 @@ async function connect(sessionId: string): Promise<void> {
     for (const m of upsert.messages) {
       const event = normalizeInbound(sessionId, m, cur?.connectedAtMs ?? null)
       if (event) {
+        // Guarda o jid ORIGINAL pra responder a ele (resolve o endereçamento @lid).
+        rememberInboundJid(sessionId, event.contactId, event.remoteJid)
         try {
           onInbound(event)
         } catch (e) {
@@ -324,7 +360,7 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     console.warn(`[baileys] envio ignorado — sessão ${sessionId} não conectada`)
     return false
   }
-  const jid = to.includes('@') ? to : `${to.replace(/\D/g, '')}@s.whatsapp.net`
+  const jid = resolveReplyJid(sessionId, to)
   try {
     // Teto diário SOFT: só avisa (bloquear deixaria o cliente sem resposta).
     const day = today()
@@ -412,4 +448,5 @@ export async function reconnectActiveSessions(): Promise<void> {
 // Só p/ teste: limpa o registro em memória entre casos.
 export function __resetSessions(): void {
   sessions.clear()
+  jidByContact.clear()
 }
