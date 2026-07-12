@@ -18,6 +18,7 @@ import {
   __setMakeSocket,
   getSessionView,
   normalizeInbound,
+  overContactCap,
   sendText,
   setInboundHandler,
   startPairing,
@@ -187,6 +188,32 @@ describe('gerente Baileys (ciclo de vida)', () => {
     const ok = await sendText('s5', lid, 'pronto')
     expect(ok).toBe(true)
     expect(fake.sendMessage).toHaveBeenCalledWith(`${lid}@lid`, { text: 'pronto' })
+  })
+
+  it('re-pareamento sobre sessão viva é no-op e usa fingerprint realista (H1/H5)', async () => {
+    const spy = vi.fn((..._args: unknown[]) => fake)
+    __setMakeSocket(spy as never)
+    await startPairing('s6')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    expect(getSessionView('s6').status).toBe('conectado')
+    // fingerprint realista (não 'Hermes', que denuncia cliente não-oficial)
+    expect(spy.mock.calls[0][0]).toMatchObject({ browser: ['Mac OS', 'Chrome', '14.4.1'] })
+    // segundo clique em 'parear' com a sessão VIVA → no-op: não recria socket nem derruba
+    const r = await startPairing('s6')
+    expect(r.ok).toBe(true)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(fake.end).not.toHaveBeenCalled()
+  })
+
+  it('teto por contato suprime após o limite (H4 anti-ping-pong)', () => {
+    const jid = '5511999990000@s.whatsapp.net'
+    let suppressed = 0
+    for (let i = 0; i < 15; i++) {
+      if (overContactCap(jid)) suppressed++
+    }
+    // CONTACT_CAP=12 passam; os 3 seguintes são suprimidos (quebra o loop de bots)
+    expect(suppressed).toBe(3)
   })
 
   it('close com loggedOut = derrubado, sem reconectar', async () => {

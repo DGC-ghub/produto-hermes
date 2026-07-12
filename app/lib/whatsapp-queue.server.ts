@@ -260,6 +260,10 @@ async function markDone(id: string): Promise<void> {
 // globalThis evita timer duplicado no HMR de dev.
 declare global {
   var __hermesQueueSweeper: ReturnType<typeof setInterval> | undefined
+  // Hook de shutdown: o server.js chama isto no SIGTERM/SIGINT pra fechar os sockets
+  // Baileys (flush do auth cifrado) ANTES de sair — senão um restart logo após o
+  // pareamento perde o registro do device e força novo QR.
+  var __hermesShutdownChannels: (() => Promise<void>) | undefined
 }
 
 export function startQueueSweeper(): void {
@@ -304,6 +308,7 @@ if (process.env.BAILEYS_ENABLED === '1') {
     try {
       await ensureBaileysWired()
       const mgr = await import('./channels/baileys.server')
+      globalThis.__hermesShutdownChannels = () => mgr.closeAllSockets()
       await mgr.reconnectActiveSessions()
     } catch (error) {
       console.error('[baileys] boot falhou:', error)

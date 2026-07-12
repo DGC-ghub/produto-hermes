@@ -41,7 +41,17 @@ server.listen(port, () => {
   console.log(`[hermes] produção (HTTPS, sem HMR) em https://localhost:${port}`)
 })
 
-// Encerramento limpo quando o systemd reinicia/para o serviço.
+// Encerramento limpo quando o systemd reinicia/para o serviço. Fecha os sockets Baileys
+// ANTES de sair (flush do auth-state cifrado — senão um restart logo após o pareamento
+// perde o registro do device e força novo QR). Guarda de 3s pra nunca travar o shutdown.
 for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.once(signal, () => server.close(() => process.exit(0)))
+  process.once(signal, async () => {
+    try {
+      const shutdownChannels = globalThis.__hermesShutdownChannels
+      if (shutdownChannels) {
+        await Promise.race([shutdownChannels(), new Promise((r) => setTimeout(r, 3000))])
+      }
+    } catch {}
+    server.close(() => process.exit(0))
+  })
 }

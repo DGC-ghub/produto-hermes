@@ -1,7 +1,7 @@
 import type { Boom } from '@hapi/boom'
 import makeWASocket, {
   DisconnectReason,
-  fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys'
@@ -23,6 +23,9 @@ const PACE_MIN_MS = 600
 const PACE_PER_CHAR_MS = 25
 const PACE_MAX_MS = 6_000
 const DAILY_SOFT_CAP = 400 // acima disto só loga (bloquear deixaria cliente sem resposta)
+// Teto POR CONTATO (rede anti-ping-pong): máx respostas a UM contato na janela abaixo.
+const CONTACT_CAP = 12
+const CONTACT_WINDOW_MS = 5 * 60_000
 
 // O canal QR fica atrás de um flag — default OFF no rollout inicial pra proteger os
 // pilotos Meta (o boot-reconnect e o pareamento não sobem sem isto).
@@ -40,6 +43,7 @@ type SessionEntry = {
   closing: boolean
   sentToday: number
   sentDay: string
+  reconnectTimer?: ReturnType<typeof setTimeout>
 }
 
 const sessions = new Map<string, SessionEntry>()
@@ -77,6 +81,23 @@ export function resolveReplyJid(sessionId: string, to: string): string {
   return `${to.replace(/\D/g, '')}@s.whatsapp.net`
 }
 
+// Teto POR CONTATO: se o número conversar com OUTRO auto-respondedor, o fromMe não
+// protege (contas diferentes) e vira loop infinito (~1 msg/20s) → ban. Um humano quase
+// nunca precisa de >CONTACT_CAP respostas em CONTACT_WINDOW_MS; um loop de bots estoura e
+// é suprimido. Por jid de destino. Exportado p/ teste.
+const recentSends = new Map<string, number[]>()
+export function overContactCap(jid: string): boolean {
+  const now = Date.now()
+  const kept = (recentSends.get(jid) ?? []).filter((t) => now - t < CONTACT_WINDOW_MS)
+  if (kept.length >= CONTACT_CAP) {
+    recentSends.set(jid, kept)
+    return true
+  }
+  kept.push(now)
+  recentSends.set(jid, kept)
+  return false
+}
+
 // onInbound é fiado pelo Passo 5 (persistInbound + fila). Aqui só produzimos o evento.
 let onInbound: (event: InboundEvent) => void = () => {}
 export function setInboundHandler(handler: (event: InboundEvent) => void): void {
@@ -102,10 +123,18 @@ async function getWaVersion(): Promise<[number, number, number] | undefined> {
     return cachedVersion
   }
   try {
-    const { version } = await fetchLatestBaileysVersion()
+    // fetchLatestWaWebVersion busca em web.whatsapp.com (a fonte real). Se falhar ou vier
+    // defasada, o pareamento pode ser recusado — ALARMA (não silencia) e deixa o Baileys
+    // cair no default como último recurso.
+    const { version, isLatest } = await fetchLatestWaWebVersion({})
     cachedVersion = version
+    if (!isLatest) {
+      console.warn('[baileys] versão do WA Web pode estar defasada:', version)
+      void reportDegradation('baileys_versao_wa_defasada')
+    }
   } catch (error) {
-    console.error('[baileys] fetchLatestBaileysVersion falhou; usando default:', error)
+    console.error('[baileys] fetchLatestWaWebVersion falhou; usando default:', error)
+    void reportDegradation('baileys_versao_wa_falhou')
   }
   return cachedVersion
 }
@@ -192,13 +221,27 @@ function today(): string {
 }
 
 // Cria o socket de uma sessão e fia os eventos. Idempotente: fecha um socket anterior.
-async function connect(sessionId: string): Promise<void> {
+async function connect(sessionId: string, isReconnect = false): Promise<void> {
   if (!isBaileysEnabled()) {
     return
   }
   const existing = sessions.get(sessionId)
+  // Re-pareamento sobre uma sessão VIVA é no-op: derrubar um socket ainda ativo dispara
+  // tempestade de reconexão (connectionReplaced = sinal de bot). Só um clique externo em
+  // "parear" (startPairing) cai aqui; a reconexão interna passa isReconnect=true.
+  if (
+    existing &&
+    !isReconnect &&
+    !existing.closing &&
+    (existing.status === 'conectado' || existing.status === 'pareando')
+  ) {
+    return
+  }
   if (existing) {
     existing.closing = true
+    if (existing.reconnectTimer) {
+      clearTimeout(existing.reconnectTimer)
+    }
     try {
       existing.sock.end(undefined)
     } catch {}
@@ -212,7 +255,9 @@ async function connect(sessionId: string): Promise<void> {
     version,
     auth: auth.state,
     printQRInTerminal: false,
-    browser: ['Hermes', 'Chrome', '1.0'],
+    // Fingerprint de cliente realista: um tuple inventado ('Hermes') vai literal no campo
+    // os do DeviceProps e denuncia cliente não-oficial no aparelho vinculado.
+    browser: ['Mac OS', 'Chrome', '14.4.1'],
     logger: silentLogger,
     syncFullHistory: false,
     markOnlineOnConnect: false,
@@ -234,7 +279,7 @@ async function connect(sessionId: string): Promise<void> {
   sock.ev.on('creds.update', () => auth.saveCreds())
 
   sock.ev.on('connection.update', (update) => {
-    void handleConnectionUpdate(sessionId, update).catch((e) =>
+    void handleConnectionUpdate(sessionId, sock, update).catch((e) =>
       console.error(`[baileys] connection.update erro (${sessionId}):`, e),
     )
   })
@@ -244,6 +289,9 @@ async function connect(sessionId: string): Promise<void> {
       return // 'append' = histórico/backlog; nunca responder
     }
     const cur = sessions.get(sessionId)
+    if (!cur || cur.sock !== sock) {
+      return // evento de um socket antigo (já substituído) — ignora
+    }
     for (const m of upsert.messages) {
       const event = normalizeInbound(sessionId, m, cur?.connectedAtMs ?? null)
       if (event) {
@@ -261,12 +309,13 @@ async function connect(sessionId: string): Promise<void> {
 
 async function handleConnectionUpdate(
   sessionId: string,
+  thisSock: WASocket,
   // biome-ignore lint/suspicious/noExplicitAny: shape do connection.update do Baileys
   update: any,
 ): Promise<void> {
   const entry = sessions.get(sessionId)
-  if (!entry) {
-    return
+  if (!entry || entry.sock !== thisSock) {
+    return // evento de um socket antigo (já substituído) — ignora, evita churn de reconexão
   }
   const { connection, lastDisconnect, qr } = update
 
@@ -281,6 +330,9 @@ async function handleConnectionUpdate(
     entry.qr = null
     entry.connectedAtMs = Date.now()
     entry.reconnects = 0
+    // Persiste o auth AGORA (cancela o debounce): o registro do device recém-pareado fica
+    // durável no instante crítico — um restart logo após o scan não força novo QR.
+    await entry.auth.flush().catch(() => {})
     const waNumber = entry.sock.user?.id ? jidToMsisdn(entry.sock.user.id) : null
     await persist(sessionId, { status: 'conectado', waNumber, lastConnAt: new Date() })
   }
@@ -297,6 +349,9 @@ async function handleConnectionUpdate(
       statusCode === DisconnectReason.forbidden
     if (terminal) {
       entry.status = 'derrubado'
+      if (entry.reconnectTimer) {
+        clearTimeout(entry.reconnectTimer)
+      }
       sessions.delete(sessionId)
       // loggedOut invalida o auth — limpa pra forçar novo QR.
       const clear = statusCode === DisconnectReason.loggedOut ? { authStateEnc: null } : {}
@@ -308,6 +363,9 @@ async function handleConnectionUpdate(
     entry.reconnects += 1
     if (entry.reconnects > MAX_RECONNECTS) {
       entry.status = 'derrubado'
+      if (entry.reconnectTimer) {
+        clearTimeout(entry.reconnectTimer)
+      }
       sessions.delete(sessionId)
       await persist(sessionId, { status: 'derrubado' })
       void reportDegradation('baileys_reconexao_esgotada')
@@ -315,8 +373,8 @@ async function handleConnectionUpdate(
     }
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** (entry.reconnects - 1), RECONNECT_CAP_MS)
     const jitter = Math.floor(delay * 0.2 * Math.random())
-    setTimeout(() => {
-      void connect(sessionId).catch((e) =>
+    entry.reconnectTimer = setTimeout(() => {
+      void connect(sessionId, true).catch((e) =>
         console.error(`[baileys] reconexão falhou (${sessionId}):`, e),
       )
     }, delay + jitter)
@@ -361,6 +419,11 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     return false
   }
   const jid = resolveReplyJid(sessionId, to)
+  if (overContactCap(jid)) {
+    console.warn(`[baileys] teto por contato atingido — envio suprimido p/ ${jid}`)
+    void reportDegradation('baileys_ping_pong_suprimido')
+    return false
+  }
   try {
     // Teto diário SOFT: só avisa (bloquear deixaria o cliente sem resposta).
     const day = today()
@@ -394,6 +457,9 @@ export async function disconnect(sessionId: string, logout = false): Promise<voi
     return
   }
   entry.closing = true
+  if (entry.reconnectTimer) {
+    clearTimeout(entry.reconnectTimer)
+  }
   try {
     if (logout) {
       await entry.sock.logout().catch(() => {})
@@ -414,6 +480,9 @@ export async function closeAllSockets(): Promise<void> {
   await Promise.all(
     entries.map(async ([id, entry]) => {
       entry.closing = true
+      if (entry.reconnectTimer) {
+        clearTimeout(entry.reconnectTimer)
+      }
       await entry.auth.flush().catch(() => {})
       try {
         entry.sock.end(undefined)
@@ -437,7 +506,7 @@ export async function reconnectActiveSessions(): Promise<void> {
   })
   for (const row of rows) {
     try {
-      await connect(row.id)
+      await connect(row.id, true)
     } catch (error) {
       console.error(`[baileys] boot-reconnect falhou (${row.id}):`, error)
       await persist(row.id, { status: 'derrubado' })
@@ -449,4 +518,5 @@ export async function reconnectActiveSessions(): Promise<void> {
 export function __resetSessions(): void {
   sessions.clear()
   jidByContact.clear()
+  recentSends.clear()
 }
