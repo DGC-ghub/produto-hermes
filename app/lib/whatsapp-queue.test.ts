@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db.server'
 import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
-import { drainPending, persistInbound } from './whatsapp-queue.server'
+import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
 
 const TEST_CONTACT_ID = 'test-queue-5511999990000'
 const TEST_PHONE_ID = 'test-queue-phone-id'
@@ -132,5 +132,44 @@ describe('drainPending', () => {
     await drainPending()
     event = await db.webhookEvent.findUnique({ where: { messageId: 'wamid.test-veneno' } })
     expect(event?.attempts).toBe(5)
+  })
+})
+
+describe('persistBaileysInbound (canal QR)', () => {
+  const SID = 'test-queue-session-1'
+  const CONTACT = 'test-queue-baileys-5511977776666'
+
+  afterEach(async () => {
+    await db.webhookEvent.deleteMany({ where: { contactId: CONTACT } })
+  })
+
+  it('persiste evento Baileys com messageId prefixado por sessão + channelSessionId', async () => {
+    const n = await persistBaileysInbound({
+      channelSessionId: SID,
+      contactId: CONTACT,
+      remoteJid: `${CONTACT}@s.whatsapp.net`,
+      messageId: 'ABC',
+      kind: 'text',
+      text: 'oi',
+    })
+    expect(n).toBe(1)
+    const row = await db.webhookEvent.findFirst({ where: { contactId: CONTACT } })
+    expect(row?.messageId).toBe(`b:${SID}:ABC`) // prefixo escopa o dedup por sessão
+    expect(row?.channelSessionId).toBe(SID)
+    expect(row?.phoneNumberId).toBe('') // Baileys não tem phoneNumberId
+    expect(row?.text).toBe('oi')
+  })
+
+  it('dedup por (sessão, messageId): o mesmo evento não duplica (retorna 0)', async () => {
+    const event = {
+      channelSessionId: SID,
+      contactId: CONTACT,
+      remoteJid: 'x',
+      messageId: 'DUP',
+      kind: 'text' as const,
+      text: 'oi',
+    }
+    expect(await persistBaileysInbound(event)).toBe(1)
+    expect(await persistBaileysInbound(event)).toBe(0)
   })
 })

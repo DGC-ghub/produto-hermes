@@ -166,9 +166,14 @@ model Ticket {
 // @unique no messageId (wamid) mata resposta duplicada em redelivery.
 model WebhookEvent {
   id            String    @id @default(cuid())
-  messageId     String    @unique // wamid da Meta — dedup de redelivery
-  phoneNumberId String // número da empresa que recebeu → resolve o tenant
-  contactId     String // wa_id do remetente
+  // Meta: wamid (globalmente único). Baileys: `b:<channelSessionId>:<key.id>` — o
+  // prefixo escopa o dedup por sessão (o key.id do Baileys não é único global).
+  messageId     String    @unique
+  phoneNumberId String // Meta: número que recebeu → resolve o tenant. Baileys: vazio.
+  // Baileys: a sessão que recebeu → resolve o tenant (e distingue a origem do evento).
+  // Null = evento da Meta (usa phoneNumberId). Aditivo (não mexe nos eventos Meta).
+  channelSessionId String?
+  contactId     String // wa_id (Meta) / MSISDN (Baileys) do remetente
   text          String
   kind          String    @default("text") // text (roda o motor) | unsupported (cortesia)
   status        String    @default("pending") // pending | processing | done | failed
@@ -178,6 +183,7 @@ model WebhookEvent {
   processedAt   DateTime?
 
   @@index([status, createdAt])
+  @@index([channelSessionId])
 }
 
 // Conta de LOGIN — a pessoa que acessa o Hermes (dono pagante ou atendente). Separada

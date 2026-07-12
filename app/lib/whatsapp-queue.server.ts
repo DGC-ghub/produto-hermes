@@ -9,7 +9,7 @@
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
-import { metaRef } from './channels/types'
+import { type ChannelRef, type InboundEvent, metaRef } from './channels/types'
 import { processIncomingMessage } from './conversation.server'
 import { type InboundMessage, resolveTenantSlugByPhoneNumber } from './whatsapp.server'
 
@@ -48,6 +48,45 @@ export async function persistInbound(messages: InboundMessage[]): Promise<number
   return created
 }
 
+/**
+ * Persiste um evento de entrada do canal Baileys na MESMA fila (WebhookEvent).
+ * O messageId é prefixado (`b:<sessão>:<id>`) pra escopar o dedup por sessão sem
+ * colidir com o wamid da Meta; phoneNumberId fica vazio e a origem vai em
+ * channelSessionId. Idempotente por messageId. Server-side.
+ */
+export async function persistBaileysInbound(event: InboundEvent): Promise<number> {
+  try {
+    await db.webhookEvent.create({
+      data: {
+        messageId: `b:${event.channelSessionId}:${event.messageId}`,
+        phoneNumberId: '',
+        channelSessionId: event.channelSessionId,
+        contactId: event.contactId,
+        text: event.text ?? '',
+        kind: event.kind,
+      },
+    })
+    return 1
+  } catch (error) {
+    const code = (error as { code?: string })?.code
+    if (code !== 'P2002') {
+      throw error
+    }
+    return 0
+  }
+}
+
+// Deriva o canal de resposta a partir do evento da fila: Baileys se tem sessão,
+// senão Meta (phoneNumberId). Puro — não toca o banco.
+function channelRefFromEvent(event: {
+  phoneNumberId: string
+  channelSessionId: string | null
+}): ChannelRef {
+  return event.channelSessionId
+    ? { kind: 'baileys', sessionId: event.channelSessionId }
+    : metaRef(event.phoneNumberId)
+}
+
 // Resposta de cortesia pra áudio/mídia — melhor que o vácuo que o público de home
 // care recebia. A transcrição de verdade (whisper) entra na 2ª quinzena de agosto.
 const UNSUPPORTED_MEDIA_REPLY =
@@ -56,27 +95,41 @@ const UNSUPPORTED_MEDIA_REPLY =
 async function processEvent(event: {
   id: string
   phoneNumberId: string
+  channelSessionId: string | null
   contactId: string
   text: string
   kind: string
 }): Promise<void> {
+  // O canal de RESPOSTA acompanha a origem do evento (Meta ou Baileys).
+  const ref = channelRefFromEvent(event)
+
   // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
   // o conteúdo real a gente ainda não lê, então não há o que registrar.
   if (event.kind === 'unsupported') {
-    const sent = await sendReply(
-      metaRef(event.phoneNumberId),
-      event.contactId,
-      UNSUPPORTED_MEDIA_REPLY,
-    )
+    const sent = await sendReply(ref, event.contactId, UNSUPPORTED_MEDIA_REPLY)
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')
     }
     return
   }
-  const tenantSlug = await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
+
+  // Resolve o tenant pela origem: Baileys → pela sessão; Meta → pelo número.
+  const tenantSlug = event.channelSessionId
+    ? ((
+        await db.channelSession.findUnique({
+          where: { id: event.channelSessionId },
+          select: { tenant: { select: { slug: true } } },
+        })
+      )?.tenant.slug ?? null)
+    : await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
   if (!tenantSlug) {
-    throw new Error(`número sem empresa mapeada: ${event.phoneNumberId}`)
+    throw new Error(
+      event.channelSessionId
+        ? `sessão sem empresa: ${event.channelSessionId}`
+        : `número sem empresa mapeada: ${event.phoneNumberId}`,
+    )
   }
+
   const result = await processIncomingMessage({
     tenantSlug,
     message: event.text,
@@ -85,7 +138,7 @@ async function processEvent(event: {
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendReply(metaRef(event.phoneNumberId), event.contactId, result.reply)
+    const sent = await sendReply(ref, event.contactId, result.reply)
     // Falha de ENVIO não marca o evento como falho: a mensagem FOI processada
     // (reprocessar duplicaria chamado/lead). Alarma e segue.
     if (!sent) {
@@ -225,3 +278,35 @@ export function startQueueSweeper(): void {
 // sweeper liga junto do servidor. Chamar da ROTA quebrava o build (módulo server
 // referenciado em escopo de client). Em teste/dev o timer é unref'd: inofensivo.
 startQueueSweeper()
+
+// ── Canal Baileys (QR) ──────────────────────────────────────────────────────────
+// Fia o handler de inbound do gerente (persistBaileys → drain) UMA vez. O gerente
+// (a lib Baileys, pesada) só é carregado sob demanda. Idempotente.
+let baileysWired = false
+export async function ensureBaileysWired(): Promise<void> {
+  if (baileysWired) {
+    return
+  }
+  baileysWired = true
+  const mgr = await import('./channels/baileys.server')
+  mgr.setInboundHandler((event) => {
+    void persistBaileysInbound(event)
+      .then(() => drainPending())
+      .catch((error) => console.error('[baileys] inbound falhou:', error))
+  })
+}
+
+// Boot lazy (como o sweeper): só se o canal QR estiver ligado — lê o env direto,
+// sem importar a lib Baileys quando desligado. Fia o inbound e reconecta as sessões
+// que estavam 'conectado'; cada uma é isolada e NUNCA derruba o boot.
+if (process.env.BAILEYS_ENABLED === '1') {
+  void (async () => {
+    try {
+      await ensureBaileysWired()
+      const mgr = await import('./channels/baileys.server')
+      await mgr.reconnectActiveSessions()
+    } catch (error) {
+      console.error('[baileys] boot falhou:', error)
+    }
+  })()
+}

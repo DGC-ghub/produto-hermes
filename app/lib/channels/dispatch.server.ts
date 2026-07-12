@@ -9,8 +9,11 @@ export async function sendReply(ref: ChannelRef, to: string, text: string): Prom
   switch (ref.kind) {
     case 'meta':
       return sendWhatsAppMessage(to, text, ref.phoneNumberId)
-    case 'baileys':
-      console.warn('[channel] canal baileys ainda não implementado (Passo 4)')
-      return false
+    case 'baileys': {
+      // Import dinâmico: o Baileys (pesado) só carrega quando há canal QR em uso —
+      // fora do caminho quente da Meta.
+      const { sendText } = await import('./baileys.server')
+      return sendText(ref.sessionId, to, text)
+    }
   }
 }
