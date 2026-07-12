@@ -1,6 +1,7 @@
 import type { Boom } from '@hapi/boom'
 import makeWASocket, {
   DisconnectReason,
+  fetchLatestBaileysVersion,
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys'
@@ -52,8 +53,28 @@ export function setInboundHandler(handler: (event: InboundEvent) => void): void 
 // makeWASocket injetável — os testes trocam por um socket falso.
 type MakeSocket = typeof makeWASocket
 let makeSocket: MakeSocket = makeWASocket
+let usingRealSocket = true
 export function __setMakeSocket(fn: MakeSocket | null): void {
   makeSocket = fn ?? makeWASocket
+  usingRealSocket = fn == null
+}
+
+// A versão do WhatsApp Web PRECISA ser a atual, senão o WhatsApp RECUSA o
+// pareamento ("verifique a rede e tente novamente"). Busca uma vez e cacheia;
+// null = deixa o Baileys usar o default (só se a busca falhar). Só busca com o
+// socket real (nos testes o socket é falso e não precisa).
+let cachedVersion: [number, number, number] | undefined
+async function getWaVersion(): Promise<[number, number, number] | undefined> {
+  if (cachedVersion) {
+    return cachedVersion
+  }
+  try {
+    const { version } = await fetchLatestBaileysVersion()
+    cachedVersion = version
+  } catch (error) {
+    console.error('[baileys] fetchLatestBaileysVersion falhou; usando default:', error)
+  }
+  return cachedVersion
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: stub do ILogger do pino p/ o socket
@@ -150,8 +171,11 @@ async function connect(sessionId: string): Promise<void> {
     } catch {}
   }
   const auth = await useDbAuthState(sessionId) // lança se auth corrompido → tratado pelo chamador
+  // Versão atual do WA Web (só com o socket real; senão o pareamento é recusado).
+  const version = usingRealSocket ? await getWaVersion() : undefined
 
   const sock = makeSocket({
+    version,
     auth: auth.state,
     printQRInTerminal: false,
     browser: ['Hermes', 'Chrome', '1.0'],
