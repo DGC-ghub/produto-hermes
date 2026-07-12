@@ -21,11 +21,13 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@react-router/express": "8.0.0",
     "@react-router/node": "8.0.0",
     "@react-router/serve": "8.0.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "better-sqlite3": "^12.11.1",
     "compression": "^1.8.1",
     "express": "^5.2.1",

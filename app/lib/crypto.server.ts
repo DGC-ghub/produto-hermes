@@ -6,6 +6,12 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:
 // (passe `tenant:<id>`): decifrar com outro contexto falha, então um segredo de um tenant não pode
 // ser reusado noutro (previne confused-deputy cross-tenant). Server-side.
 
+// Memoiza a chave derivada POR SEGREDO: o scrypt (dezenas de ms, síncrono) travava
+// o event-loop único a cada cifra — e o auth-state do Baileys grava com muita
+// frequência. A chave só depende do SESSION_SECRET (constante no processo), então
+// cachear é seguro; a chave é por-segredo pra não quebrar testes que o trocam.
+let cachedKey: { secret: string; key: Buffer } | null = null
+
 function deriveKey(): Buffer {
   const secret = process.env.SESSION_SECRET
   // Fail-closed em produção (espelha auth.server.ts): sem um segredo próprio, cifrar em repouso com
@@ -16,7 +22,13 @@ function deriveKey(): Buffer {
   ) {
     throw new Error('SESSION_SECRET é obrigatório em produção para cifrar segredos em repouso.')
   }
-  return scryptSync(secret ?? 'dev-insecure-secret-change-me', 'hermes-secret-encryption-v1', 32)
+  const effective = secret ?? 'dev-insecure-secret-change-me'
+  if (cachedKey?.secret === effective) {
+    return cachedKey.key
+  }
+  const key = scryptSync(effective, 'hermes-secret-encryption-v1', 32)
+  cachedKey = { secret: effective, key }
+  return key
 }
 
 /**
