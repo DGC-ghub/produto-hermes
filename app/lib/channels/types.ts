@@ -15,3 +15,16 @@ export type ChannelRef =
 export function metaRef(phoneNumberId?: string): ChannelRef {
   return { kind: 'meta', phoneNumberId }
 }
+
+// Evento de entrada normalizado do canal Baileys — o gerente já filtrou (nada de
+// msg própria/histórico) e extraiu o essencial. O Passo 5 resolve o tenant pela
+// sessão e persiste na fila (mesmo caminho do inbound Meta). Ver plano §1.2/§5.
+export type InboundEvent = {
+  channelSessionId: string // a sessão Baileys que recebeu (resolve o tenant)
+  contactId: string // MSISDN do cliente (só dígitos, casa com o wa_id da Meta)
+  remoteJid: string // endereço ORIGINAL pra responder (sock.sendMessage), sem reconstruir
+  messageId: string // key.id — dedup POR sessão (não é único global)
+  kind: 'text' | 'unsupported'
+  text?: string
+  mediaType?: string // tipo original quando não-suportado (audio/image/...)
+}
