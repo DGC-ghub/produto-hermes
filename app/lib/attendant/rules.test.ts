@@ -46,4 +46,25 @@ describe('buildCompanyRules', () => {
     const config: TenantConfig = { ...base, extraRules: ['Pergunte sempre o bairro.'] }
     expect(buildCompanyRules(config)).toContain('Pergunte sempre o bairro.')
   })
+
+  it('injeta a regra de escopo negativo (recusar-e-seguir) quando há outOfScope', () => {
+    const base = safeDefaultConfig('demo')
+    const config: TenantConfig = {
+      ...base,
+      guardrails: { neverPromise: [], outOfScope: ['micro-ondas', 'forno'] },
+    }
+    const scopeRule = buildCompanyRules(config).find((r) => r.includes('NÃO atende'))
+    expect(scopeRule).toBeDefined()
+    expect(scopeRule).toContain('micro-ondas')
+    expect(scopeRule).toContain('forno')
+    // "recusar-e-seguir": manda seguir ajudando, não escalar.
+    expect(scopeRule).toContain('siga ajudando')
+  })
+
+  it('não injeta regra de escopo quando outOfScope está ausente/vazio', () => {
+    expect(buildCompanyRules(configWith()).some((r) => r.includes('NÃO atende'))).toBe(false)
+    const base = safeDefaultConfig('demo')
+    const empty: TenantConfig = { ...base, guardrails: { neverPromise: [], outOfScope: [] } }
+    expect(buildCompanyRules(empty).some((r) => r.includes('NÃO atende'))).toBe(false)
+  })
 })

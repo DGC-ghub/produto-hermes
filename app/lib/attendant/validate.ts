@@ -50,6 +50,9 @@ export type ToolPolicy = {
 // Regras do tenant aplicadas determinísticamente pelo balcão (vêm do TenantConfig).
 export type TenantPolicy = {
   extraForbiddenClaims?: string[]
+  // Itens/serviços que a empresa NÃO atende: um chamado (action) que cite qualquer
+  // um destes é descartado. Lista por tenant (vem do config), nunca no código.
+  outOfScope?: string[]
   tools?: ToolPolicy[]
 }
 
@@ -124,7 +127,11 @@ function clampConfidence(value: unknown): number {
 // Ação inválida, ausente, de tool não habilitada, ou que viola os limites da tool
 // (allowedCategories / requiredFields) vira null (descartada) — nunca invalida a
 // resposta inteira. A IA propõe; o balcão honra o contrato declarado no config.
-function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | null {
+function validateAction(
+  raw: unknown,
+  tools?: ToolPolicy[],
+  outOfScope?: string[],
+): AttendantAction | null {
   if (!isPlainObject(raw) || raw.type !== 'abrir_chamado') {
     return null
   }
@@ -175,6 +182,26 @@ function validateAction(raw: unknown, tools?: ToolPolicy[]): AttendantAction | n
   }
   if (cat) {
     action.category = cat.slice(0, MAX_CATEGORY_LENGTH)
+  }
+
+  // Guard-rail de escopo (determinístico, por tenant): a IA não pode AGENDAR/abrir
+  // chamado para um item que a empresa declara NÃO atender. Se o assunto/descrição/
+  // categoria citar um termo fora do escopo, a action é descartada — o cliente nunca
+  // recebe uma visita marcada pra algo que a empresa não faz. A recusa conversacional
+  // ("recusar-e-seguir") fica com o prompt; aqui é a rede determinística do balcão.
+  if (outOfScope && outOfScope.length > 0) {
+    // Colapsa hífens/espaços além de acento/caixa: um único termo "micro-ondas"
+    // pega também "microondas" e "micro ondas" (a IA escreve as três formas).
+    const collapse = (value: string) => normalize(value).replace(/[\s-]+/g, '')
+    const haystack = collapse(`${action.subject} ${action.description} ${action.category ?? ''}`)
+    const hitsOutOfScope = outOfScope.some((term) => {
+      const collapsedTerm = collapse(term)
+      // Termo vazio/só-espaço jamais casa (senão derrubaria toda action).
+      return collapsedTerm.length > 0 && haystack.includes(collapsedTerm)
+    })
+    if (hitsOutOfScope) {
+      return null
+    }
   }
   return action
 }
@@ -229,7 +256,7 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
     return { ok: false, reason: 'handoff_sem_motivo' }
   }
 
-  const validatedAction = validateAction(action, policy?.tools)
+  const validatedAction = validateAction(action, policy?.tools, policy?.outOfScope)
 
   // A IA não pode AFIRMAR que registrou/abriu chamado sem propor a action: o
   // cliente acharia que está registrado e não está (visto ao vivo na prova de

@@ -32,6 +32,15 @@ export function buildCompanyRules(config: TenantConfig): string[] {
       'Responda somente com base nas informações da empresa. Se algo não estiver na base, diga que vai verificar ou encaminhar — não invente.',
     )
   }
+  // Escopo negativo por empresa (dado, não código): "recusar-e-seguir". A lista
+  // vem do TenantConfig; o balcão ainda barra, no validador, qualquer chamado
+  // aberto para um item fora do escopo.
+  const outOfScope = config.guardrails.outOfScope
+  if (outOfScope && outOfScope.length > 0) {
+    rules.push(
+      `A empresa NÃO atende: ${outOfScope.join(', ')}. Se o cliente pedir um destes (ou algo fora do que está na base), diga com clareza e gentileza que a empresa não atende esse item e siga ajudando com o que ela faz. Nunca ofereça, agende ou diga que "dá pra avaliar" algo fora do escopo, nem cite isso como exemplo do que a empresa faz.`,
+    )
+  }
   rules.push(...(config.extraRules ?? []))
   return rules
 }

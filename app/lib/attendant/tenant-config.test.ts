@@ -53,7 +53,16 @@ describe('parseTenantConfig', () => {
   it('normaliza opcionais ausentes sem quebrar', () => {
     const config = parseTenantConfig('x', valid)
     expect(config.guardrails.forbiddenTopics).toBeUndefined()
+    expect(config.guardrails.outOfScope).toBeUndefined()
     expect(config.extraRules).toBeUndefined()
+  })
+
+  it('lê guardrails.outOfScope quando presente', () => {
+    const config = parseTenantConfig('x', {
+      ...valid,
+      guardrails: { neverPromise: [], outOfScope: ['micro-ondas', 'forno'] },
+    })
+    expect(config.guardrails.outOfScope).toEqual(['micro-ondas', 'forno'])
   })
 })
 

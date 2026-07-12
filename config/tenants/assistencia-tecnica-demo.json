@@ -17,7 +17,16 @@
   ],
   "guardrails": {
     "neverPromise": ["conserto garantido", "preço fechado sem avaliação"],
-    "forbiddenTopics": []
+    "forbiddenTopics": [],
+    "outOfScope": [
+      "micro-ondas",
+      "forno",
+      "fogão",
+      "televisão",
+      "notebook",
+      "computador",
+      "celular"
+    ]
   },
   "escalationPolicy": {
     "triggers": ["reclamacao grave", "garantia"],

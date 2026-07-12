@@ -299,6 +299,7 @@ export async function processIncomingMessage(
     {
       policy: {
         extraForbiddenClaims: config.guardrails.neverPromise,
+        outOfScope: config.guardrails.outOfScope,
         tools: enabledTools,
       },
     },

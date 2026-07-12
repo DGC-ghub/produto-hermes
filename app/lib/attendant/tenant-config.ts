@@ -47,6 +47,10 @@ export type TenantConfig = {
   guardrails: {
     neverPromise: string[] // somados ao FORBIDDEN_CLAIMS global do validador
     forbiddenTopics?: string[]
+    // Itens/serviços que a empresa NÃO atende (por vertical, nunca no código). O
+    // balcão descarta uma action (agendamento) que cite qualquer um destes; o
+    // prompt orienta a recusar-e-seguir. Vazio/ausente = sem restrição de escopo.
+    outOfScope?: string[]
     maxDiscountPercent?: number
   }
   escalationPolicy: {
@@ -126,6 +130,9 @@ export function parseTenantConfig(slug: string, raw: unknown): TenantConfig {
       neverPromise: asStringArray(guardrails.neverPromise),
       forbiddenTopics: Array.isArray(guardrails.forbiddenTopics)
         ? asStringArray(guardrails.forbiddenTopics)
+        : undefined,
+      outOfScope: Array.isArray(guardrails.outOfScope)
+        ? asStringArray(guardrails.outOfScope)
         : undefined,
       maxDiscountPercent:
         typeof guardrails.maxDiscountPercent === 'number'

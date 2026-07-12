@@ -214,6 +214,67 @@ describe('validateAttendantOutput', () => {
     }
   })
 
+  it('descarta action que agenda item FORA do escopo (no subject) sem invalidar a resposta', () => {
+    const action = {
+      type: 'abrir_chamado',
+      subject: 'Visita técnica - micro-ondas',
+      description: 'não esquenta',
+    }
+    const result = validateAttendantOutput({ ...good, action }, { outOfScope: ['micro-ondas'] })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action).toBeNull()
+    }
+  })
+
+  it('descarta action com item fora do escopo citado na description', () => {
+    const action = {
+      type: 'abrir_chamado',
+      subject: 'conserto',
+      description: 'o forno elétrico parou',
+    }
+    const result = validateAttendantOutput({ ...good, action }, { outOfScope: ['forno'] })
+    expect(result.ok && result.value.action).toBeNull()
+  })
+
+  it('mantém action DENTRO do escopo mesmo com outOfScope configurado', () => {
+    const action = { type: 'abrir_chamado', subject: 'Visita - geladeira', description: 'não gela' }
+    const result = validateAttendantOutput(
+      { ...good, action },
+      { outOfScope: ['micro-ondas', 'forno'] },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action?.type).toBe('abrir_chamado')
+    }
+  })
+
+  it('casa fora-do-escopo sem acento/caixa (fogão → FOGÃO)', () => {
+    const action = { type: 'abrir_chamado', subject: 'Conserto de FOGÃO', description: 'd' }
+    const result = validateAttendantOutput({ ...good, action }, { outOfScope: ['fogao'] })
+    expect(result.ok && result.value.action).toBeNull()
+  })
+
+  it('casa variantes de grafia (micro-ondas ⇄ microondas ⇄ micro ondas)', () => {
+    const policy = { outOfScope: ['micro-ondas'] }
+    for (const subject of ['Visita - microondas', 'conserto de micro ondas', 'MICRO-ONDAS parou']) {
+      const result = validateAttendantOutput(
+        { ...good, action: { type: 'abrir_chamado', subject, description: 'd' } },
+        policy,
+      )
+      expect(result.ok && result.value.action).toBeNull()
+    }
+  })
+
+  it('termo vazio/espaço em outOfScope não derruba uma action válida', () => {
+    const action = { type: 'abrir_chamado', subject: 'Visita - geladeira', description: 'd' }
+    const result = validateAttendantOutput({ ...good, action }, { outOfScope: ['', '   '] })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.action?.type).toBe('abrir_chamado')
+    }
+  })
+
   it('descarta action inventada (vira null) sem invalidar a resposta', () => {
     const result = validateAttendantOutput({ ...good, action: { type: 'fazer_pix', valor: 999 } })
     expect(result.ok).toBe(true)
