@@ -121,7 +121,7 @@ Padrão das telas internas (`requireOwner`, `<AppShell>` — igual `conectar-wha
 | Risco | Mitigação |
 |---|---|
 | **Ban do número (Baileys)** | avisar o cliente no onboarding; ritmo humano de envio; **oficial** disponível pra quem exige (saúde). Não usar Baileys em base de saúde crítica. |
-| **Memória no Pi (~114MB livres)** — N sockets persistentes | ok pros primeiros 2-3 clientes; **escala → decisão de hospedagem (VPS ~€5/mês)**, que o plano já previa pra Outubro. Medir RAM por socket no 1º cliente. |
+| **Memória no Pi** — N sockets persistentes | medição real: **~449Mi livres / ~1.9Gi disponíveis** (não os 114MB de uma medição antiga). Baseline = medir o RSS de importar o Baileys com 0 sockets + o delta por-socket no 1º cliente. **Lazy-import do gerente só quando existe ≥1 sessão Baileys.** Escala grande → VPS (já previsto). |
 | **Dependência nova (`@whiskeysockets/baileys`)** | é o mecanismo que o dono aprovou (estratégia QR). Registrar no `package.json`; sem ela, o canal Baileys fica desligado (Meta segue funcionando). |
 | **Socket morre e ninguém percebe** | `connection.update/close` → reconnect automático + `status` no banco + alarme (`reportDegradation`) quando derruba; a tela mostra o estado. |
 | **Processo reinicia** | boot reconecta todas as sessões `conectado` do auth-state cifrado (sem re-escanear). |
@@ -155,4 +155,54 @@ Padrão das telas internas (`requireOwner`, `<AppShell>` — igual `conectar-wha
 **Bloco 2 (paralelo, rápido):** landing + demo herói.
 **Bloco 3 (por último):** MP produção + domínio + gate (ações do dono).
 
-**Definição de pronto do v1:** um estranho faz signup → abre `/canais` → escaneia o QR → manda uma mensagem de teste pro próprio número → o Hermes responde. Sem o dono tocar em nada.
+**Definição de pronto do v1:** um estranho faz signup → abre `/canais` → escaneia o QR → manda uma mensagem de teste **de um segundo número/dispositivo** → o Hermes responde. Sem o dono tocar em nada.
+> A DoD exige um **2º número/dispositivo de teste** (o próprio número não recebe as próprias msgs como inbound). Em CI, provar com `makeWASocket` **injetável** (socket fake) — ver §5.
+
+---
+
+## 5. Endurecimento — achados da verificação adversarial (2026-07-09, obrigatórios)
+
+Revisão por 4 lentes (Baileys confirmada via context7). Cada item é requisito de construção, ligado ao passo do §4.
+
+### Passo 1 — abstração de canal
+- **[CRÍTICA] Generalizar o caminho de RESPOSTA também.** `processEvent` (`whatsapp-queue.server.ts:68,90`) hoje chama `sendWhatsAppMessage(..., event.phoneNumberId)` hardcoded. Trocar por `sendReply(channelRefFromEvent(event), to, text)` — Meta se `phoneNumberId`, Baileys se `channelSessionId`. `sendOperatorReply` idem.
+- **[MÉDIA] Janela de 24h (Meta):** `metaChannel.sendText` pode falhar fora da janela de 24h (template fora do escopo v1) — documentar o modo de falha; o Baileys **não** tem essa trava (vantagem proativa).
+
+### Passo 2 — schema
+- **[CRÍTICA] `WebhookEvent.phoneNumberId` é `NOT NULL`** (`schema.prisma:146`) e evento Baileys não tem. Tornar **nullable** + exigir no código **exatamente-um-de** `{phoneNumberId, channelSessionId}`.
+- **[ALTA] Dedup global quebra entre canais.** `messageId @unique` é global (desenhado pro `wamid`). O `key.id` do Baileys **não** é único global (é por `remoteJid,fromMe,id`). Adicionar coluna `routeKey String` sempre preenchida (`m:<phoneNumberId>` | `b:<sessionId>`) e trocar por **`@@unique([routeKey, messageId])`**. Senão o `persistInbound` engole o P2002 e **descarta silenciosamente** uma msg real.
+
+### Passo 3 — auth-state cifrado
+- **[ALTA] BufferJSON obrigatório.** creds/keys têm `Buffer` (chaves Signal). Usar `JSON.stringify(state, BufferJSON.replacer)` antes do `encryptSecret` e `JSON.parse(dec, BufferJSON.reviver)` depois do `decryptSecret` (importar `BufferJSON` de `@whiskeysockets/baileys`). Sem isso: "Bad MAC" → força re-escanear (mata a promessa de reconexão sem QR).
+- **[ALTA] Persistir no `keys.set()`, não só no `creds.update`.** O auth-state tem `creds` (creds.update) **e** `keys` (SignalKeyStore, gravado via `keys.set()` durante a sessão, que não dispara creds.update). Store custom onde o `keys.set()` também re-cifra+persiste (debounced); envolver com `makeCacheableSignalKeyStore(store, logger)`.
+- **[MÉDIA] AAD por-sessão:** `channel-session:<sessionId>` (não `tenant:<id>` — há várias sessões por tenant).
+- **[MÉDIA] Debounce da persistência:** `creds.update` dispara com muita frequência e o SQLite é single-writer → coalescer (máx. 1 gravação/N s por sessão).
+- **[MÉDIA] Memoizar a chave scrypt.** `crypto.server.ts:9-19` deriva a chave com `scryptSync` (síncrono, dezenas de ms) a CADA cifra — no event-loop único isso trava com as gravações frequentes do auth-state. Cachear o Buffer de 32B derivado **uma vez** no processo. *(muda `crypto.server.ts`)*
+
+### Passo 4 — gerenciador Baileys
+- **[CRÍTICA] Normalização defensiva do `messages.upsert` ANTES do `persistInbound`:**
+  - descartar `msg.key.fromMe === true` (o reply do próprio bot volta como upsert → **laço de auto-resposta**);
+  - processar só `type === 'notify'` (nunca `'append'` = histórico/backlog no reconnect);
+  - descartar `messageTimestamp` anterior ao momento da conexão (gate extra contra backlog);
+  - ignorar `protocolMessage`/reaction/receipt/msg sem corpo de texto.
+- **[MÉDIA] `contactId` = MSISDN** (dígitos extraídos do jid, casa com o `wa_id` da Meta); guardar o `remoteJid` **original** pra responder (`sock.sendMessage(remoteJid, {text})`, sem reconstruir). Ignorar grupo (`@g.us`) no v1.
+- **[ALTA] Reconexão por causa:** ramificar no `DisconnectReason`/`statusCode` (Boom). Reconectar em `connectionClosed`/`connectionLost`/`restartRequired`(515)/`timedOut`; **terminal** (`status='derrubado'` + `reportDegradation`, sem auto-reconnect) em `loggedOut`/`connectionReplaced`(440)/`badSession`. Backoff exponencial + jitter + teto de tentativas. (`restartRequired` logo após o 1º pareamento **não** é erro.)
+- **[MÉDIA] Ritmo humano (anti-ban):** `baileysChannel.sendText` manda presence `'composing'`, espera delay randomizado (escalado pelo tamanho da resposta), com teto diário por sessão.
+- **[MÉDIA] Classificador de mídia:** definir quais tipos viram cortesia `'unsupported'` (áudio/imagem/doc) vs ignorados (reaction/receipt/protocol), reusando a intenção do `UNSUPPORTED_REPLY_TYPES` atual.
+- **[MÉDIA] `makeWASocket` injetável** no gerente → testes unitários contra um socket fake (a DoD real precisa de 2 números).
+
+### Passo 5 — fila
+- **[CRÍTICA] `persistInbound`/drain aceitam origem Meta OU Baileys** (via `routeKey`); resolvem tenant por `phoneNumberId` **ou** `channelSessionId`; respondem pelo canal certo (ver Passo 1).
+- **[MÉDIA] Drain serial = teto global entre tenants** (1 LLM ~20s por vez). v1: documentar o teto; v1.1: concorrência por sessão/pool pequeno.
+
+### Passo 6 — tela /canais
+- **[MÉDIA] Isolamento do QR:** o poll carrega `ChannelSession where { id, tenantId: <tenant do requester> }` (não só `requireOwner`) antes de devolver o QR; 404 se não for do tenant.
+- **[BAIXA] QR expira** → botão "gerar de novo"; no boot, reapar sessões `'pareando'` stale → `'desconectado'`.
+
+### Rollout & segurança (blast-radius)
+- **[ALTA] `BAILEYS_ENABLED`** (env, **default OFF** no rollout inicial — protege os pilotos Meta). O boot-reconnect **nunca lança**; erro isolado por socket (guard try/catch por sessão).
+- **[MÉDIA] Boot-reconnect deliberado (lazy):** o módulo já-no-boot (`whatsapp-queue`) checa `count(ChannelSession status='conectado') > 0` e faz `dynamic import` do gerente só então (casa com a memória).
+- **[ALTA] Shutdown gracioso:** `server.js` no `SIGTERM` chama `closeAllSockets()` (`sock.end()` **sem** logout, preserva o auth) antes do `server.close`.
+
+### Dependência
+- **`@whiskeysockets/baileys`** (+ `@hapi/boom` pra ler `DisconnectReason`). Sem ela, o canal Baileys fica desligado; Meta segue.
