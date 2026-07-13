@@ -35,7 +35,7 @@ WHATSAPP_NUMBER_MAP="<Phone number ID>:assistencia-tecnica-demo"
 
 ## Configurar o webhook na Meta
 1. No painel do WhatsApp > **Configuration** > Webhook, clique em **Edit**.
-2. **Callback URL**: `https://cryptobot.tail04b4ef.ts.net:5173/webhook/whatsapp`
+2. **Callback URL**: `https://cryptobot.tail04b4ef.ts.net/webhook/whatsapp`
    (a URL pública do túnel; em produção, o domínio do servidor).
 3. **Verify token**: o mesmo valor de `WHATSAPP_VERIFY_TOKEN`.
 4. Salve — a Meta chama o `GET` e valida (o código devolve o challenge).

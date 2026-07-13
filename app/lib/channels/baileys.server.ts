@@ -371,6 +371,13 @@ async function handleConnectionUpdate(
       void reportDegradation('baileys_reconexao_esgotada')
       return
     }
+    // Queda recuperável reflete no status: o painel /canais deixa de mostrar "Conectado"
+    // durante a reconexão (senão o dono acha que está no ar). Persiste uma vez só por
+    // janela de queda — issue #9 da auditoria de estabilização.
+    if (entry.status !== 'reconectando') {
+      entry.status = 'reconectando'
+      await persist(sessionId, { status: 'reconectando' })
+    }
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** (entry.reconnects - 1), RECONNECT_CAP_MS)
     const jitter = Math.floor(delay * 0.2 * Math.random())
     entry.reconnectTimer = setTimeout(() => {

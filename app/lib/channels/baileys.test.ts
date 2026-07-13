@@ -16,6 +16,7 @@ vi.mock('../alarm.server', () => ({ reportDegradation: vi.fn() }))
 import {
   __resetSessions,
   __setMakeSocket,
+  disconnect,
   getSessionView,
   normalizeInbound,
   overContactCap,
@@ -214,6 +215,21 @@ describe('gerente Baileys (ciclo de vida)', () => {
     }
     // CONTACT_CAP=12 passam; os 3 seguintes são suprimidos (quebra o loop de bots)
     expect(suppressed).toBe(3)
+  })
+
+  it('queda recuperável marca status reconectando (#9)', async () => {
+    await startPairing('s-recon')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    expect(getSessionView('s-recon').status).toBe('conectado')
+    // close NÃO-terminal (connectionLost) → agenda reconexão e marca 'reconectando'
+    fake._emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: new Boom('lost', { statusCode: DisconnectReason.connectionLost }) },
+    })
+    await tick()
+    expect(getSessionView('s-recon').status).toBe('reconectando')
+    await disconnect('s-recon') // limpa o reconnectTimer pendente (não vaza pro próximo teste)
   })
 
   it('close com loggedOut = derrubado, sem reconectar', async () => {
