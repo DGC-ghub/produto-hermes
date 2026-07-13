@@ -521,15 +521,17 @@ export async function closeAllSockets(): Promise<void> {
 }
 
 /**
- * Reconecta as sessões que estavam 'conectado' no boot (lazy — só é chamado se há
- * ao menos uma). Cada uma isolada: uma sessão ruim NUNCA derruba o boot. Server-side.
+ * Reconecta no boot as sessões que estavam ativas (lazy — só é chamado se há ao menos
+ * uma). Inclui 'reconectando': o reconnectTimer é em memória e se perde no restart, então
+ * uma sessão que caiu na janela de backoff DEVE ser retomada aqui, senão fica órfã pra
+ * sempre. Cada uma isolada: uma sessão ruim NUNCA derruba o boot. Server-side.
  */
 export async function reconnectActiveSessions(): Promise<void> {
   if (!isBaileysEnabled()) {
     return
   }
   const rows = await db.channelSession.findMany({
-    where: { kind: 'baileys', status: 'conectado' },
+    where: { kind: 'baileys', status: { in: ['conectado', 'reconectando'] } },
     select: { id: true },
   })
   for (const row of rows) {
