@@ -13,14 +13,20 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:
 let cachedKey: { secret: string; key: Buffer } | null = null
 
 function deriveKey(): Buffer {
-  const secret = process.env.SESSION_SECRET
+  // Chave de cifra em repouso PRÓPRIA (SECRETS_ENCRYPTION_KEY) se definida; senão cai no
+  // SESSION_SECRET — a MESMA chave derivada de antes, nada re-cifra (compat total). Decouplar
+  // do cookie permite, no futuro, rotacionar o SESSION_SECRET sem invalidar os dados cifrados
+  // (issue #2). Sem NENHUMA rotação agora: com a env nova ausente, o comportamento é idêntico.
+  const secret = process.env.SECRETS_ENCRYPTION_KEY || process.env.SESSION_SECRET
   // Fail-closed em produção (espelha auth.server.ts): sem um segredo próprio, cifrar em repouso com
   // o default público do código-fonte é falsa sensação de segurança — recusa em vez de fingir.
   if (
     process.env.NODE_ENV === 'production' &&
     (!secret || secret === 'dev-insecure-secret-change-me')
   ) {
-    throw new Error('SESSION_SECRET é obrigatório em produção para cifrar segredos em repouso.')
+    throw new Error(
+      'SESSION_SECRET (ou SECRETS_ENCRYPTION_KEY) é obrigatório em produção para cifrar segredos em repouso.',
+    )
   }
   const effective = secret ?? 'dev-insecure-secret-change-me'
   if (cachedKey?.secret === effective) {
