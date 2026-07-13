@@ -52,7 +52,20 @@ mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"
 
 if [ "${RESTART:-1}" = "1" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-  systemctl --user restart hermes && echo "[release] serviço reiniciado"
+  # Migração precisa do banco LIVRE (lock do SQLite) → serviço parado; e precisa correr
+  # ANTES do serviço subir com o código novo (que espera as colunas novas). Se falhar,
+  # NÃO sobe o release novo: reaponta 'current' pro anterior e sobe — nunca deixa código
+  # novo contra schema velho (issue #3 da auditoria de estabilização).
+  systemctl --user stop hermes
+  if ( cd "$DEPLOY/current" && npx prisma migrate deploy ); then
+    systemctl --user start hermes && echo "[release] migrado + serviço reiniciado"
+  else
+    echo "[release] MIGRATE FALHOU — revertendo 'current' pro release anterior" >&2
+    prev="$(ls -1dt "$DEPLOY/releases"/*/ 2>/dev/null | sed 's:/*$::' | grep -vFx "$(readlink -f "$DEPLOY/current")" | head -1)"
+    [ -n "$prev" ] && { ln -sfn "$prev" "$DEPLOY/current.tmp"; mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"; }
+    systemctl --user start hermes
+    exit 1
+  fi
 fi
 
 # Rotação: mantém os $KEEP releases mais novos (o rollback precisa de histórico).

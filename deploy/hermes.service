@@ -7,7 +7,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi/projects/produto-hermes
+# Deploy versionado (M0.2): roda do release imutável apontado pelo symlink 'current'.
+# .env/certs/config/knowledge vêm de shared/ (symlinkados no release); o banco fica no
+# path absoluto do DATABASE_URL, fora daqui.
+WorkingDirectory=/home/pi/hermes-deploy/current
 # PATH precisa incluir ~/.local/bin senão o app não acha o binário `claude`
 # (o cérebro real) e toda mensagem cai no fallback "vou marcar uma pessoa".
 Environment=PATH=/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin
