@@ -24,7 +24,7 @@ const storage = createCookieSessionStorage({
     sameSite: 'lax',
     secrets: [sessionSecret ?? 'dev-insecure-secret-change-me'],
     secure: process.env.NODE_ENV === 'production',
-    maxAge: 60 * 60 * 8, // 8h
+    maxAge: 60 * 60 * 4, // 4h — janela residual menor p/ sessão revogada (issue #10)
   },
 })
 

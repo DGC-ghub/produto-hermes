@@ -18,6 +18,7 @@ function baileysEnabled(): boolean {
 const STATUS_META: Record<string, { label: string; dot: string; text: string }> = {
   conectado: { label: 'Conectado', dot: 'bg-brand', text: 'text-brand' },
   pareando: { label: 'Escaneie o QR', dot: 'bg-waiting', text: 'text-waiting' },
+  reconectando: { label: 'Reconectando…', dot: 'bg-waiting', text: 'text-waiting' },
   derrubado: { label: 'Caiu — reconecte', dot: 'bg-urgent', text: 'text-urgent' },
   desconectado: { label: 'Desconectado', dot: 'bg-ink-soft/40', text: 'text-ink-soft' },
 }
