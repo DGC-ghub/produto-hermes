@@ -13,6 +13,7 @@ vi.mock('../../db.server', () => ({
 }))
 vi.mock('../alarm.server', () => ({ reportDegradation: vi.fn() }))
 
+import { db } from '../../db.server'
 import {
   __resetSessions,
   __setMakeSocket,
@@ -20,6 +21,7 @@ import {
   getSessionView,
   normalizeInbound,
   overContactCap,
+  reconnectActiveSessions,
   sendText,
   setInboundHandler,
   startPairing,
@@ -230,6 +232,21 @@ describe('gerente Baileys (ciclo de vida)', () => {
     await tick()
     expect(getSessionView('s-recon').status).toBe('reconectando')
     await disconnect('s-recon') // limpa o reconnectTimer pendente (não vaza pro próximo teste)
+  })
+
+  it('boot-reconnect retoma sessões reconectando, não só conectado (fix da regressão)', async () => {
+    const spy = vi.fn((..._a: unknown[]) => fake)
+    __setMakeSocket(spy as never)
+    // O reconnectTimer é em memória e se perde no restart: uma sessão que caiu na janela
+    // de backoff fica 'reconectando' no banco — o boot DEVE retomá-la (senão fica órfã).
+    vi.mocked(db.channelSession.findMany).mockResolvedValueOnce([{ id: 's-boot' }] as never)
+    await reconnectActiveSessions()
+    expect(spy).toHaveBeenCalledTimes(1) // tentou reconectar (connect → makeSocket)
+    const arg = vi.mocked(db.channelSession.findMany).mock.calls[0][0] as {
+      where?: { status?: { in?: string[] } }
+    }
+    expect(arg.where?.status?.in).toEqual(['conectado', 'reconectando'])
+    await disconnect('s-boot')
   })
 
   it('close com loggedOut = derrubado, sem reconectar', async () => {
