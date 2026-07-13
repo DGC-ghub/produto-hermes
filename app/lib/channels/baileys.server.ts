@@ -88,6 +88,15 @@ export function resolveReplyJid(sessionId: string, to: string): string {
 const recentSends = new Map<string, number[]>()
 export function overContactCap(jid: string): boolean {
   const now = Date.now()
+  // Poda o vazamento lento: num processo 24/7 os jids se acumulariam no mapa. Quando ele
+  // cresce, remove contatos totalmente fora da janela. Barato — só quando grande (FU2).
+  if (recentSends.size > 1000) {
+    for (const [k, times] of recentSends) {
+      if (times.every((t) => now - t >= CONTACT_WINDOW_MS)) {
+        recentSends.delete(k)
+      }
+    }
+  }
   const kept = (recentSends.get(jid) ?? []).filter((t) => now - t < CONTACT_WINDOW_MS)
   if (kept.length >= CONTACT_CAP) {
     recentSends.set(jid, kept)
@@ -126,7 +135,14 @@ async function getWaVersion(): Promise<[number, number, number] | undefined> {
     // fetchLatestWaWebVersion busca em web.whatsapp.com (a fonte real). Se falhar ou vier
     // defasada, o pareamento pode ser recusado — ALARMA (não silencia) e deixa o Baileys
     // cair no default como último recurso.
-    const { version, isLatest } = await fetchLatestWaWebVersion({})
+    // Timeout: web.whatsapp.com lento (DNS/rede) não pode travar o boot-reconnect — corta
+    // em 5s e cai no default do Baileys (FU2).
+    const { version, isLatest } = await Promise.race([
+      fetchLatestWaWebVersion({}),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout ao buscar versão do WA Web')), 5_000),
+      ),
+    ])
     cachedVersion = version
     if (!isLatest) {
       console.warn('[baileys] versão do WA Web pode estar defasada:', version)
@@ -381,9 +397,14 @@ async function handleConnectionUpdate(
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** (entry.reconnects - 1), RECONNECT_CAP_MS)
     const jitter = Math.floor(delay * 0.2 * Math.random())
     entry.reconnectTimer = setTimeout(() => {
-      void connect(sessionId, true).catch((e) =>
-        console.error(`[baileys] reconexão falhou (${sessionId}):`, e),
-      )
+      void connect(sessionId, true).catch(async (e) => {
+        // Reconexão lançou (ex.: auth corrompido) — não deixa a sessão fantasma dizendo
+        // 'reconectando' pra sempre: marca derrubado e alarma (FU2).
+        console.error(`[baileys] reconexão falhou (${sessionId}):`, e)
+        sessions.delete(sessionId)
+        await persist(sessionId, { status: 'derrubado' })
+        void reportDegradation('baileys_reconexao_falhou')
+      })
     }, delay + jitter)
   }
 }
