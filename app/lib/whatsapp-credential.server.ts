@@ -1,4 +1,5 @@
 import { db } from '../db.server'
+import { reportDegradation } from './alarm.server'
 import { decryptSecret, encryptSecret } from './crypto.server'
 
 // Credenciais de WhatsApp POR TENANT (marco M4.2). Hoje o canal usa um único token
@@ -22,6 +23,7 @@ function tryDecrypt(enc: string, context: string, label: string): string | null 
       `[whatsapp] falha ao decifrar ${label} (SESSION_SECRET mudou?):`,
       error instanceof Error ? error.message : error,
     )
+    void reportDegradation('credencial_decifra_falhou') // não falha em silêncio (issue #2)
     return null
   }
 }

@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decryptSecret, encryptSecret } from './crypto.server'
+
+afterEach(() => vi.unstubAllEnvs())
 
 describe('cifra de segredos (M4)', () => {
   it('roundtrip: decrypt(encrypt(x)) === x', () => {
@@ -35,5 +37,21 @@ describe('cifra de segredos (M4)', () => {
     const enc = encryptSecret('token-do-tenant-A', 'tenant:aaa')
     expect(() => decryptSecret(enc, 'tenant:bbb')).toThrow()
     expect(() => decryptSecret(enc, '')).toThrow() // sem context também falha
+  })
+})
+
+describe('decouple da chave de cifra do SESSION_SECRET (#2, sem rotação)', () => {
+  it('SECRETS_ENCRYPTION_KEY definida vira a chave (desacopla do cookie)', () => {
+    vi.stubEnv('SECRETS_ENCRYPTION_KEY', 'chave-de-cifra-propria-X')
+    const enc = encryptSecret('segredo')
+    expect(decryptSecret(enc)).toBe('segredo')
+    // trocar a chave PRÓPRIA → não decifra: prova que a chave vem dela, não do SESSION_SECRET
+    vi.stubEnv('SECRETS_ENCRYPTION_KEY', 'outra-chave-Y')
+    expect(() => decryptSecret(enc)).toThrow()
+  })
+
+  it('sem SECRETS_ENCRYPTION_KEY: cai no SESSION_SECRET (compat — nada re-cifra)', () => {
+    vi.stubEnv('SECRETS_ENCRYPTION_KEY', '')
+    expect(decryptSecret(encryptSecret('compat'))).toBe('compat')
   })
 })
