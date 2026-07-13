@@ -53,17 +53,49 @@ mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"
 if [ "${RESTART:-1}" = "1" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
   # Migração precisa do banco LIVRE (lock do SQLite) → serviço parado; e precisa correr
-  # ANTES do serviço subir com o código novo (que espera as colunas novas). Se falhar,
-  # NÃO sobe o release novo: reaponta 'current' pro anterior e sobe — nunca deixa código
-  # novo contra schema velho (issue #3 da auditoria de estabilização).
+  # ANTES do serviço subir com o código novo (que espera as colunas novas).
   systemctl --user stop hermes
+
+  # (a) Snapshot do banco ANTES do migrate: uma migração PARCIAL que falha NÃO é desfeita
+  # reapontando o symlink (o schema avança órfão à frente do código, e o _prisma_migrations
+  # trava deploys futuros). Rede de segurança best-effort; descartada no sucesso.
+  db_path="$(sed -n 's/^DATABASE_URL="\?file:\([^"]*\)"\?.*/\1/p' "$SHARED/.env" 2>/dev/null)"
+  snap=""
+  if [ -n "$db_path" ] && [ -f "$db_path" ]; then
+    snap="$DEPLOY/db-pre-migrate-$ts.sqlite"
+    cp "$db_path" "$snap" 2>/dev/null || snap=""
+  fi
+
   if ( cd "$DEPLOY/current" && npx prisma migrate deploy ); then
-    systemctl --user start hermes && echo "[release] migrado + serviço reiniciado"
+    systemctl --user start hermes || true
+    # (c) Falha do start NÃO pode ser engolida: sem isto o script sairia 0 com o serviço
+    # no chão E ainda rotacionaria releases.
+    if ! systemctl --user is-active --quiet hermes; then
+      echo "[release] FALHOU: serviço não subiu após o deploy — NÃO rotaciono releases" >&2
+      exit 1
+    fi
+    echo "[release] migrado + serviço reiniciado"
+    [ -n "$snap" ] && rm -f "$snap"
   else
-    echo "[release] MIGRATE FALHOU — revertendo 'current' pro release anterior" >&2
-    prev="$(ls -1dt "$DEPLOY/releases"/*/ 2>/dev/null | sed 's:/*$::' | grep -vFx "$(readlink -f "$DEPLOY/current")" | head -1)"
-    [ -n "$prev" ] && { ln -sfn "$prev" "$DEPLOY/current.tmp"; mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"; }
-    systemctl --user start hermes
+    echo "[release] ⚠️ MIGRATE FALHOU — o schema pode estar PARCIALMENTE aplicado." >&2
+    [ -n "$snap" ] && echo "[release] snapshot do banco PRÉ-migrate: $snap (restaure se preciso)" >&2
+    echo "[release] rollback.sh/symlink NÃO desfaz migrations — pode precisar de 'npx prisma migrate resolve'" >&2
+    # Release anterior por CAMINHO REAL (robusto a symlink em $DEPLOY):
+    cur_real="$(readlink -f "$DEPLOY/current")"
+    prev=""
+    for d in $(ls -1dt "$DEPLOY/releases"/*/ 2>/dev/null); do
+      [ "$(readlink -f "$d")" != "$cur_real" ] && { prev="$(readlink -f "$d")"; break; }
+    done
+    if [ -n "$prev" ]; then
+      # Migrations do Hermes são ADITIVAS (ADD COLUMN): código VELHO ignora coluna nova,
+      # então subir o release anterior mantém o piloto no ar. Alerta pra CONFERIR o schema.
+      ln -sfn "$prev" "$DEPLOY/current.tmp"; mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"
+      systemctl --user start hermes || true
+      echo "[release] revertido pro release anterior ($prev) — CONFIRA _prisma_migrations" >&2
+    else
+      # (b) Sem release anterior válido: NÃO sobe código novo contra schema falho.
+      echo "[release] SEM release anterior — serviço fica PARADO (não subo código novo contra schema falho)" >&2
+    fi
     exit 1
   fi
 fi
