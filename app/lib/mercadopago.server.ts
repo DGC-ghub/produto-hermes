@@ -2,6 +2,8 @@
 // via fetch — sem lib nova na stack. Sem MP_ACCESS_TOKEN no ambiente, cai em modo stub (não cria
 // nada, não move dinheiro): seguro pra dev e pra rodar antes de plugar a conta. Server-side.
 
+import { createHmac, timingSafeEqual } from 'node:crypto'
+
 const MP_API = 'https://api.mercadopago.com'
 
 export type PreapprovalInput = {
@@ -118,6 +120,43 @@ export async function getMpAccount(): Promise<MpAccount | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * Valida a assinatura `x-signature` do webhook do Mercado Pago (issue #6 da auditoria).
+ * O MP manda `x-signature: ts=<ts>,v1=<hmac>` + `x-request-id`; o HMAC-SHA256 é sobre o
+ * manifesto documentado `id:<data.id>;request-id:<x-request-id>;ts:<ts>;` com o
+ * MP_WEBHOOK_SECRET (chave de assinatura do painel do MP). FAIL-CLOSED: sem segredo
+ * configurado, nada é confiável. Puro/testável. (data.id alfanumérico vai minúsculo,
+ * conforme a doc do MP.) NOTA: o formato do manifesto deve ser conferido contra uma
+ * notificação REAL do MP antes de depender em produção.
+ */
+export function verifyMpWebhookSignature(input: {
+  dataId: string | null
+  xSignature: string | null
+  xRequestId: string | null
+  secret: string | undefined
+}): boolean {
+  const { dataId, xSignature, xRequestId, secret } = input
+  if (!secret || !xSignature || !dataId) {
+    return false
+  }
+  const parts: Record<string, string> = {}
+  for (const kv of xSignature.split(',')) {
+    const idx = kv.indexOf('=')
+    if (idx > 0) {
+      parts[kv.slice(0, idx).trim()] = kv.slice(idx + 1).trim()
+    }
+  }
+  const { ts, v1 } = parts
+  if (!ts || !v1) {
+    return false
+  }
+  const manifest = `id:${dataId.toLowerCase()};request-id:${xRequestId ?? ''};ts:${ts};`
+  const expected = createHmac('sha256', secret).update(manifest).digest('hex')
+  const a = Buffer.from(expected, 'hex')
+  const b = Buffer.from(v1, 'hex')
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 /** Traduz o status do Mercado Pago pro status interno da Subscription. */
