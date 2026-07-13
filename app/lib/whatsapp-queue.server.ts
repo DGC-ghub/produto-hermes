@@ -95,6 +95,23 @@ function channelRefFromEvent(event: {
 const UNSUPPORTED_MEDIA_REPLY =
   'Recebi seu áudio/arquivo 🙏 Por enquanto eu só consigo ler mensagens de TEXTO por aqui — pode escrever o que você precisa?'
 
+// Reenvio inline (issue #8): uma falha de envio (blip de rede, 5xx) reenvia algumas
+// vezes com backoff curto ANTES de desistir — SEM reprocessar o motor (não duplica
+// Chamado/lead). Falha persistente (token errado) ainda cai no alarme; o "guardar e
+// reentregar" completo pra persistente é follow-up (decisão de at-least-once do dono).
+const SEND_RETRIES = 3
+async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise<boolean> {
+  for (let i = 0; i < SEND_RETRIES; i++) {
+    if (await sendReply(ref, to, text)) {
+      return true
+    }
+    if (i < SEND_RETRIES - 1) {
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)))
+    }
+  }
+  return false
+}
+
 async function processEvent(event: {
   id: string
   phoneNumberId: string
@@ -114,7 +131,7 @@ async function processEvent(event: {
   // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
   // o conteúdo real a gente ainda não lê, então não há o que registrar.
   if (event.kind === 'unsupported') {
-    const sent = await sendReply(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
+    const sent = await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')
     }
@@ -146,9 +163,9 @@ async function processEvent(event: {
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendReply(ref, replyTo, result.reply)
-    // Falha de ENVIO não marca o evento como falho: a mensagem FOI processada
-    // (reprocessar duplicaria chamado/lead). Alarma e segue.
+    const sent = await sendWithRetry(ref, replyTo, result.reply)
+    // Falha de ENVIO (após os retries) não marca o evento como falho: a mensagem FOI
+    // processada (reprocessar duplicaria chamado/lead). Alarma e segue.
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')
     }
