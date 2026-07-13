@@ -1,7 +1,12 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
+import { sendReply } from './channels/dispatch.server'
 import { sendOperatorReply } from './operator-reply.server'
 import { ensureTenant } from './tenants.server'
+
+// Mocka o dispatcher pra capturar PRA ONDE o operador respondeu (canal + jid) sem socket
+// real; retorna sucesso. vi.mock é hoisted, então vale pra todos os testes do arquivo.
+vi.mock('./channels/dispatch.server', () => ({ sendReply: vi.fn(async () => true) }))
 
 const T = 'zzz-test-opreply'
 const ORIGINAL = { ...process.env }
@@ -22,6 +27,9 @@ afterEach(async () => {
   const convs = await db.conversation.findMany({ where: { tenantId }, select: { id: true } })
   await db.message.deleteMany({ where: { conversationId: { in: convs.map((c) => c.id) } } })
   await db.conversation.deleteMany({ where: { tenantId } })
+  const sess = await db.channelSession.findMany({ where: { tenantId }, select: { id: true } })
+  await db.webhookEvent.deleteMany({ where: { channelSessionId: { in: sess.map((s) => s.id) } } })
+  await db.channelSession.deleteMany({ where: { tenantId } })
 })
 afterAll(async () => {
   await db.tenant.deleteMany({ where: { slug: T } })
@@ -74,5 +82,36 @@ describe('sendOperatorReply (handoff — Tier 2)', () => {
     expect(msgs).toHaveLength(0) // nada foi escrito na conversa do outro
     await db.conversation.deleteMany({ where: { tenantId: outro?.id ?? '' } })
     await db.tenant.deleteMany({ where: { slug: 'zzz-test-opreply-outro' } })
+  })
+
+  it('empresa com sessão Baileys conectada: operador responde POR ELA no jid @lid original', async () => {
+    const session = await db.channelSession.create({
+      data: { tenantId, kind: 'baileys', status: 'conectado', label: 'op' },
+    })
+    await db.conversation.create({ data: { tenantId, contactId: '183709', status: 'needs_human' } })
+    await db.webhookEvent.create({
+      data: {
+        messageId: `b:${session.id}:m1`,
+        phoneNumberId: '',
+        channelSessionId: session.id,
+        contactId: '183709',
+        remoteJid: '183709@lid',
+        text: 'oi',
+      },
+    })
+    vi.mocked(sendReply).mockClear()
+    const r = await sendOperatorReply({
+      tenantId,
+      tenantSlug: T,
+      contactId: '183709',
+      text: 'resposta do humano',
+    })
+    expect(r.ok).toBe(true)
+    // roteou pro canal Baileys da empresa E no jid @lid ORIGINAL (não nos dígitos)
+    expect(sendReply).toHaveBeenCalledWith(
+      { kind: 'baileys', sessionId: session.id },
+      '183709@lid',
+      'resposta do humano',
+    )
   })
 })

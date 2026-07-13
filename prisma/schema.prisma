@@ -174,6 +174,11 @@ model WebhookEvent {
   // Null = evento da Meta (usa phoneNumberId). Aditivo (não mexe nos eventos Meta).
   channelSessionId String?
   contactId     String // wa_id (Meta) / MSISDN (Baileys) do remetente
+  // Baileys: o jid ORIGINAL de entrada (`<lid>@lid` ou `<phone>@s.whatsapp.net`). O
+  // WhatsApp novo endereça por @lid (número oculto) — responder aos dígitos vai pro
+  // vácuo. Guardado pra o operador humano e pendências pós-restart responderem ao jid
+  // certo. Null = evento Meta (usa contactId como wa_id).
+  remoteJid     String?
   text          String
   kind          String    @default("text") // text (roda o motor) | unsupported (cortesia)
   status        String    @default("pending") // pending | processing | done | failed

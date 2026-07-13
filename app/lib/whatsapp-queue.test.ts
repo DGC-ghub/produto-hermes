@@ -158,6 +158,7 @@ describe('persistBaileysInbound (canal QR)', () => {
     expect(row?.channelSessionId).toBe(SID)
     expect(row?.phoneNumberId).toBe('') // Baileys não tem phoneNumberId
     expect(row?.text).toBe('oi')
+    expect(row?.remoteJid).toBe(`${CONTACT}@s.whatsapp.net`) // jid original guardado (FU1)
   })
 
   it('dedup por (sessão, messageId): o mesmo evento não duplica (retorna 0)', async () => {

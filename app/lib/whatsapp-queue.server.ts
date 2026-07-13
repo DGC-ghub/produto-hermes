@@ -62,6 +62,9 @@ export async function persistBaileysInbound(event: InboundEvent): Promise<number
         phoneNumberId: '',
         channelSessionId: event.channelSessionId,
         contactId: event.contactId,
+        // jid ORIGINAL (@lid/@s.whatsapp.net) pra responder ao endereço certo mesmo
+        // fora do processo que recebeu (operador humano, pendência drenada pós-restart).
+        remoteJid: event.remoteJid,
         text: event.text ?? '',
         kind: event.kind,
       },
@@ -97,16 +100,21 @@ async function processEvent(event: {
   phoneNumberId: string
   channelSessionId: string | null
   contactId: string
+  remoteJid: string | null
   text: string
   kind: string
 }): Promise<void> {
   // O canal de RESPOSTA acompanha a origem do evento (Meta ou Baileys).
   const ref = channelRefFromEvent(event)
+  // Destino do envio: no Baileys usa o jid ORIGINAL (@lid) quando temos — responder aos
+  // dígitos reconstruídos ia pro vácuo. No Meta é o wa_id (contactId). O contactId segue
+  // sendo a IDENTIDADE (o motor usa ele); só o destino do envio muda.
+  const replyTo = ref.kind === 'baileys' ? (event.remoteJid ?? event.contactId) : event.contactId
 
   // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
   // o conteúdo real a gente ainda não lê, então não há o que registrar.
   if (event.kind === 'unsupported') {
-    const sent = await sendReply(ref, event.contactId, UNSUPPORTED_MEDIA_REPLY)
+    const sent = await sendReply(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')
     }
@@ -138,7 +146,7 @@ async function processEvent(event: {
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendReply(ref, event.contactId, result.reply)
+    const sent = await sendReply(ref, replyTo, result.reply)
     // Falha de ENVIO não marca o evento como falho: a mensagem FOI processada
     // (reprocessar duplicaria chamado/lead). Alarma e segue.
     if (!sent) {

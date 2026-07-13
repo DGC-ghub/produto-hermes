@@ -1,4 +1,5 @@
 import { db } from '../db.server'
+import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
 import { metaRef } from './channels/types'
 import { listTenantWhatsappNumbers } from './whatsapp.server'
@@ -28,9 +29,36 @@ export async function sendOperatorReply(input: {
   if (!conversation) {
     return { ok: false, error: 'Nenhuma conversa ativa com este contato.' }
   }
-  // Número da empresa que envia (o primeiro registrado; cai no env global se não houver).
-  const numbers = await listTenantWhatsappNumbers(input.tenantSlug)
-  const sent = await sendReply(metaRef(numbers[0]?.phoneNumberId), input.contactId, text)
+  // Roteia pro canal certo: se a empresa tem uma sessão Baileys conectada, o operador
+  // responde POR ELA (no jid @lid ORIGINAL da última entrada — responder aos dígitos
+  // reconstruídos iria pro vácuo). Senão, canal oficial da Meta (comportamento antigo).
+  const session = await db.channelSession.findFirst({
+    where: { tenantId: input.tenantId, kind: 'baileys', status: 'conectado' },
+    orderBy: { updatedAt: 'desc' },
+    select: { id: true },
+  })
+  let sent: boolean
+  if (session) {
+    const lastInbound = await db.webhookEvent.findFirst({
+      where: { channelSessionId: session.id, contactId: input.contactId },
+      orderBy: { createdAt: 'desc' },
+      select: { remoteJid: true },
+    })
+    if (!lastInbound?.remoteJid) {
+      // Sem o jid original (evento antigo, pré-FU1): o envio pode ir pro vácuo — alarma
+      // em vez de falhar em silêncio.
+      void reportDegradation('baileys_operador_sem_remotejid')
+    }
+    sent = await sendReply(
+      { kind: 'baileys', sessionId: session.id },
+      lastInbound?.remoteJid ?? input.contactId,
+      text,
+    )
+  } else {
+    // Número da empresa que envia (o primeiro registrado; cai no env global se não houver).
+    const numbers = await listTenantWhatsappNumbers(input.tenantSlug)
+    sent = await sendReply(metaRef(numbers[0]?.phoneNumberId), input.contactId, text)
+  }
 
   // Registra a fala do operador na conversa mesmo se o envio falhar — o histórico não mente.
   await db.message.create({
