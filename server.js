@@ -46,12 +46,17 @@ server.listen(port, () => {
 // perde o registro do device e força novo QR). Guarda de 3s pra nunca travar o shutdown.
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, async () => {
+    // Hard-exit se o encerramento pendurar numa conexão keep-alive (ex.: o poll do QR da
+    // tela /canais): sem isto o process.exit só viria no SIGKILL do systemd. unref() pra
+    // não segurar o processo caso tudo feche antes (FU2).
+    setTimeout(() => process.exit(0), 5000).unref()
     try {
       const shutdownChannels = globalThis.__hermesShutdownChannels
       if (shutdownChannels) {
         await Promise.race([shutdownChannels(), new Promise((r) => setTimeout(r, 3000))])
       }
     } catch {}
+    server.closeAllConnections?.() // derruba keep-alives pra o server.close() completar
     server.close(() => process.exit(0))
   })
 }
