@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
+import { sendReply } from './channels/dispatch.server'
 import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
+
+// Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. Default = entregue.
+vi.mock('./channels/dispatch.server', () => ({ sendReply: vi.fn(async () => true) }))
 
 const TEST_CONTACT_ID = 'test-queue-5511999990000'
 const TEST_PHONE_ID = 'test-queue-phone-id'
@@ -28,6 +32,7 @@ beforeEach(async () => {
   await ensureInitialTenants()
   // Mapeia o número de teste pro tenant dgc (o caminho REAL de resolução).
   await registerWhatsappNumber(TEST_PHONE_ID, 'dgc')
+  vi.mocked(sendReply).mockReset().mockResolvedValue(true) // default: envio entregue
 })
 
 afterEach(async () => {
@@ -91,6 +96,23 @@ describe('drainPending', () => {
       orderBy: { createdAt: 'asc' },
     })
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('reenvia o envio ao falhar (blip) sem reprocessar o motor, e completa (#8)', async () => {
+    // 1ª tentativa de envio falha; sendWithRetry reenvia e entrega na 2ª.
+    vi.mocked(sendReply).mockReset().mockResolvedValueOnce(false).mockResolvedValue(true)
+    await persistInbound([inbound('wamid.test-send-retry')])
+    await drainPending()
+
+    const event = await db.webhookEvent.findUnique({
+      where: { messageId: 'wamid.test-send-retry' },
+    })
+    expect(event?.status).toBe('done')
+    // envio foi TENTADO ao menos 2x (falhou → reenviou)...
+    expect(vi.mocked(sendReply).mock.calls.length).toBeGreaterThanOrEqual(2)
+    // ...mas o motor rodou UMA vez só (não duplicou): uma conversa.
+    const convs = await db.conversation.findMany({ where: { contactId: TEST_CONTACT_ID } })
+    expect(convs.length).toBe(1)
   })
 
   // Áudio/mídia: cortesia sem motor — marca done e NÃO cria conversa (o conteúdo
