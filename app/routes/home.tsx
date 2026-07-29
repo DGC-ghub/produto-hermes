@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { PublicHeader } from '../components/layout/PublicHeader'
 import { Button } from '../components/ui/Button'
+import { formatPlanPrice, PLANS, TRIAL_DAYS } from '../lib/plans'
 import type { Route } from './+types/home'
 
 export function meta(_args: Route.MetaArgs) {
@@ -138,6 +139,45 @@ export default function Home() {
                 )
               })}
             </div>
+          </div>
+        </section>
+
+        <section id="planos" className="mx-auto max-w-5xl px-6 pb-16">
+          <h2 className="font-display text-xl font-bold text-ink">Quanto custa</h2>
+          <p className="mt-1.5 text-sm text-ink-soft">
+            {TRIAL_DAYS} dias grátis para testar. Sem cartão para começar.
+          </p>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            {Object.values(PLANS).map((plan) => (
+              <div
+                key={plan.id}
+                className={`rounded-card border p-5 ${
+                  plan.destaque ? 'border-brand bg-surface' : 'border-border bg-surface'
+                }`}
+              >
+                <div className="flex items-baseline gap-2">
+                  <h3 className="font-display text-lg font-bold text-ink">{plan.nome}</h3>
+                  {plan.destaque && (
+                    <span className="rounded-full bg-brand/12 px-2 py-0.5 text-xs font-medium text-brand">
+                      mais escolhido
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-ink-soft">{plan.resumo}</p>
+                <p className="mt-3 font-display text-3xl font-extrabold text-ink">
+                  {formatPlanPrice(plan.precoCentavos)}
+                  <span className="ml-1 text-sm font-normal text-ink-soft">/mês</span>
+                </p>
+                <ul className="mt-4 flex flex-col gap-1.5">
+                  {plan.features.map((feature) => (
+                    <li key={feature} className="flex items-start gap-2 text-sm text-ink-soft">
+                      <WingMark accent className="mt-1 size-3 shrink-0 text-brand" />
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </section>
 

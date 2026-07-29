@@ -16,6 +16,10 @@
 
   --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+
+  /* Raio dos cards. Sem isto a classe `rounded-card` — usada na home, no /canais e
+     na demo — não gera regra nenhuma, e os cards saíam com canto reto. */
+  --radius-card: 14px;
 }
 
 html,
