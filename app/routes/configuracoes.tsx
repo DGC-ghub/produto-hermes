@@ -7,6 +7,7 @@ import { TextField } from '../components/ui/TextField'
 import { parseTenantConfig, safeDefaultConfig } from '../lib/attendant/tenant-config'
 import { resolveTenantConfig, saveTenantConfigToDb } from '../lib/attendant/tenant-config-db.server'
 import { requireOwner } from '../lib/auth.server'
+import { mensagemAmigavel } from '../lib/mensagem-erro'
 import { cx } from '../lib/ui'
 import type { Route } from './+types/configuracoes'
 
@@ -101,8 +102,10 @@ export async function action({ request }: Route.ActionArgs) {
     await saveTenantConfigToDb(parsed)
     return { ok: true as const }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Erro ao salvar.'
-    return { ok: false as const, error: message }
+    // O erro técnico continua indo pro log do servidor (é dele que a depuração vive);
+    // a tela recebe só a versão que o dono da empresa entende e sabe o que fazer.
+    console.error('[configuracoes] falha ao salvar as configurações', error)
+    return { ok: false as const, error: mensagemAmigavel(error) }
   }
 }
 
