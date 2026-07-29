@@ -9,23 +9,38 @@ import { registerWhatsappNumber } from './whatsapp.server'
 import { setWhatsappCredential } from './whatsapp-credential.server'
 
 const T = 'zzz-test-onboarding'
+const OTHER = 'zzz-test-onboarding-vizinho'
 
-async function wipe() {
-  const tenant = await db.tenant.findUnique({ where: { slug: T } })
+/** Cria uma sessão de canal (QR/Baileys) pro tenant no status pedido. */
+async function createSession(slug: string, status: string) {
+  const tenant = await db.tenant.findUniqueOrThrow({ where: { slug } })
+  await db.channelSession.create({
+    data: { tenantId: tenant.id, kind: 'baileys', status, label: 'QR de teste' },
+  })
+}
+
+async function wipe(slug = T) {
+  const tenant = await db.tenant.findUnique({ where: { slug } })
   if (tenant) {
     await db.knowledgeDoc.deleteMany({ where: { tenantId: tenant.id } })
     await db.whatsappNumber.deleteMany({ where: { tenantId: tenant.id } })
+    await db.channelSession.deleteMany({ where: { tenantId: tenant.id } })
     await db.tenantConfigRecord.deleteMany({ where: { tenantId: tenant.id } })
   }
 }
 
 beforeAll(async () => {
   await ensureTenant({ slug: T, name: 'Onb' })
+  await ensureTenant({ slug: OTHER, name: 'Onb vizinho' })
 })
-afterEach(wipe)
+afterEach(async () => {
+  await wipe()
+  await wipe(OTHER)
+})
 afterAll(async () => {
   await wipe()
-  await db.tenant.deleteMany({ where: { slug: T } })
+  await wipe(OTHER)
+  await db.tenant.deleteMany({ where: { slug: { in: [T, OTHER] } } })
 })
 
 describe('getOnboardingStatus (Tier 1)', () => {
@@ -45,11 +60,32 @@ describe('getOnboardingStatus (Tier 1)', () => {
     expect(status.doneCount).toBe(1)
   })
 
-  it('WhatsApp só conta com token PRÓPRIO (número sem token não basta)', async () => {
+  it('WhatsApp: sem QR conectado e sem token próprio, o passo fica pendente', async () => {
     await registerWhatsappNumber('ONB_WA_1', T)
-    expect((await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')?.done).toBe(false)
+    const step = (await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')
+    expect(step?.done).toBe(false)
+    expect(step?.href).toBe('/canais')
+  })
+
+  it('WhatsApp: só o canal oficial da Meta com token próprio já conta (não regride pilotos)', async () => {
+    await registerWhatsappNumber('ONB_WA_1', T)
     await setWhatsappCredential('ONB_WA_1', { accessToken: 'tok' })
     expect((await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')?.done).toBe(true)
+  })
+
+  it('WhatsApp: só o QR conectado (sem token da Meta) já conta', async () => {
+    await createSession(T, 'conectado')
+    expect((await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')?.done).toBe(true)
+  })
+
+  it('WhatsApp: sessão de QR ainda pareando não conta', async () => {
+    await createSession(T, 'pareando')
+    expect((await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')?.done).toBe(false)
+  })
+
+  it('WhatsApp: QR conectado de OUTRO tenant não conta', async () => {
+    await createSession(OTHER, 'conectado')
+    expect((await getOnboardingStatus(T)).steps.find((s) => s.key === 'whatsapp')?.done).toBe(false)
   })
 
   it('perfil vira done quando o segmento sai do default; tudo pronto → allDone', async () => {
