@@ -2,18 +2,21 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { AppShell } from '../components/layout/AppShell'
+import { Button } from '../components/ui/Button'
 import { Tag } from '../components/ui/Tag'
 import { db } from '../db.server'
 import { resolveTenantConfig } from '../lib/attendant/tenant-config-db.server'
 import { requireOperator } from '../lib/auth.server'
 import type { DashboardConversation, DashboardLead } from '../lib/dashboard.server'
 import { getDashboardData } from '../lib/dashboard.server'
+import type { SubscriptionNotice } from '../lib/subscription.server'
+import { getSubscriptionStatus, subscriptionNotice } from '../lib/subscription.server'
 import { AUTONOMY_TONE_CLASS, autonomyPercent, autonomyTone, cx } from '../lib/ui'
 import type { Route } from './+types/dashboard'
 
 export async function loader({ request }: Route.LoaderArgs) {
   const operator = await requireOperator(request)
-  const [data, config, realChannelConversations] = await Promise.all([
+  const [data, config, realChannelConversations, subscription] = await Promise.all([
     getDashboardData(operator.tenantId),
     resolveTenantConfig(operator.tenantSlug),
     // Conversa de canal real (hoje só o WhatsApp; `simulator` é o balcão de teste).
@@ -22,12 +25,20 @@ export async function loader({ request }: Route.LoaderArgs) {
     db.conversation.count({
       where: { tenantId: operator.tenantId, channel: { not: 'simulator' } },
     }),
+    getSubscriptionStatus(operator.tenantId),
   ])
   return {
     ...data,
     // O cliente se reconhece pelo nome da empresa, não pelo slug técnico.
     businessName: config?.businessProfile.name.trim() || operator.tenantSlug,
     isSimulation: realChannelConversations === 0,
+    // Só o dono chega em /assinar (requireOwner manda operador comum de volta pra
+    // fila): pra ele o aviso informa, mas sem oferecer um botão que não abre.
+    subscription: {
+      notice: subscriptionNotice(subscription),
+      planName: subscription.planName,
+      canManage: operator.role === 'owner',
+    },
     operator: { username: operator.username, tenantSlug: operator.tenantSlug },
   }
 }
@@ -150,9 +161,114 @@ function EscalationLine({ conversation }: { conversation: DashboardConversation 
   )
 }
 
+// Faixa de assinatura. Só aparece quando há algo a resolver — quem paga em dia não
+// leva banner na cara. O tom esquenta conforme o prazo aperta: o teste com folga
+// informa, os últimos dias chamam atenção, o vencido pede ação.
+type BannerKind = Exclude<SubscriptionNotice['kind'], 'none' | 'active'>
+
+const BANNER_TONE: Record<BannerKind, { wrap: string; dot: string }> = {
+  trial: { wrap: 'border-border bg-surface', dot: 'bg-brand' },
+  trial_ending: { wrap: 'border-waiting/40 bg-waiting/10', dot: 'bg-waiting' },
+  trial_over: { wrap: 'border-urgent/40 bg-urgent/10', dot: 'bg-urgent' },
+  payment_problem: { wrap: 'border-urgent/40 bg-urgent/10', dot: 'bg-urgent' },
+  // Cancelamento é escolha do cliente, não emergência: tom neutro, sem vermelho.
+  canceled: { wrap: 'border-border bg-surface', dot: 'bg-ink-soft' },
+}
+
+const BANNER_COPY: Record<BannerKind, { detail: string; cta: string }> = {
+  trial: {
+    detail: 'Assine antes do fim para o atendimento não parar.',
+    cta: 'Ver planos',
+  },
+  trial_ending: {
+    detail: 'Falta pouco — assine para o atendente continuar respondendo.',
+    cta: 'Assinar',
+  },
+  trial_over: {
+    // Não diz "voltou a funcionar/parou": hoje o gate de cobrança está desligado e o
+    // atendimento continua no ar — a faixa cobra a assinatura sem mentir sobre o estado.
+    detail: 'Assine para continuar com o atendente respondendo seus clientes.',
+    cta: 'Assinar',
+  },
+  payment_problem: {
+    detail: 'Confira o pagamento para não ficar sem atendimento.',
+    cta: 'Rever assinatura',
+  },
+  canceled: {
+    detail: 'Você pode voltar quando quiser — seus dados e sua base continuam aqui.',
+    cta: 'Assinar de novo',
+  },
+}
+
+// A contagem já vem pronta do servidor (`daysRemaining`, pura e testada); aqui só
+// se escolhem as palavras.
+function bannerTitle({ kind, daysLeft }: { kind: BannerKind; daysLeft: number | null }): string {
+  if (kind === 'trial_over') {
+    return 'Seu teste grátis terminou'
+  }
+  if (kind === 'payment_problem') {
+    return 'Não conseguimos confirmar seu pagamento'
+  }
+  if (kind === 'canceled') {
+    return 'Sua assinatura foi cancelada'
+  }
+  if (daysLeft === null) {
+    return 'Teste grátis'
+  }
+  if (daysLeft === 0) {
+    return 'Teste grátis — termina hoje'
+  }
+  return `Teste grátis — ${daysLeft} ${daysLeft === 1 ? 'dia restante' : 'dias restantes'}`
+}
+
+function SubscriptionBanner({
+  notice,
+  canManage,
+}: {
+  notice: SubscriptionNotice
+  canManage: boolean
+}) {
+  if (notice.kind === 'none' || notice.kind === 'active') {
+    return null
+  }
+  const tone = BANNER_TONE[notice.kind]
+  const copy = BANNER_COPY[notice.kind]
+  return (
+    <div
+      className={cx(
+        'flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-6 py-2.5',
+        tone.wrap,
+      )}
+    >
+      <span className={cx('size-1.5 shrink-0 rounded-full', tone.dot)} />
+      <p className="text-sm font-medium text-ink">
+        {bannerTitle({ kind: notice.kind, daysLeft: notice.daysLeft })}
+      </p>
+      <p className="text-sm text-ink-soft">{copy.detail}</p>
+      {canManage ? (
+        <Link to="/assinar" className="ml-auto">
+          <Button variant="primary" size="sm">
+            {copy.cta}
+          </Button>
+        </Link>
+      ) : (
+        <p className="ml-auto text-xs text-ink-soft">Avise quem cuida da assinatura.</p>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { summary, conversations, leads, activity, operator, businessName, isSimulation } =
-    loaderData
+  const {
+    summary,
+    conversations,
+    leads,
+    activity,
+    operator,
+    businessName,
+    isSimulation,
+    subscription,
+  } = loaderData
   const autonomy = autonomyPercent(summary.totalConversations, summary.humanInvolvedConversations)
   const toneClass = AUTONOMY_TONE_CLASS[autonomyTone(autonomy)]
   const solved = summary.totalConversations - summary.humanInvolvedConversations
@@ -172,9 +288,21 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
       }
     >
       <div className="flex min-h-screen flex-col">
+        <SubscriptionBanner notice={subscription.notice} canManage={subscription.canManage} />
+
         <div className="flex items-center justify-between px-6 pt-5 text-xs text-ink-soft">
           <span className="uppercase tracking-wide">painel · {businessName}</span>
-          {isSimulation && <Tag>dados de simulação</Tag>}
+          <div className="flex items-center gap-2">
+            {/* Assinatura em dia não vira faixa: fica só esta linha discreta, que também
+                serve de atalho pra trocar de plano. */}
+            {subscription.notice.kind === 'active' && subscription.canManage && (
+              <Link to="/assinar" className="hover:text-ink">
+                assinatura ativa
+                {subscription.planName && ` · ${subscription.planName}`}
+              </Link>
+            )}
+            {isSimulation && <Tag>dados de simulação</Tag>}
+          </div>
         </div>
 
         <section className="relative mt-3 overflow-hidden bg-bg-warm px-6 pt-7 pb-2">
