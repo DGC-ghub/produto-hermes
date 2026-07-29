@@ -44,6 +44,35 @@ describe('provisionTenant (M2.3)', () => {
     expect(acc?.email).toBe(EMAIL)
   })
 
+  it('leva o NOME real da empresa pro config (nunca o slug técnico)', async () => {
+    const { tenantId } = await provisionTenant({
+      slug: SLUG,
+      name: 'Advocacia GAC',
+      ownerEmail: EMAIL,
+      ownerPasswordHash: 'salt:hash',
+    })
+
+    const record = await db.tenantConfigRecord.findUnique({ where: { tenantId } })
+    const config = parseTenantConfig(SLUG, JSON.parse(record?.json ?? '{}'))
+    expect(config.businessProfile.name).toBe('Advocacia GAC')
+    expect(config.businessProfile.name).not.toBe(SLUG)
+    // o slug segue mandando no que é técnico (pasta da base de conhecimento)
+    expect(config.knowledge.sourceDir).toBe(`knowledge/${SLUG}`)
+  })
+
+  it('sem nome informado, cai no slug em vez de gravar config inválido', async () => {
+    const { tenantId } = await provisionTenant({
+      slug: SLUG,
+      name: '   ',
+      ownerEmail: EMAIL,
+      ownerPasswordHash: 'salt:hash',
+    })
+
+    const record = await db.tenantConfigRecord.findUnique({ where: { tenantId } })
+    const config = parseTenantConfig(SLUG, JSON.parse(record?.json ?? '{}'))
+    expect(config.businessProfile.name).toBe(SLUG)
+  })
+
   it('é idempotente: 2x não duplica tenant, config, account nem membership', async () => {
     const first = await provisionTenant({
       slug: SLUG,

@@ -1,5 +1,9 @@
 import { db } from '../db.server'
-import { safeDefaultConfig, serializeTenantConfig } from './attendant/tenant-config'
+import {
+  safeDefaultConfig,
+  serializeTenantConfig,
+  type TenantConfig,
+} from './attendant/tenant-config'
 
 // Provisionamento self-service (marco M2.3): cria um tenant COMPLETO numa transação —
 // Tenant + config default SEGURO (safeDefaultConfig) + Account owner + Membership(owner).
@@ -28,6 +32,13 @@ export async function provisionTenant(
   }
   const name = input.name.trim() || slug
 
+  // O config default nasce do slug (safeDefaultConfig), mas quem fala com o cliente final é o
+  // NOME da empresa: sem isto a IA se apresentava como "adv-gac" (slug, com hífens) na 1ª frase.
+  const initialConfig: TenantConfig = (() => {
+    const base = safeDefaultConfig(slug)
+    return { ...base, businessProfile: { ...base.businessProfile, name } }
+  })()
+
   const runTx = () =>
     db.$transaction(
       async (tx) => {
@@ -40,7 +51,7 @@ export async function provisionTenant(
         const hasConfig = await tx.tenantConfigRecord.findUnique({ where: { tenantId: tenant.id } })
         if (!hasConfig) {
           await tx.tenantConfigRecord.create({
-            data: { tenantId: tenant.id, json: serializeTenantConfig(safeDefaultConfig(slug)) },
+            data: { tenantId: tenant.id, json: serializeTenantConfig(initialConfig) },
           })
         }
 

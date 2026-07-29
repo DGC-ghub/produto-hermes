@@ -3,6 +3,8 @@ import { Link } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { AppShell } from '../components/layout/AppShell'
 import { Tag } from '../components/ui/Tag'
+import { db } from '../db.server'
+import { resolveTenantConfig } from '../lib/attendant/tenant-config-db.server'
 import { requireOperator } from '../lib/auth.server'
 import type { DashboardConversation, DashboardLead } from '../lib/dashboard.server'
 import { getDashboardData } from '../lib/dashboard.server'
@@ -11,8 +13,23 @@ import type { Route } from './+types/dashboard'
 
 export async function loader({ request }: Route.LoaderArgs) {
   const operator = await requireOperator(request)
-  const data = await getDashboardData(operator.tenantId)
-  return { ...data, operator: { username: operator.username, tenantSlug: operator.tenantSlug } }
+  const [data, config, realChannelConversations] = await Promise.all([
+    getDashboardData(operator.tenantId),
+    resolveTenantConfig(operator.tenantSlug),
+    // Conversa de canal real (hoje só o WhatsApp; `simulator` é o balcão de teste).
+    // Se existir ao menos uma, os números do painel são de verdade — nada de rótulo
+    // de simulação em cima do atendimento do cliente.
+    db.conversation.count({
+      where: { tenantId: operator.tenantId, channel: { not: 'simulator' } },
+    }),
+  ])
+  return {
+    ...data,
+    // O cliente se reconhece pelo nome da empresa, não pelo slug técnico.
+    businessName: config?.businessProfile.name.trim() || operator.tenantSlug,
+    isSimulation: realChannelConversations === 0,
+    operator: { username: operator.username, tenantSlug: operator.tenantSlug },
+  }
 }
 
 export function meta(_args: Route.MetaArgs) {
@@ -134,7 +151,8 @@ function EscalationLine({ conversation }: { conversation: DashboardConversation 
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { summary, conversations, leads, activity, operator } = loaderData
+  const { summary, conversations, leads, activity, operator, businessName, isSimulation } =
+    loaderData
   const autonomy = autonomyPercent(summary.totalConversations, summary.humanInvolvedConversations)
   const toneClass = AUTONOMY_TONE_CLASS[autonomyTone(autonomy)]
   const solved = summary.totalConversations - summary.humanInvolvedConversations
@@ -155,8 +173,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
     >
       <div className="flex min-h-screen flex-col">
         <div className="flex items-center justify-between px-6 pt-5 text-xs text-ink-soft">
-          <span className="uppercase tracking-wide">painel · {operator.tenantSlug}</span>
-          <Tag>dados de simulação</Tag>
+          <span className="uppercase tracking-wide">painel · {businessName}</span>
+          {isSimulation && <Tag>dados de simulação</Tag>}
         </div>
 
         <section className="relative mt-3 overflow-hidden bg-bg-warm px-6 pt-7 pb-2">
