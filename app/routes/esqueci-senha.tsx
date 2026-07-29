@@ -2,6 +2,7 @@ import { Form, Link, useActionData, useNavigation } from 'react-router'
 import { Logo } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
+import { appUrlFor } from '../lib/app-url.server'
 import { startPasswordReset } from '../lib/password-reset.server'
 import {
   checkRate,
@@ -42,7 +43,7 @@ export async function action({ request }: Route.ActionArgs) {
   const email = String(form.get('email') ?? '')
     .trim()
     .toLowerCase()
-  const baseUrl = new URL(request.url).origin
+  const baseUrl = appUrlFor(request)
 
   // Estourou o teto do e-mail: não envia, mas responde EXATAMENTE o mesmo — nem o limite pode
   // virar sinal de que a conta existe.

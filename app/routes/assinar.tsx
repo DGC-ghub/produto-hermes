@@ -2,6 +2,7 @@ import { Form, redirect, useActionData } from 'react-router'
 import { AppShell } from '../components/layout/AppShell'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
+import { appUrlFor } from '../lib/app-url.server'
 import { requireOwner } from '../lib/auth.server'
 import { startSubscription } from '../lib/billing.server'
 import { getSubscriptionStatus, PLANS, type PlanId } from '../lib/subscription.server'
@@ -25,7 +26,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (!(planId in PLANS)) {
     return { error: 'Plano inválido.' }
   }
-  const backUrl = `${new URL(request.url).origin}/dashboard`
+  const backUrl = `${appUrlFor(request)}/dashboard`
   const checkout = await startSubscription({
     tenantId: operator.tenantId,
     planId,

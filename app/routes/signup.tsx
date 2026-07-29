@@ -2,6 +2,7 @@ import { Form, Link, redirect, useActionData, useNavigation } from 'react-router
 import { Logo, WingMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
+import { appUrlFor } from '../lib/app-url.server'
 import { createOperatorSession, getOperator } from '../lib/auth.server'
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import { postSignupPath, registerOwner } from '../lib/signup.server'
@@ -34,7 +35,7 @@ export async function action({ request }: Route.ActionArgs) {
   const companyName = String(form.get('companyName') ?? '')
   const email = String(form.get('email') ?? '')
   const password = String(form.get('password') ?? '')
-  const baseUrl = new URL(request.url).origin
+  const baseUrl = appUrlFor(request)
 
   const result = await registerOwner({ companyName, email, password, baseUrl })
   if (!result.ok) {
