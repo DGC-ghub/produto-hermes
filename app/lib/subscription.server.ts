@@ -1,38 +1,13 @@
 import { db } from '../db.server'
+import { PLANS, type PlanId, TRIAL_DAYS } from './plans'
 
 // Assinatura (marco M3), agnóstica de gateway. O catálogo de planos vive em código; a integração
 // do gateway escolhido (Stripe/Mercado Pago/Asaas) sincroniza status/período via webhook depois.
 // isSubscriptionActive é o que um gate de atendimento (M4) vai consultar. Server-side.
 
-/** Catálogo de planos. Preço em centavos de real. */
-export const PLANS = {
-  essencial: {
-    id: 'essencial',
-    nome: 'Essencial',
-    precoCentavos: 14900,
-    destaque: false,
-    features: [
-      'Atendente de WhatsApp com IA',
-      'Base de conhecimento própria',
-      'Escalação para humano',
-      'Um número de WhatsApp',
-    ],
-  },
-  pro: {
-    id: 'pro',
-    nome: 'Pro',
-    precoCentavos: 29900,
-    destaque: true,
-    features: [
-      'Tudo do Essencial',
-      'Vários números de WhatsApp',
-      'Dashboard completo',
-      'Suporte prioritário',
-    ],
-  },
-} as const
-
-export type PlanId = keyof typeof PLANS
+// O catálogo em si mora em ./plans (puro, sem banco) para a landing pública poder
+// mostrar o preço. Re-exportado aqui para não quebrar quem já importava daqui.
+export { PLANS, type PlanId, TRIAL_DAYS }
 
 const ACTIVE_STATUSES = new Set(['trialing', 'active'])
 
@@ -55,7 +30,7 @@ export async function isSubscriptionActive(
 export async function startTrial(
   tenantId: string,
   planId: PlanId,
-  days = 14,
+  days = TRIAL_DAYS,
   now: Date = new Date(),
 ): Promise<void> {
   const currentPeriodEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000)
