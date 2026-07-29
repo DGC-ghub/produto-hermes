@@ -12,6 +12,112 @@ const TIMEOUT_MS = Number(process.env.ATTENDANT_TIMEOUT_MS ?? 30000)
 // atrás de ATTENDANT_DEBUG=1, para diagnóstico pontual, nunca em produção.
 const DEBUG = process.env.ATTENDANT_DEBUG === '1'
 
+// ── Semáforo de concorrência ────────────────────────────────────────────────
+// Cada mensagem recebida vira um processo `claude` novo, e o app roda num
+// Raspberry Pi: três ou quatro spawns ao mesmo tempo comem a memória e derrubam
+// a máquina inteira. O vetor mais provável é a demo pública — qualquer estranho
+// consegue disparar mensagens em rajada. Este teto faz uma rajada da demo virar
+// fila (ou recusa degradada), em vez de deixar o WhatsApp do cliente pagante sem
+// atendimento porque o Pi caiu.
+const DEFAULT_MAX_CONCURRENT = 2
+const DEFAULT_MAX_QUEUE = 8
+const DEFAULT_QUEUE_WAIT_MS = 15_000
+
+/** Lê um inteiro positivo do ambiente, caindo no default quando ausente/inválido. */
+function positiveEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+/** Config do semáforo, vinda do ambiente com defaults conservadores (Pi). */
+export function concurrencyConfig(): {
+  maxConcurrent: number
+  maxQueue: number
+  waitMs: number
+} {
+  return {
+    maxConcurrent: positiveEnv(process.env.ATTENDANT_MAX_CONCURRENT, DEFAULT_MAX_CONCURRENT),
+    maxQueue: positiveEnv(process.env.ATTENDANT_QUEUE_MAX, DEFAULT_MAX_QUEUE),
+    waitMs: positiveEnv(process.env.ATTENDANT_QUEUE_WAIT_MS, DEFAULT_QUEUE_WAIT_MS),
+  }
+}
+
+type Waiter = { resolve: () => void; cancel: () => void }
+export type ConcurrencyGate = {
+  run<T>(task: () => Promise<T>): Promise<T>
+  stats(): { active: number; queued: number }
+}
+
+/**
+ * Semáforo com fila limitada: no máximo `maxConcurrent` tarefas ao mesmo tempo,
+ * no máximo `maxQueue` esperando, e cada uma espera no máximo `waitMs`. Quem não
+ * cabe (fila cheia) ou espera demais recebe um erro — de propósito: o provider
+ * já trata erro do CLI escalando para humano (fallback seguro no dispatcher), e
+ * é esse mesmo caminho que queremos aqui. Nunca trava, nunca cresce sem limite.
+ */
+export function createConcurrencyGate(opts: {
+  maxConcurrent: number
+  maxQueue: number
+  waitMs: number
+}): ConcurrencyGate {
+  let active = 0
+  const waiting: Waiter[] = []
+
+  function drop(waiter: Waiter): void {
+    const index = waiting.indexOf(waiter)
+    if (index !== -1) {
+      waiting.splice(index, 1)
+    }
+  }
+
+  // Libera a vaga e passa direto para o primeiro da fila (a vaga não é devolvida
+  // ao balcão: `active` continua contando quem herdou o lugar).
+  function release(): void {
+    const next = waiting.shift()
+    if (next) {
+      next.cancel()
+      next.resolve()
+      return
+    }
+    active -= 1
+  }
+
+  async function acquire(): Promise<void> {
+    if (active < opts.maxConcurrent) {
+      active += 1
+      return
+    }
+    if (waiting.length >= opts.maxQueue) {
+      throw new Error(`fila do claude cheia (${waiting.length}/${opts.maxQueue}) — recusado`)
+    }
+    await new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = { resolve, cancel: () => undefined }
+      const timer = setTimeout(() => {
+        drop(waiter)
+        reject(new Error(`espera na fila do claude passou de ${opts.waitMs}ms`))
+      }, opts.waitMs)
+      waiter.cancel = () => clearTimeout(timer)
+      waiting.push(waiter)
+    })
+  }
+
+  return {
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      await acquire()
+      try {
+        return await task()
+      } finally {
+        release()
+      }
+    },
+    stats: () => ({ active, queued: waiting.length }),
+  }
+}
+
+// Um semáforo por processo: vale para TODOS os tenants e também para a demo
+// pública, que é justamente de quem estamos nos protegendo.
+const claudeGate = createConcurrencyGate(concurrencyConfig())
+
 /**
  * Monta o pacote de contexto enviado ao Claude. A mensagem do cliente é
  * delimitada e marcada como DADO (nunca instrução) — 1ª camada anti-injection.
@@ -98,19 +204,26 @@ function runClaude(prompt: string): Promise<string> {
   })
 }
 
+// Todo spawn passa pelo semáforo. Sem concorrência o caminho é o de sempre —
+// a vaga está livre e a chamada segue direto para o `claude`.
+function runClaudeQueued(prompt: string): Promise<string> {
+  return claudeGate.run(() => runClaude(prompt))
+}
+
 /**
  * Geração de TEXTO LIVRE via Claude CLI (mesma coleira do provider). Para
  * funcionalidades que precisam de texto puro, não do JSON do atendente — ex.: o
  * resumo de conversa. Server-side; lança se o CLI falhar (o chamador faz fallback).
  */
 export async function generatePlainText(prompt: string): Promise<string> {
-  return (await runClaude(prompt)).trim()
+  return (await runClaudeQueued(prompt)).trim()
 }
 
 /**
  * Provider de IA real via Claude CLI (modo headless `claude -p`), usando a conta
  * logada na máquina. Sem ferramentas (coleira). A saída é validada pelo
- * dispatcher; qualquer falha vira fallback seguro lá.
+ * dispatcher; qualquer falha vira fallback seguro lá — inclusive a recusa do
+ * semáforo quando o Pi já está com dois `claude` rodando e a fila cheia.
  */
 export const claudeCliProvider: AttendantProvider = {
   name: 'claude_cli',
@@ -118,7 +231,7 @@ export const claudeCliProvider: AttendantProvider = {
     const start = Date.now()
     let stdout: string
     try {
-      stdout = await runClaude(buildPrompt(input))
+      stdout = await runClaudeQueued(buildPrompt(input))
     } catch (error) {
       console.error(
         `[claude_cli] erro em ${Date.now() - start}ms:`,
