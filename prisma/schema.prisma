@@ -27,6 +27,7 @@ model Tenant {
   configRecord    TenantConfigRecord?
   knowledgeDocs   KnowledgeDoc[]
   subscription    Subscription?
+  messageTraces   MessageTrace[]
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
@@ -272,4 +273,28 @@ model KnowledgeDoc {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+}
+
+// Medição de UMA mensagem processada pelo motor — uma linha por mensagem, com o
+// tempo de cada etapa em `stepsJson` (padrão "canonical log line": um evento largo
+// em vez de N linhas por span, que no SQLite do Pi custaria 10x mais escrita).
+// É a régua para responder "onde foram os 20 segundos?" e para provar que uma
+// otimização funcionou — sem isso, só temos a média, que esconde a cauda.
+// Sem PII: nada de conteúdo de mensagem aqui, só tempos e rótulos.
+model MessageTrace {
+  id             String   @id @default(cuid())
+  tenantId       String
+  conversationId String? //                     só para cruzar com a conversa ao investigar
+  channel        String   @default("simulator") // simulator | whatsapp
+  provider       String   @default("nenhum") //   mock | claude_cli | anthropic_api | nenhum
+  outcome        String //                        ok | fallback | guard_handoff | billing_blocked | human_handling | erro
+  totalMs        Float //                         ponta a ponta
+  brainMs        Float? //                        desnormalizado: é o gargalo, merece query barata
+  stepsJson      String //                        {"brain":20500,"retrieval":40,...}
+  createdAt      DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
 }

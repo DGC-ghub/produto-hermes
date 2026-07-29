@@ -199,9 +199,17 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="mx-auto flex max-w-5xl items-center gap-2 px-6 py-6 text-xs text-ink-soft">
-        <WingMark className="size-4 text-brand" />
-        Hermes · um produto DGC Hub · 2026
+      <footer className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-6 py-6 text-xs text-ink-soft">
+        <span className="flex items-center gap-2">
+          <WingMark className="size-4 text-brand" />
+          Hermes · um produto DGC Hub · 2026
+        </span>
+        <Link to="/termos" className="transition-colors hover:text-ink">
+          Termos
+        </Link>
+        <Link to="/privacidade" className="transition-colors hover:text-ink">
+          Privacidade
+        </Link>
       </footer>
     </div>
   )

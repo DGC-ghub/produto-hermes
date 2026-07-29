@@ -10,6 +10,7 @@ import {
   listKnowledgeDocs,
   writeKnowledgeDoc,
 } from '../lib/knowledge-db.server'
+import { mensagemAmigavel } from '../lib/mensagem-erro'
 import { cx } from '../lib/ui'
 import type { Route } from './+types/conhecimento'
 
@@ -53,7 +54,13 @@ export async function action({ request }: Route.ActionArgs) {
     })
     return redirect('/conhecimento')
   } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Não consegui salvar. Tente de novo.' }
+    // O erro técnico continua indo pro log do servidor (é dele que a depuração vive);
+    // a tela recebe só a versão que o dono da empresa entende e sabe o que fazer.
+    console.error(
+      `[conhecimento] falha ao ${intent === 'delete' ? 'remover' : 'salvar'} documento`,
+      error,
+    )
+    return { error: mensagemAmigavel(error) }
   }
 }
 

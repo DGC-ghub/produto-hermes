@@ -18,21 +18,44 @@ function safeFallback(reason: string): AttendantOutput {
   }
 }
 
+/** Nomes de provider que o motor reconhece. */
+export type ProviderName = 'claude_cli' | 'anthropic_api' | 'mock'
+
+/**
+ * Traduz o env no nome do provider ativo. Pura — existe para que a telemetria
+ * possa rotular a medição sem reimplementar (e sem sair de sincronia com) a
+ * escolha feita em `resolveProvider`, que é quem a consome.
+ */
+export function providerNameFromEnv(value: string | undefined): ProviderName {
+  if (value === 'claude_cli' || value === 'anthropic_api') {
+    return value
+  }
+  return 'mock'
+}
+
+/** Nome do provider que `resolveProvider` usaria agora. Barato: não carrega o módulo. */
+export function activeProviderName(): ProviderName {
+  return providerNameFromEnv(process.env.ATTENDANT_PROVIDER)
+}
+
 // Escolhe o provider por env (ATTENDANT_PROVIDER). O provider de IA real é
 // carregado sob demanda para não trazer dependências de servidor (child_process)
 // quando se usa só o mock.
 export async function resolveProvider(): Promise<AttendantProvider> {
-  // Motor via assinatura pessoal do Claude (CLI logado na máquina).
-  if (process.env.ATTENDANT_PROVIDER === 'claude_cli') {
-    const { claudeCliProvider } = await import('./providers/claude-cli.server')
-    return claudeCliProvider
+  switch (activeProviderName()) {
+    // Motor via assinatura pessoal do Claude (CLI logado na máquina).
+    case 'claude_cli': {
+      const { claudeCliProvider } = await import('./providers/claude-cli.server')
+      return claudeCliProvider
+    }
+    // Motor via API da Anthropic (o cliente paga os tokens que usa).
+    case 'anthropic_api': {
+      const { anthropicApiProvider } = await import('./providers/anthropic-api.server')
+      return anthropicApiProvider
+    }
+    default:
+      return mockProvider
   }
-  // Motor via API da Anthropic (o cliente paga os tokens que usa).
-  if (process.env.ATTENDANT_PROVIDER === 'anthropic_api') {
-    const { anthropicApiProvider } = await import('./providers/anthropic-api.server')
-    return anthropicApiProvider
-  }
-  return mockProvider
 }
 
 /**

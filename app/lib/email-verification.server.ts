@@ -8,11 +8,18 @@ import { sendEmail } from './email.server'
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 
-/** Gera token, grava no Account e dispara o e-mail de confirmação. Retorna o token (útil em teste). */
+/** Resultado do disparo: o token (útil em teste) e se o e-mail saiu mesmo. */
+export type VerificationDispatch = { token: string; sent: boolean }
+
+/**
+ * Gera token, grava no Account e dispara o e-mail de confirmação. Devolve também `sent`: o envio
+ * pode falhar (sem chave do Resend, domínio recusado, rede fora) e quem chamou PRECISA saber —
+ * prometer ao cliente um e-mail que nunca saiu é pior do que avisar que não saiu.
+ */
 export async function startEmailVerification(
   account: { id: string; email: string },
   baseUrl: string,
-): Promise<string> {
+): Promise<VerificationDispatch> {
   const token = randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + TOKEN_TTL_MS)
   await db.account.update({
@@ -21,12 +28,12 @@ export async function startEmailVerification(
   })
 
   const link = `${baseUrl.replace(/\/$/, '')}/verificar-email?token=${token}`
-  await sendEmail({
+  const { sent } = await sendEmail({
     to: account.email,
     subject: 'Confirme seu e-mail — Hermes',
     html: `<p>Bem-vindo ao Hermes!</p><p>Confirme seu e-mail para ativar o atendimento:</p><p><a href="${link}">${link}</a></p><p>O link vale por 24 horas.</p>`,
   })
-  return token
+  return { token, sent }
 }
 
 /**

@@ -1,6 +1,6 @@
 import { db } from '../db.server'
 import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
-import { generateAttendantReply } from './attendant'
+import { activeProviderName, generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
 import { safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
@@ -9,6 +9,8 @@ import { isHumanHandling } from './conversation-status'
 import { decideHandoff } from './handoff'
 import { resolveKnowledge } from './knowledge-db.server'
 import { extractLeadPatch } from './lead'
+import { createTimer, type Timer } from './metrics'
+import { recordMessageTrace, type TraceOutcome } from './metrics.server'
 import { retrieveRelevantChunks } from './retrieval'
 import { resolveTenant } from './tenants.server'
 import { hasDuplicateOpenTicket } from './ticket'
@@ -63,6 +65,13 @@ async function loadConfigSafe(slug: string): Promise<TenantConfig> {
 }
 
 /**
+ * Contexto que a casca de medição precisa e que só é conhecido no meio do
+ * caminho (o tenant é resolvido lá dentro). Preenchido pelo corpo à medida que
+ * descobre; lido pela casca ao fechar o trace, inclusive quando dá exceção.
+ */
+type TraceContext = { tenantId?: string; conversationId?: string; outcome: TraceOutcome }
+
+/**
  * Orquestra o "balcão" do Hermes para uma mensagem recebida. O comportamento é
  * código único; o que muda por empresa vem do TenantConfig (regras, base, tools,
  * guard-rails, escalação) — aplicado determinísticamente aqui, nunca confiado ao
@@ -73,6 +82,32 @@ async function loadConfigSafe(slug: string): Promise<TenantConfig> {
 export async function processIncomingMessage(
   input: ProcessIncomingMessageInput,
 ): Promise<ProcessIncomingMessageResult> {
+  const timer = createTimer()
+  const ctx: TraceContext = { outcome: 'erro' }
+  try {
+    return await runIncomingMessage(input, timer, ctx)
+  } finally {
+    // Sem await: a medição não entra no caminho crítico da resposta ao cliente.
+    // Sem tenant resolvido não há o que gravar (a FK exige tenant existente).
+    if (ctx.tenantId) {
+      void recordMessageTrace({
+        tenantId: ctx.tenantId,
+        conversationId: ctx.conversationId,
+        channel: input.channel ?? 'simulator',
+        provider:
+          ctx.outcome === 'ok' || ctx.outcome === 'fallback' ? activeProviderName() : 'nenhum',
+        outcome: ctx.outcome,
+        trace: timer.finish(),
+      })
+    }
+  }
+}
+
+async function runIncomingMessage(
+  input: ProcessIncomingMessageInput,
+  timer: Timer,
+  ctx: TraceContext,
+): Promise<ProcessIncomingMessageResult> {
   const message = input.message.trim()
   if (message.length === 0) {
     throw new Error('Message is required')
@@ -81,11 +116,12 @@ export async function processIncomingMessage(
   // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
   // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
   // é rejeitado (não cria sujeira no banco).
-  const tenant = await resolveTenant(input.tenantSlug)
+  const tenant = await timer.step('tenant', () => resolveTenant(input.tenantSlug))
   if (!tenant) {
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
-  const config = await loadConfigSafe(input.tenantSlug)
+  ctx.tenantId = tenant.id
+  const config = await timer.step('config', () => loadConfigSafe(input.tenantSlug))
 
   // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE
   // do contato. No WhatsApp a identidade é o número (contactId) e a mensagem chega
@@ -93,53 +129,52 @@ export async function processIncomingMessage(
   // nela (preservando histórico e lead). Só abrimos conversa nova para um contato
   // novo ou quando a anterior foi encerrada. É isto que faz o Hermes LEMBRAR de
   // quem volta, em vez de tratar cada retorno como um estranho.
-  let conversationId: string
-  let contactId: string
-  let conversationStatus: string
-  if (input.conversationId) {
-    const existing = await db.conversation.findUnique({
-      where: { id: input.conversationId },
-    })
-    if (!existing || existing.tenantId !== tenant.id) {
-      throw new Error('Conversation not found')
+  const resolved = await timer.step('conversation', async () => {
+    if (input.conversationId) {
+      const existing = await db.conversation.findUnique({
+        where: { id: input.conversationId },
+      })
+      if (!existing || existing.tenantId !== tenant.id) {
+        throw new Error('Conversation not found')
+      }
+      return { id: existing.id, contactId: existing.contactId, status: existing.status }
     }
-    conversationId = existing.id
-    contactId = existing.contactId
-    conversationStatus = existing.status
-  } else {
     const contact = input.contactId ?? 'demo-user'
     const active = await db.conversation.findFirst({
       where: { tenantId: tenant.id, contactId: contact, status: { not: 'closed' } },
       orderBy: { updatedAt: 'desc' },
     })
     if (active) {
-      conversationId = active.id
-      contactId = active.contactId
-      conversationStatus = active.status
-    } else {
-      const created = await db.conversation.create({
-        data: {
-          tenantId: tenant.id,
-          channel: input.channel ?? 'simulator',
-          contactId: contact,
-          status: 'open',
-        },
-      })
-      conversationId = created.id
-      contactId = created.contactId
-      conversationStatus = created.status
+      return { id: active.id, contactId: active.contactId, status: active.status }
     }
-  }
+    const created = await db.conversation.create({
+      data: {
+        tenantId: tenant.id,
+        channel: input.channel ?? 'simulator',
+        contactId: contact,
+        status: 'open',
+      },
+    })
+    return { id: created.id, contactId: created.contactId, status: created.status }
+  })
+  const conversationId = resolved.id
+  const contactId = resolved.contactId
+  const conversationStatus = resolved.status
+  ctx.conversationId = conversationId
 
   // Se um humano ASSUMIU esta conversa, o Hermes se cala: registra a mensagem do
   // cliente (para o atendente ver) e devolve sem gerar resposta da IA.
   if (isHumanHandling(conversationStatus)) {
-    const userMessage = await db.message.create({
-      data: { conversationId, role: 'user', content: message },
-    })
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() },
+    ctx.outcome = 'human_handling'
+    const userMessage = await timer.step('persist_user', async () => {
+      const created = await db.message.create({
+        data: { conversationId, role: 'user', content: message },
+      })
+      await db.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      })
+      return created
     })
     return {
       conversationId,
@@ -159,14 +194,18 @@ export async function processIncomingMessage(
   // Hermes não gasta o cérebro caro — registra a mensagem e escala pra humano (o dono resolve:
   // paga ou responde manual). Grandfathering + flag desligado por padrão garantem que pilotos/
   // legado nunca são bloqueados. Ver app/lib/billing-gate.server.ts.
-  const gate = await checkBillingGate(tenant.id)
+  const gate = await timer.step('billing', () => checkBillingGate(tenant.id))
   if (!gate.allowed) {
-    const userMessage = await db.message.create({
-      data: { conversationId, role: 'user', content: message },
-    })
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { status: 'needs_human', updatedAt: new Date() },
+    ctx.outcome = 'billing_blocked'
+    const userMessage = await timer.step('persist_user', async () => {
+      const created = await db.message.create({
+        data: { conversationId, role: 'user', content: message },
+      })
+      await db.conversation.update({
+        where: { id: conversationId },
+        data: { status: 'needs_human', updatedAt: new Date() },
+      })
+      return created
     })
     return {
       conversationId,
@@ -182,12 +221,14 @@ export async function processIncomingMessage(
   }
 
   // Histórico ANTES de salvar a mensagem nova: a "memória" daquele contato.
-  const priorMessages = await db.message.findMany({
-    where: { conversationId },
-    orderBy: { createdAt: 'desc' },
-    take: HISTORY_LIMIT,
-    select: { role: true, content: true },
-  })
+  const priorMessages = await timer.step('history', () =>
+    db.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'desc' },
+      take: HISTORY_LIMIT,
+      select: { role: true, content: true },
+    }),
+  )
   const history = priorMessages
     .reverse()
     .filter(
@@ -196,31 +237,38 @@ export async function processIncomingMessage(
     )
     .map((m) => ({ role: m.role, content: m.content }))
 
-  const userMessage = await db.message.create({
-    data: { conversationId, role: 'user', content: message },
-  })
-
-  // Lead determinístico (barato e confiável); o atendente pode enriquecer depois.
-  const detPatch = extractLeadPatch(message)
-  if (Object.keys(detPatch).length > 0) {
-    await db.lead.upsert({
-      where: { conversationId },
-      create: { tenantId: tenant.id, conversationId, ...detPatch, stage: 'novo' },
-      update: { ...detPatch },
+  const userMessage = await timer.step('persist_user', async () => {
+    const created = await db.message.create({
+      data: { conversationId, role: 'user', content: message },
     })
-  }
+
+    // Lead determinístico (barato e confiável); o atendente pode enriquecer depois.
+    const detPatch = extractLeadPatch(message)
+    if (Object.keys(detPatch).length > 0) {
+      await db.lead.upsert({
+        where: { conversationId },
+        create: { tenantId: tenant.id, conversationId, ...detPatch, stage: 'novo' },
+        update: { ...detPatch },
+      })
+    }
+    return created
+  })
 
   // Guard-rail determinístico ANTES do cérebro — e com CURTO-CIRCUITO: pedido
   // explícito de humano e tema sensível já decidem a resposta segura, então não
   // pagamos a latência/custo do LLM nem executamos efeitos (lead/chamado) de uma
   // proposta cuja resposta o cliente nunca veria.
-  const docs = await resolveKnowledge(config.slug, config.knowledge.sourceDir)
-  const retrieved = retrieveRelevantChunks(message, docs)
-  const guard = decideHandoff({
-    message,
-    retrievedCount: retrieved.length,
-    extraSensitiveTriggers: config.escalationPolicy.triggers,
-  })
+  const docs = await timer.step('knowledge', () =>
+    resolveKnowledge(config.slug, config.knowledge.sourceDir),
+  )
+  const retrieved = timer.stepSync('retrieval', () => retrieveRelevantChunks(message, docs))
+  const guard = timer.stepSync('guard', () =>
+    decideHandoff({
+      message,
+      retrievedCount: retrieved.length,
+      extraSensitiveTriggers: config.escalationPolicy.triggers,
+    }),
+  )
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
   if (guardForcesSafe) {
     // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma
@@ -229,22 +277,26 @@ export async function processIncomingMessage(
     if (guard.reason === 'sensitive_topic' && input.channel === 'whatsapp') {
       void reportSensitiveHandoff(input.tenantSlug)
     }
+    ctx.outcome = 'guard_handoff'
     const reply = config.escalationPolicy.humanMessage
-    const assistantMessage = await db.message.create({
-      data: {
-        conversationId,
-        role: 'assistant',
-        content: reply,
-        confidence: 0,
-        sourcesJson: JSON.stringify([]),
-      },
-    })
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { status: 'needs_human' },
-    })
-    await db.handoffEvent.create({
-      data: { conversationId, reason: guard.reason ?? 'unknown', message },
+    const assistantMessage = await timer.step('persist_reply', async () => {
+      const created = await db.message.create({
+        data: {
+          conversationId,
+          role: 'assistant',
+          content: reply,
+          confidence: 0,
+          sourcesJson: JSON.stringify([]),
+        },
+      })
+      await db.conversation.update({
+        where: { id: conversationId },
+        data: { status: 'needs_human' },
+      })
+      await db.handoffEvent.create({
+        data: { conversationId, reason: guard.reason ?? 'unknown', message },
+      })
+      return created
     })
     return {
       conversationId,
@@ -259,16 +311,21 @@ export async function processIncomingMessage(
     }
   }
 
-  const currentLead = await db.lead.findUnique({ where: { conversationId } })
+  const { currentLead, myTickets } = await timer.step('context', async () => {
+    const lead = await db.lead.findUnique({ where: { conversationId } })
 
-  // Chamados SÓ deste contato (isolamento determinístico — o LLM nunca vê os de outros).
-  const ticketRows = await db.ticket.findMany({
-    where: { tenantId: tenant.id, contactId },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
-    select: { subject: true, status: true },
+    // Chamados SÓ deste contato (isolamento determinístico — o LLM nunca vê os de outros).
+    const ticketRows = await db.ticket.findMany({
+      where: { tenantId: tenant.id, contactId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: { subject: true, status: true },
+    })
+    return {
+      currentLead: lead,
+      myTickets: ticketRows.map((row) => ({ subject: row.subject, status: row.status })),
+    }
   })
-  const myTickets = ticketRows.map((row) => ({ subject: row.subject, status: row.status }))
 
   // Contexto, regras e tools derivados do TenantConfig.
   const companyRules = buildCompanyRules(config)
@@ -278,76 +335,84 @@ export async function processIncomingMessage(
 
   // O cérebro: atendente IA plugável. A saída já vem validada (com a policy do
   // tenant) e com fallback seguro se o provider falhar.
-  const decision = await generateAttendantReply(
-    {
-      tenant: { slug: tenant.slug, name: config.businessProfile.name },
-      companyRules,
-      knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
-      history,
-      lead: currentLead
-        ? {
-            name: currentLead.name,
-            phone: currentLead.phone,
-            neighborhood: currentLead.neighborhood,
-            need: currentLead.need,
-            urgency: currentLead.urgency,
-          }
-        : null,
-      myTickets,
-      message,
-    },
-    {
-      policy: {
-        extraForbiddenClaims: config.guardrails.neverPromise,
-        outOfScope: config.guardrails.outOfScope,
-        tools: enabledTools,
+  const decision = await timer.step('brain', () =>
+    generateAttendantReply(
+      {
+        tenant: { slug: tenant.slug, name: config.businessProfile.name },
+        companyRules,
+        knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
+        history,
+        lead: currentLead
+          ? {
+              name: currentLead.name,
+              phone: currentLead.phone,
+              neighborhood: currentLead.neighborhood,
+              need: currentLead.need,
+              urgency: currentLead.urgency,
+            }
+          : null,
+        myTickets,
+        message,
       },
-    },
+      {
+        policy: {
+          extraForbiddenClaims: config.guardrails.neverPromise,
+          outOfScope: config.guardrails.outOfScope,
+          tools: enabledTools,
+        },
+      },
+    ),
   )
 
   // Alarme: se o cérebro CAIU no fallback (provider/validação), o cliente recebeu a
   // resposta genérica. Avisa o operador (best-effort) — não é escalação normal.
-  if (
-    decision.handoffReason === 'provider_error' ||
-    decision.handoffReason === 'validacao_falhou'
-  ) {
-    void reportDegradation(decision.handoffReason)
+  const razaoDegradacao =
+    decision.handoffReason === 'provider_error' || decision.handoffReason === 'validacao_falhou'
+      ? decision.handoffReason
+      : null
+  if (razaoDegradacao) {
+    void reportDegradation(razaoDegradacao)
   }
+  // Separar 'fallback' de 'ok' na medição é o que permite ler o p95 do motor SADIO:
+  // uma queda do provider responde em 200ms e mascararia a lentidão real na média.
+  ctx.outcome = razaoDegradacao ? 'fallback' : 'ok'
 
-  // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
-  if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
-    await db.lead.upsert({
-      where: { conversationId },
-      create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
-      update: { ...decision.leadPatch },
-    })
-  }
-
-  // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
-  // validador já garantiu que a ação é de uma tool habilitada para este tenant.
-  // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
-  // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
-  // continuam gerando chamados distintos).
-  if (decision.action?.type === 'abrir_chamado') {
-    // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
-    // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
-    const openTickets = await db.ticket.findMany({
-      where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
-      select: { subject: true },
-    })
-    const openSubjects = openTickets.map((row) => row.subject)
-    if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
-      await db.ticket.create({
-        data: {
-          tenantId: tenant.id,
-          contactId,
-          subject: decision.action.subject,
-          description: decision.action.description,
-          category: decision.action.category ?? null,
-        },
+  await timer.step('effects', async () => {
+    // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
+    if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
+      await db.lead.upsert({
+        where: { conversationId },
+        create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
+        update: { ...decision.leadPatch },
       })
     }
-  }
+
+    // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
+    // validador já garantiu que a ação é de uma tool habilitada para este tenant.
+    // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
+    // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
+    // continuam gerando chamados distintos).
+    if (decision.action?.type === 'abrir_chamado') {
+      // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
+      // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
+      const openTickets = await db.ticket.findMany({
+        where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
+        select: { subject: true },
+      })
+      const openSubjects = openTickets.map((row) => row.subject)
+      if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
+        await db.ticket.create({
+          data: {
+            tenantId: tenant.id,
+            contactId,
+            subject: decision.action.subject,
+            description: decision.action.description,
+            category: decision.action.category ?? null,
+          },
+        })
+      }
+    }
+  })
 
   // Daqui pra baixo o guard não interfere (o curto-circuito acima já tratou os
   // casos forçados): a decisão de escalar é do cérebro validado.
@@ -361,30 +426,33 @@ export async function processIncomingMessage(
     score: chunk.score,
   }))
 
-  const assistantMessage = await db.message.create({
-    data: {
-      conversationId,
-      role: 'assistant',
-      content: reply,
-      confidence,
-      sourcesJson: JSON.stringify(sources),
-    },
-  })
-
-  // Marca atividade na conversa (e o status, quando escala). Sem tocar o updatedAt
-  // aqui, ele só avançaria no handoff — e a resolução de identidade (reusar a
-  // conversa ativa do contato), a ordem da fila do atendente e a "conversa ativa"
-  // do dossiê leriam um timestamp congelado, pegando a conversa errada quando o
-  // contato tem mais de uma não-fechada.
-  await db.conversation.update({
-    where: { id: conversationId },
-    data: needsHuman ? { status: 'needs_human' } : { updatedAt: new Date() },
-  })
-  if (needsHuman) {
-    await db.handoffEvent.create({
-      data: { conversationId, reason: handoffReason ?? 'unknown', message },
+  const assistantMessage = await timer.step('persist_reply', async () => {
+    const created = await db.message.create({
+      data: {
+        conversationId,
+        role: 'assistant',
+        content: reply,
+        confidence,
+        sourcesJson: JSON.stringify(sources),
+      },
     })
-  }
+
+    // Marca atividade na conversa (e o status, quando escala). Sem tocar o updatedAt
+    // aqui, ele só avançaria no handoff — e a resolução de identidade (reusar a
+    // conversa ativa do contato), a ordem da fila do atendente e a "conversa ativa"
+    // do dossiê leriam um timestamp congelado, pegando a conversa errada quando o
+    // contato tem mais de uma não-fechada.
+    await db.conversation.update({
+      where: { id: conversationId },
+      data: needsHuman ? { status: 'needs_human' } : { updatedAt: new Date() },
+    })
+    if (needsHuman) {
+      await db.handoffEvent.create({
+        data: { conversationId, reason: handoffReason ?? 'unknown', message },
+      })
+    }
+    return created
+  })
 
   return {
     conversationId,

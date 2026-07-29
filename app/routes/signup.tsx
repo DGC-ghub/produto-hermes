@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
 import { createOperatorSession, getOperator } from '../lib/auth.server'
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
-import { registerOwner } from '../lib/signup.server'
+import { postSignupPath, registerOwner } from '../lib/signup.server'
 import type { Route } from './+types/signup'
 
 // Teto global anti-spam de cadastro: cada conta nova provisiona um tenant + dispara um
@@ -41,6 +41,8 @@ export async function action({ request }: Route.ActionArgs) {
     return { error: result.error }
   }
   // Loga o dono já — o e-mail entra não-verificado (confirmação a caminho).
+  // O destino depende de o e-mail ter saído mesmo: se o provedor recusou, a conta está criada
+  // e funcionando, mas mandar direto pro painel faria a pessoa esperar um e-mail que nunca vem.
   return createOperatorSession(
     {
       accountId: result.accountId,
@@ -49,7 +51,7 @@ export async function action({ request }: Route.ActionArgs) {
       tenantId: result.tenantId,
       tenantSlug: result.slug,
     },
-    '/atendente',
+    postSignupPath(result),
   )
 }
 

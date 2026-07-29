@@ -124,6 +124,11 @@ export default function Login({ loaderData }: Route.ComponentProps) {
             <Button type="submit" variant="primary" className="w-full" disabled={submitting}>
               {submitting ? 'Entrando…' : 'Entrar'}
             </Button>
+            <p className="text-center text-sm">
+              <Link to="/esqueci-senha" className="text-ink-soft hover:underline">
+                Esqueci minha senha
+              </Link>
+            </p>
             <p className="text-center text-sm text-ink-soft">
               Não tem conta?{' '}
               <Link to="/signup" className="text-brand underline">
