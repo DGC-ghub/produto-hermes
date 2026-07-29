@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Form, Link, redirect, useActionData } from 'react-router'
+import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { EmptyState } from '../components/EmptyState'
 import { AppShell } from '../components/layout/AppShell'
@@ -163,6 +163,13 @@ function PriorityTag({ priority }: { priority: DossierPriority }) {
   )
 }
 
+/** Rótulo de progresso de cada ação de conversa, enquanto o envio está em voo. */
+const ACTION_PENDING_LABEL: Record<string, string> = {
+  assumir: 'Assumindo…',
+  devolver: 'Devolvendo…',
+  encerrar: 'Encerrando…',
+}
+
 /** Form de uma linha que dispara uma ação de conversa (assumir/devolver/encerrar). */
 function ConversationAction({
   contactId,
@@ -175,11 +182,16 @@ function ConversationAction({
   variant?: 'primary' | 'secondary' | 'ghost'
   children: ReactNode
 }) {
+  // A tela tem vários forms; o formData da navegação diz QUAL foi enviado, então só o
+  // botão em voo desabilita — os outros continuam clicáveis.
+  const pending = useNavigation().formData
+  const submitting = pending?.get('action') === action && pending.get('contactId') === contactId
+
   return (
     <Form method="post">
       <input type="hidden" name="contactId" value={contactId} />
-      <Button type="submit" name="action" value={action} variant={variant}>
-        {children}
+      <Button type="submit" name="action" value={action} variant={variant} disabled={submitting}>
+        {submitting ? (ACTION_PENDING_LABEL[action] ?? 'Aguarde…') : children}
       </Button>
     </Form>
   )
@@ -188,6 +200,13 @@ function ConversationAction({
 function Dossier({ dossier }: { dossier: ContactDossier }) {
   const { lead, tickets } = dossier
   const assumed = dossier.status === 'human'
+  // O resumo chama a IA e leva dezenas de segundos: sem sinal na tela o atendente acha que
+  // travou e clica de novo. Cada form é identificado por um campo próprio (`intent` no resumo
+  // e na resposta, `ticketId` na linha do chamado), então só o botão em voo desabilita.
+  const pending = useNavigation().formData
+  const generatingSummary = pending?.get('intent') === 'summary'
+  const sendingReply = pending?.get('intent') === 'reply'
+  const pendingTicketId = pending?.get('ticketId') ?? null
 
   return (
     <div className="space-y-5">
@@ -230,8 +249,14 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           </span>
           <Form method="post">
             <input type="hidden" name="contactId" value={dossier.contactId} />
-            <Button type="submit" name="intent" value="summary" size="sm">
-              {dossier.summary ? 'Atualizar' : 'Gerar'}
+            <Button
+              type="submit"
+              name="intent"
+              value="summary"
+              size="sm"
+              disabled={generatingSummary}
+            >
+              {generatingSummary ? 'Gerando resumo…' : dossier.summary ? 'Atualizar' : 'Gerar'}
             </Button>
           </Form>
         </div>
@@ -284,6 +309,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           <ul className="space-y-2 text-sm">
             {tickets.map((ticket) => {
               const resolved = ticket.status === 'resolvido'
+              const savingTicket = pendingTicketId === ticket.id
               return (
                 <li key={ticket.id} className="flex items-center gap-2">
                   <span
@@ -306,8 +332,9 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
                       name="ticketStatus"
                       value={resolved ? 'aberto' : 'resolvido'}
                       size="sm"
+                      disabled={savingTicket}
                     >
-                      {resolved ? 'Reabrir' : 'Resolver'}
+                      {savingTicket ? 'Salvando…' : resolved ? 'Reabrir' : 'Resolver'}
                     </Button>
                   </Form>
                 </li>
@@ -353,8 +380,10 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           />
         </label>
         <div className="mt-2">
-          <Button type="submit" variant="primary" size="sm">
-            Enviar resposta
+          {/* Travar este botão não é enfeite: cada envio manda uma mensagem de verdade pro
+              WhatsApp do cliente — dois cliques virariam duas mensagens pra mesma pessoa. */}
+          <Button type="submit" variant="primary" size="sm" disabled={sendingReply}>
+            {sendingReply ? 'Enviando…' : 'Enviar resposta'}
           </Button>
         </div>
       </Form>
