@@ -6,7 +6,10 @@ import { processIncomingMessage } from './conversation.server'
 // Cérebro mockado no MÓDULO: aqui provamos que o guard determinístico curto-circuita
 // o LLM (não paga latência nem executa efeitos de uma resposta descartada). O
 // comportamento do provider em si é coberto em conversation.server.test.ts.
-vi.mock('./attendant', () => ({
+// `importOriginal` preserva o resto do módulo (ex.: activeProviderName, usado pela
+// telemetria) — só o cérebro é trocado.
+vi.mock('./attendant', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./attendant')>()),
   generateAttendantReply: vi.fn(async () => ({
     reply: 'resposta do cérebro mockado',
     needsHuman: false,

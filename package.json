@@ -11,6 +11,7 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "eval:motor": "vitest run --config vitest.eval.config.ts",
+    "metrics": "npx tsx scripts/metrics-report.ts",
     "operator:add": "npx tsx scripts/operator-add.ts",
     "tenant:add": "npx tsx scripts/tenant-add.ts",
     "prova:chamado": "npx tsx scripts/prova-chamado.ts",
