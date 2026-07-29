@@ -11,6 +11,8 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "eval:motor": "vitest run --config vitest.eval.config.ts",
+    "eval:gate": "npx tsx scripts/eval-gate.ts",
+    "eval:baseline": "npx tsx scripts/eval-gate.ts --promover",
     "metrics": "npx tsx scripts/metrics-report.ts",
     "operator:add": "npx tsx scripts/operator-add.ts",
     "tenant:add": "npx tsx scripts/tenant-add.ts",

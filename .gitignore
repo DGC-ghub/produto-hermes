@@ -39,3 +39,7 @@ hermes.log
 # WAL do SQLite (produção roda journal_mode=WAL desde 2026-07-03)
 *.db-wal
 *.db-shm
+
+# Eval: o baseline É versionado (trava a regressão); a última rodada, não.
+eval/ultima-rodada.md
+eval-report.md

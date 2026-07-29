@@ -1,0 +1,96 @@
+# Gate de qualidade da IA — roda o banco de provas contra o modelo REAL, pontua e
+# compara com `eval/baseline.json`. É o CI de qualidade: o outro workflow garante
+# que o código não quebrou; este garante que o ATENDIMENTO não piorou.
+#
+# ⚠️ DESLIGADO no automático de propósito. Cada rodada chama o modelo dezenas de
+# vezes (26 cenários × N execuções) e isso custa — em dinheiro (anthropic_api) ou
+# em tempo de máquina (self-hosted no Pi). Ligar é decisão de quem paga a conta.
+#
+# ── Como ligar ──────────────────────────────────────────────────────────────
+#
+# Opção A — runner self-hosted no Pi (custo zero, usa a assinatura do Claude CLI):
+#   1. Registrar o runner:  Settings → Actions → Runners → New self-hosted runner
+#   2. Trocar `runs-on: ubuntu-latest` por `runs-on: self-hosted`
+#   3. Remover o passo "Configura o provider" (o Pi já tem o `claude` logado)
+#
+# Opção B — API da Anthropic (roda em runner hospedado, paga por token):
+#   1. Settings → Secrets → Actions → novo secret `ANTHROPIC_API_KEY`
+#   2. Deixar como está: o passo abaixo já seleciona `anthropic_api` quando o
+#      secret existe.
+#
+# Para rodar a cada PR, descomentar o gatilho `pull_request`. Recomendado só depois
+# de o baseline estar estável — senão o gate vira ruído e todo mundo aprende a
+# ignorar o vermelho, que é o pior resultado possível.
+
+name: Eval do motor
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'Execuções por cenário (mais = menos ruído, mais custo)'
+        required: false
+        default: '3'
+      tenant:
+        description: 'Rodar só um tenant (vazio = todos)'
+        required: false
+        default: ''
+  # schedule:
+  #   - cron: '0 6 * * 1'   # segunda 6h — pega deriva do modelo sem travar PR
+  # pull_request:
+  #   paths:
+  #     - 'app/lib/attendant/**'
+  #     - 'config/tenants/**'
+  #     - 'knowledge/**'
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: gate de regressão do motor
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instala dependências
+        run: npm ci
+
+      # Sem chave configurada o gate rodaria com o provider `mock`, que passa em
+      # tudo e gravaria um "100%" sem sentido. Falha alto em vez de mentir.
+      - name: Configura o provider
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::Sem ANTHROPIC_API_KEY. Configure o secret ou use um runner self-hosted com o claude CLI logado (ver comentários no topo deste arquivo)."
+            exit 1
+          fi
+          echo "ATTENDANT_PROVIDER=anthropic_api" >> "$GITHUB_ENV"
+
+      - name: Gate de regressão
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_RUNS: ${{ inputs.runs || '3' }}
+          EVAL_TENANT: ${{ inputs.tenant }}
+        run: npm run eval:gate
+
+      # O relatório vai para o resumo do run: dá para ler a nota e as regressões
+      # sem baixar nada.
+      - name: Publica o relatório no resumo
+        if: always()
+        run: cat eval/ultima-rodada.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Guarda o relatório como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-ultima-rodada
+          path: eval/ultima-rodada.md
+          if-no-files-found: warn
