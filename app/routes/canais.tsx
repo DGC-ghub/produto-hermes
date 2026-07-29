@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { useEffect } from 'react'
+import { type FormEvent, useEffect } from 'react'
 import { Form, redirect, useActionData, useNavigation, useRevalidator } from 'react-router'
 import { AppShell } from '../components/layout/AppShell'
 import { Button } from '../components/ui/Button'
@@ -19,8 +19,61 @@ const STATUS_META: Record<string, { label: string; dot: string; text: string }> 
   conectado: { label: 'Conectado', dot: 'bg-brand', text: 'text-brand' },
   pareando: { label: 'Escaneie o QR', dot: 'bg-waiting', text: 'text-waiting' },
   reconectando: { label: 'Reconectando…', dot: 'bg-waiting', text: 'text-waiting' },
+  verificando: { label: 'Verificando a conexão…', dot: 'bg-waiting', text: 'text-waiting' },
   derrubado: { label: 'Caiu — reconecte', dot: 'bg-urgent', text: 'text-urgent' },
   desconectado: { label: 'Desconectado', dot: 'bg-ink-soft/40', text: 'text-ink-soft' },
+}
+
+/**
+ * Status que a tela mostra de fato. `live` vem da MEMÓRIA do gerente Baileys; ali
+ * 'desconectado' quer dizer "o gerente NÃO conhece esta sessão" (uma sessão viva nunca fica
+ * nesse estado — ela sai do mapa ao cair) — o caso típico logo depois de um restart. Nessa
+ * hora o status do banco está CONGELADO: exibir o "Conectado" salvo seria mentir pro cliente,
+ * que acharia que o atendimento está no ar. Então:
+ * - conectado/reconectando salvos → 'verificando' (o boot-reconnect ainda vai retomar a sessão);
+ * - pareando salvo → 'derrubado' (o QR morreu junto com o processo; precisa de um novo).
+ * Função pura.
+ */
+export function resolveDisplayStatus(live: string, saved: string): string {
+  if (live !== 'desconectado') {
+    return live
+  }
+  if (saved === 'conectado' || saved === 'reconectando') {
+    return 'verificando'
+  }
+  if (saved === 'pareando') {
+    return 'derrubado'
+  }
+  return saved
+}
+
+// Fuso fixo: o horário é formatado no servidor e no cliente com o mesmo relógio, senão a
+// hidratação divergiria. O produto é brasileiro — horário de Brasília.
+const LAST_CONN_FORMAT = new Intl.DateTimeFormat('pt-BR', {
+  dateStyle: 'short',
+  timeStyle: 'short',
+  timeZone: 'America/Sao_Paulo',
+})
+
+// "Desconectar" faz logout de verdade: o número sai do ar e só volta com um QR novo. O texto
+// da confirmação diz essa consequência — "Tem certeza?" não informa nada.
+export const DISCONNECT_CONFIRM =
+  'Isso desliga o atendimento automático até você escanear o QR de novo. Continuar?'
+
+/** Guarda do submit de "Desconectar": sem confirmação, o envio é cancelado. */
+export function confirmDisconnect(event: Pick<FormEvent, 'preventDefault'>): void {
+  if (!window.confirm(DISCONNECT_CONFIRM)) {
+    event.preventDefault()
+  }
+}
+
+/** Data/hora da última conexão para exibição, ou null quando não há (nunca pareou). Pura. */
+export function formatLastConn(iso: string | null): string | null {
+  if (!iso) {
+    return null
+  }
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? null : LAST_CONN_FORMAT.format(date)
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -28,11 +81,15 @@ export async function loader({ request }: Route.LoaderArgs) {
   const rows = await db.channelSession.findMany({
     where: { tenantId: operator.tenantId },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, label: true, waNumber: true, status: true },
+    select: { id: true, label: true, waNumber: true, status: true, lastConnAt: true },
   })
 
   const enabled = baileysEnabled()
-  let sessions = rows.map((r) => ({ ...r, qrDataUrl: null as string | null }))
+  let sessions = rows.map((r) => ({
+    ...r,
+    lastConnAt: r.lastConnAt?.toISOString() ?? null,
+    qrDataUrl: null as string | null,
+  }))
   // O QR e o status ao vivo vêm da MEMÓRIA do gerente (o banco tem o último salvo).
   if (enabled && rows.length > 0) {
     await ensureBaileysWired()
@@ -40,9 +97,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     sessions = await Promise.all(
       rows.map(async (r) => {
         const view = mgr.getSessionView(r.id)
-        const status = view.status !== 'desconectado' ? view.status : r.status
+        const status = resolveDisplayStatus(view.status, r.status)
         const qrDataUrl = view.qr ? await QRCode.toDataURL(view.qr) : null
-        return { ...r, status, qrDataUrl }
+        return { ...r, lastConnAt: r.lastConnAt?.toISOString() ?? null, status, qrDataUrl }
       }),
     )
   }
@@ -110,15 +167,16 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
   const busy = navigation.state !== 'idle'
   const revalidator = useRevalidator()
 
-  // Enquanto houver sessão pareando, atualiza o QR/status a cada 2,5s (o QR expira).
-  const anyPairing = sessions.some((s) => s.status === 'pareando')
+  // Enquanto houver sessão pareando (o QR expira) ou em verificação (o gerente ainda vai
+  // retomar a sessão), atualiza o QR/status a cada 2,5s.
+  const anyPending = sessions.some((s) => s.status === 'pareando' || s.status === 'verificando')
   useEffect(() => {
-    if (!anyPairing) {
+    if (!anyPending) {
       return
     }
     const timer = setInterval(() => revalidator.revalidate(), 2500)
     return () => clearInterval(timer)
-  }, [anyPairing, revalidator])
+  }, [anyPending, revalidator])
 
   return (
     <AppShell operator={operator}>
@@ -151,6 +209,7 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
           <div className="mb-4 space-y-3">
             {sessions.map((s) => {
               const meta = STATUS_META[s.status] ?? STATUS_META.desconectado
+              const lastConn = formatLastConn(s.lastConnAt)
               return (
                 <Card key={s.id} className="p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -166,6 +225,15 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
                           </span>
                         )}
                       </p>
+                      {s.status !== 'conectado' && s.status !== 'pareando' && (
+                        // Sem "Conectado" na tela, o cliente precisa saber desde quando —
+                        // é o que diz se o atendimento parou agora ou está fora há dias.
+                        <p className="mt-0.5 text-xs text-ink-soft">
+                          {lastConn
+                            ? `Última conexão: ${lastConn}`
+                            : 'Este número ainda não pareou.'}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 gap-2">
                       {s.status !== 'conectado' && s.status !== 'pareando' && (
@@ -183,7 +251,9 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
                         </Form>
                       )}
                       {s.status !== 'desconectado' && (
-                        <Form method="post">
+                        // Ação destrutiva: derruba o número e só volta com um QR novo — pede
+                        // confirmação dizendo a consequência, nunca sai num toque só.
+                        <Form method="post" onSubmit={confirmDisconnect}>
                           <input type="hidden" name="sessionId" value={s.id} />
                           <Button
                             type="submit"
@@ -203,7 +273,6 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
                   {s.status === 'pareando' && (
                     <div className="mt-3 flex flex-col items-center gap-2 rounded-card bg-bg-warm p-4 text-center">
                       {s.qrDataUrl ? (
-                        // biome-ignore lint/performance/noImgElement: QR é data URL local, sem loader de imagem
                         <img
                           src={s.qrDataUrl}
                           alt="QR code para conectar o WhatsApp"
@@ -237,6 +306,18 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
               </Button>
             </Form>
           </Card>
+        )}
+
+        {/* O canal oficial saiu do menu, então este é o único caminho até ele para quem já
+            tem o QR liberado — sem esta linha a rota /conectar-whatsapp fica órfã. */}
+        {enabled && (
+          <p className="mt-4 text-xs text-ink-soft">
+            Já tem acesso à API oficial do WhatsApp (Meta)? Você pode{' '}
+            <a href="/conectar-whatsapp" className="text-brand underline">
+              conectar pelo canal oficial
+            </a>
+            .
+          </p>
         )}
       </div>
     </AppShell>

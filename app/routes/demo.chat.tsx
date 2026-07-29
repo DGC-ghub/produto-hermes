@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Form, Link, redirect, useActionData, useNavigation } from 'react-router'
+import { data, Form, Link, redirect, useActionData, useNavigation } from 'react-router'
 import { AudioRecorder } from '../components/audio-recorder'
 import { WingMark } from '../components/brand/BrandMark'
 import { PublicHeader } from '../components/layout/PublicHeader'
@@ -7,9 +7,16 @@ import { Button } from '../components/ui/Button'
 import { db } from '../db.server'
 import { transcribeUploadedAudio } from '../lib/audio/upload.server'
 import { processIncomingMessage } from '../lib/conversation.server'
+import {
+  checkVisitorQuota,
+  DEMO_MAX_PER_VISITOR,
+  demoContactId,
+  readDemoVisitor,
+  truncateDemoMessage,
+} from '../lib/demo-visitor.server'
 import { checkRate, type RateState, rateConfig } from '../lib/rate-limit'
 import { DEMO_TENANT_SLUGS, ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
-import { conversationStatusMeta, cx } from '../lib/ui'
+import { cx } from '../lib/ui'
 import type { Route } from './+types/demo.chat'
 
 // Só tenants de DEMONSTRAÇÃO nesta rota pública: cliente real nunca aparece aqui
@@ -17,13 +24,15 @@ import type { Route } from './+types/demo.chat'
 const DEMO_TENANTS = INITIAL_TENANTS.filter((tenant) => DEMO_TENANT_SLUGS.includes(tenant.slug))
 const ALLOWED_SLUGS: readonly string[] = DEMO_TENANTS.map((tenant) => tenant.slug)
 const DEFAULT_SLUG = 'dgc'
-const RECENT_LIMIT = 10
 
-// Teto global anti-abuso da demo pública: cada envio spawna o cérebro (~15-30s) e/ou a
-// transcrição local (whisper, CPU-intensiva no Pi). Sem IP confiável atrás da ponte, um
-// teto por processo baixo protege a máquina de flood. Zera a cada reinício do serviço.
-const DEMO_MAX_PER_WINDOW = 20
+// Fusível GLOBAL da máquina: cada envio spawna o cérebro (~15-30s) e/ou a transcrição
+// local (whisper, CPU-intensiva no Pi). O teto que importa é o POR VISITANTE (cookie,
+// em demo-visitor.server); este aqui só evita que muita gente ao mesmo tempo derrube o
+// Pi. Zera a cada reinício do serviço.
+const DEMO_MAX_PER_WINDOW = 60
 let demoRateState: RateState = { windowStart: 0, count: 0 }
+// Orçamento por visitante (chave = id do cookie). Vive no processo, como os outros tetos.
+const visitorRates = new Map<string, RateState>()
 
 function resolveTenantSlug(value: string | null): string {
   return value && ALLOWED_SLUGS.includes(value) ? value : DEFAULT_SLUG
@@ -50,24 +59,26 @@ export async function loader({ request }: Route.LoaderArgs) {
   const tenantSlug = resolveTenantSlug(url.searchParams.get('tenant'))
   const conversationId = url.searchParams.get('conversationId')
 
+  // Identidade anônima do visitante: é o que escopa TUDO nesta tela.
+  const visitor = await readDemoVisitor(request)
+  const contactId = demoContactId(visitor.visitorId)
+
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } })
 
-  const conversations = tenant
-    ? await db.conversation.findMany({
-        where: { tenantId: tenant.id },
+  // Sempre a conversa DO VISITANTE: o filtro por contactId é o que impede abrir a
+  // conversa alheia colando um conversationId na URL. Sem id na URL, retomamos a
+  // conversa mais recente dele neste tenant (é o que ele espera ao voltar).
+  const selected = tenant
+    ? await db.conversation.findFirst({
+        where: {
+          tenantId: tenant.id,
+          contactId,
+          ...(conversationId ? { id: conversationId } : {}),
+        },
         orderBy: { updatedAt: 'desc' },
-        take: RECENT_LIMIT,
-        select: { id: true, contactId: true, status: true, updatedAt: true },
+        select: { id: true, status: true },
       })
-    : []
-
-  const selected =
-    conversationId && tenant
-      ? await db.conversation.findFirst({
-          where: { id: conversationId, tenantId: tenant.id },
-          select: { id: true, status: true },
-        })
-      : null
+    : null
 
   const messages = selected
     ? await db.message.findMany({
@@ -77,25 +88,22 @@ export async function loader({ request }: Route.LoaderArgs) {
       })
     : []
 
-  return {
-    tenantSlug,
-    tenants: DEMO_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
-    conversations: conversations.map((c) => ({
-      id: c.id,
-      contactId: c.contactId,
-      status: c.status,
-      updatedAt: c.updatedAt.toISOString(),
-    })),
-    selectedConversationId: selected?.id ?? null,
-    selectedStatus: selected?.status ?? null,
-    messages: messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      confidence: m.confidence,
-      sources: parseSources(m.sourcesJson),
-    })),
-  }
+  return data(
+    {
+      tenantSlug,
+      tenants: DEMO_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
+      selectedConversationId: selected?.id ?? null,
+      selectedStatus: selected?.status ?? null,
+      messages: messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        confidence: m.confidence,
+        sources: parseSources(m.sourcesJson),
+      })),
+    },
+    visitor.setCookie ? { headers: { 'Set-Cookie': visitor.setCookie } } : undefined,
+  )
 }
 
 // Teto do corpo da requisição: rejeita uploads grandes ANTES de bufferizar o
@@ -105,22 +113,49 @@ export async function loader({ request }: Route.LoaderArgs) {
 const MAX_BODY_BYTES = Number(process.env.MAX_AUDIO_BYTES ?? 15_000_000) + 1_000_000
 
 export async function action({ request }: Route.ActionArgs) {
-  // Anti-abuso: rejeita o excesso ANTES de tocar IA/whisper (o custo caro que derruba o Pi).
-  const rate = checkRate(Date.now(), demoRateState, DEMO_MAX_PER_WINDOW, rateConfig().windowMs)
+  const now = Date.now()
+  const visitor = await readDemoVisitor(request)
+  const contactId = demoContactId(visitor.visitorId)
+  // Toda resposta leva o cookie quando a identidade acabou de nascer (ex.: primeiro
+  // envio vindo de um POST direto, sem ter passado pelo loader).
+  const headers = visitor.setCookie ? { 'Set-Cookie': visitor.setCookie } : undefined
+  const fail = (error: string, limitReached = false) => data({ error, limitReached }, { headers })
+
+  // Anti-abuso, camada 1 (fusível da máquina): rejeita o excesso ANTES de tocar IA/whisper.
+  const rate = checkRate(now, demoRateState, DEMO_MAX_PER_WINDOW, rateConfig().windowMs)
   demoRateState = rate.state
   if (!rate.allowed) {
-    return { error: `Muitas mensagens na demo agora. Tente de novo em ${rate.retryAfterSec}s.` }
+    return fail(`Muitas mensagens na demo agora. Tente de novo em ${rate.retryAfterSec}s.`)
+  }
+
+  // Camada 2 (a que importa): orçamento deste visitante. Estourou → vira convite.
+  const quota = checkVisitorQuota(now, visitorRates, visitor.visitorId)
+  if (!quota.allowed) {
+    return fail(
+      `Você já enviou ${DEMO_MAX_PER_VISITOR} mensagens na demonstração — é o limite por hora.`,
+      true,
+    )
   }
 
   const contentLength = Number(request.headers.get('content-length') ?? 0)
   if (contentLength > MAX_BODY_BYTES) {
-    return { error: 'Áudio grande demais. Grave/escolha um áudio mais curto.' }
+    return fail('Áudio grande demais. Grave/escolha um áudio mais curto.')
   }
 
   const formData = await request.formData()
   const tenantSlug = resolveTenantSlug(String(formData.get('tenantSlug') ?? ''))
   const conversationIdRaw = formData.get('conversationId')
-  const contactIdRaw = formData.get('contactId')
+
+  // A conversa informada só vale se for DESTE visitante — o id do formulário é um
+  // palpite do cliente. Não sendo dele, seguimos sem id (o motor resolve pelo contato).
+  const ownConversationId = conversationIdRaw
+    ? (
+        await db.conversation.findFirst({
+          where: { id: String(conversationIdRaw), contactId, tenant: { slug: tenantSlug } },
+          select: { id: true },
+        })
+      )?.id
+    : undefined
 
   // Áudio (gravação ou upload) converge no mesmo fluxo: transcreve para texto e
   // segue como se o cliente tivesse digitado. O texto vira a mensagem do cliente.
@@ -131,34 +166,37 @@ export async function action({ request }: Route.ActionArgs) {
       message = await transcribeUploadedAudio(audio)
     } catch (error) {
       console.error('[demo.chat] erro ao transcrever áudio', error)
-      return { error: 'Não consegui entender o áudio. Tente gravar de novo ou digite a mensagem.' }
+      return fail('Não consegui entender o áudio. Tente gravar de novo ou digite a mensagem.')
     }
     if (message.trim().length === 0) {
-      return { error: 'O áudio veio sem fala reconhecível. Tente de novo, falando mais perto.' }
+      return fail('O áudio veio sem fala reconhecível. Tente de novo, falando mais perto.')
     }
   } else {
     message = String(formData.get('message') ?? '')
   }
+  // Textão não melhora a resposta, só infla o custo do cérebro: corta no teto.
+  message = truncateDemoMessage(message)
 
   // Mensagem vazia: volta sem processar (o textarea já tem `required`, isto é só defesa).
   if (message.trim().length === 0) {
-    const back = conversationIdRaw ? `&conversationId=${conversationIdRaw}` : ''
-    return redirect(`/demo/chat?tenant=${tenantSlug}${back}`)
+    const back = ownConversationId ? `&conversationId=${ownConversationId}` : ''
+    return redirect(`/demo/chat?tenant=${tenantSlug}${back}`, { headers })
   }
 
   try {
     const result = await processIncomingMessage({
       tenantSlug,
       message,
-      conversationId: conversationIdRaw ? String(conversationIdRaw) : undefined,
-      contactId: contactIdRaw ? String(contactIdRaw) : undefined,
+      conversationId: ownConversationId,
+      contactId,
     })
     return redirect(
       `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}`,
+      { headers },
     )
   } catch (error) {
     console.error('[demo.chat] erro ao processar mensagem', error)
-    return { error: 'Não consegui processar a mensagem agora. Tente de novo em instantes.' }
+    return fail('Não consegui processar a mensagem agora. Tente de novo em instantes.')
   }
 }
 
@@ -180,8 +218,7 @@ function AiAvatar() {
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
-  const { tenantSlug, tenants, conversations, selectedConversationId, selectedStatus, messages } =
-    loaderData
+  const { tenantSlug, tenants, selectedConversationId, selectedStatus, messages } = loaderData
   const navigation = useNavigation()
   const actionData = useActionData<typeof action>()
   const needsHuman = selectedStatus === 'needs_human'
@@ -256,32 +293,6 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
           </div>
         </section>
 
-        {conversations.length > 0 && (
-          <section>
-            <h2 className="mb-2 text-sm font-medium text-ink-soft">Conversas recentes</h2>
-            <div className="flex flex-wrap gap-2">
-              {conversations.map((conversation) => {
-                const meta = conversationStatusMeta(conversation.status)
-                return (
-                  <Link
-                    key={conversation.id}
-                    to={`/demo/chat?tenant=${tenantSlug}&conversationId=${conversation.id}`}
-                    className={cx(
-                      'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors',
-                      conversation.id === selectedConversationId
-                        ? 'border-brand bg-brand/8 text-ink'
-                        : 'border-border bg-surface text-ink-soft hover:text-ink',
-                    )}
-                  >
-                    <span className={cx('size-1.5 rounded-full', meta.dot)} />
-                    {conversation.contactId}
-                  </Link>
-                )
-              })}
-            </div>
-          </section>
-        )}
-
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium text-ink-soft">Conversa</h2>
@@ -354,10 +365,26 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
             )}
           </div>
 
-          {actionData?.error && (
-            <div className="rounded-lg border border-urgent/30 bg-urgent/8 p-3 text-sm text-urgent">
-              {actionData.error}
+          {actionData?.limitReached ? (
+            // Limite não é erro: é o momento de convidar. Quem chegou até aqui gostou.
+            <div className="rounded-lg border border-brand/30 bg-brand/8 p-3 text-sm text-ink">
+              <p className="font-medium">{actionData.error}</p>
+              <p className="mt-1 text-ink-soft">
+                Crie sua conta para continuar conversando — e para o Hermes atender no seu WhatsApp.
+              </p>
+              <Link
+                to="/signup"
+                className="mt-2 inline-flex rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-deep"
+              >
+                Criar minha conta
+              </Link>
             </div>
+          ) : (
+            actionData?.error && (
+              <div className="rounded-lg border border-urgent/30 bg-urgent/8 p-3 text-sm text-urgent">
+                {actionData.error}
+              </div>
+            )
           )}
 
           {lastAssistant && lastAssistant.sources.length > 0 && (

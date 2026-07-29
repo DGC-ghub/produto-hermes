@@ -1,3 +1,4 @@
+import { db } from '../db.server'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
 import { listKnowledgeDocs } from './knowledge-db.server'
 import { listTenantWhatsappNumbers } from './whatsapp.server'
@@ -14,14 +15,17 @@ export type OnboardingStatus = {
 }
 
 /**
- * Agrega config + knowledge + números pra dizer o que ainda falta o dono configurar. O passo
- * "perfil" conta como feito quando o segmento sai do default (`não informado`). Server-side.
+ * Agrega config + knowledge + canais pra dizer o que ainda falta o dono configurar. O passo
+ * "perfil" conta como feito quando o segmento sai do default (`não informado`). O passo do
+ * WhatsApp aceita os DOIS caminhos: a conexão por QR (self-service, `ChannelSession`) e o canal
+ * oficial da Meta com token próprio — senão os pilotos do canal oficial regrediriam. Server-side.
  */
 export async function getOnboardingStatus(tenantSlug: string): Promise<OnboardingStatus> {
-  const [config, docs, numbers] = await Promise.all([
+  const [config, docs, numbers, connectedSessions] = await Promise.all([
     resolveTenantConfig(tenantSlug),
     listKnowledgeDocs(tenantSlug),
     listTenantWhatsappNumbers(tenantSlug),
+    db.channelSession.count({ where: { tenant: { slug: tenantSlug }, status: 'conectado' } }),
   ])
   const segment = config?.businessProfile.segment?.trim() ?? ''
   const steps: OnboardingStep[] = [
@@ -39,9 +43,9 @@ export async function getOnboardingStatus(tenantSlug: string): Promise<Onboardin
     },
     {
       key: 'whatsapp',
-      label: 'Conectar o WhatsApp',
-      done: numbers.some((n) => n.hasOwnToken),
-      href: '/conectar-whatsapp',
+      label: 'Conectar o WhatsApp por QR',
+      done: connectedSessions > 0 || numbers.some((n) => n.hasOwnToken),
+      href: '/canais',
     },
   ]
   const doneCount = steps.filter((s) => s.done).length

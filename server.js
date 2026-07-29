@@ -26,6 +26,35 @@ const build = await import(pathToFileURL(resolve(BUILD_PATH)).href)
 
 const app = express()
 app.disable('x-powered-by')
+
+// Cabeçalhos de segurança em TODA resposta (páginas, assets e webhook). Vem antes de
+// tudo pra valer também pro express.static. Sem dependência nova (helmet seria exagero
+// pra 5 cabeçalhos fixos).
+app.use((_req, res, next) => {
+  // Clickjacking: ninguém embute o Hermes num iframe pra roubar clique no /login,
+  // no /assinar (pagamento) ou no botão de conectar WhatsApp da /canais.
+  res.setHeader('X-Frame-Options', 'DENY')
+  // Impede o browser de "adivinhar" o tipo de um upload/anexo e executá-lo como script.
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  // Não vaza o caminho interno (ex.: /atendente?conversa=123) pra sites de terceiros;
+  // pra origem externa manda só o domínio, e nada em downgrade HTTPS→HTTP.
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  // O app só serve HTTPS (funnel do Tailscale), então o browser pode fixar isso por 1 ano
+  // e nunca tentar a primeira requisição em texto puro.
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  // Desliga o que não usamos; o microfone fica liberado pra própria origem porque a demo
+  // grava áudio (`self`, não `()` — senão a demo quebra).
+  res.setHeader(
+    'Permissions-Policy',
+    'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), payment=(), usb=(), microphone=(self)',
+  )
+  // CSP fica de fora POR ORA: o React Router hidrata com script inline (e o Vite injeta
+  // estilo inline), então qualquer política sem os nonces certos derruba a produção.
+  // Quando for ligar, medir em staging primeiro com Content-Security-Policy-Report-Only:
+  // res.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'")
+  next()
+})
+
 app.use(compression())
 // Assets com hash no nome → cache imutável de 1 ano; resto do client → 1h.
 app.use('/assets', express.static('build/client/assets', { immutable: true, maxAge: '1y' }))
