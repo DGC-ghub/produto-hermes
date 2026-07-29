@@ -2,6 +2,7 @@ import { db } from '../db.server'
 import { startEmailVerification } from './email-verification.server'
 import { hashPassword } from './operators.server'
 import { provisionTenant } from './provisioning.server'
+import { checkRate, type RateState } from './rate-limit'
 import { startTrial } from './subscription.server'
 
 // Cadastro self-service (marco M2.6b): transforma nome+email+senha numa empresa provisionada
@@ -27,9 +28,17 @@ export type RegisterInput = {
   baseUrl: string
 }
 
-export type RegisterResult =
-  | { ok: true; accountId: string; tenantId: string; slug: string; email: string }
-  | { ok: false; error: string }
+export type RegisterOk = {
+  ok: true
+  accountId: string
+  tenantId: string
+  slug: string
+  email: string
+  /** O e-mail de confirmação saiu mesmo? Se não, a tela precisa contar a verdade e oferecer reenvio. */
+  emailSent: boolean
+}
+
+export type RegisterResult = RegisterOk | { ok: false; error: string }
 
 export async function registerOwner(input: RegisterInput): Promise<RegisterResult> {
   const companyName = input.companyName.trim()
@@ -66,7 +75,53 @@ export async function registerOwner(input: RegisterInput): Promise<RegisterResul
     ownerPasswordHash: await hashPassword(password),
   })
   await startTrial(tenantId, 'essencial') // 14 dias de trial já no cadastro
-  await startEmailVerification({ id: accountId, email }, input.baseUrl)
+  // A conta nasce válida mesmo se o e-mail não sair: o cadastro não pode falhar por causa do
+  // provedor de e-mail. Mas o resultado do envio sobe junto, para a tela não mentir.
+  const { sent } = await startEmailVerification({ id: accountId, email }, input.baseUrl)
 
-  return { ok: true, accountId, tenantId, slug, email }
+  return { ok: true, accountId, tenantId, slug, email, emailSent: sent }
+}
+
+/**
+ * Para onde mandar o dono recém-cadastrado. Se o e-mail de confirmação não saiu, ele cai na tela
+ * de confirmação — que explica o que houve e tem o botão de reenviar — em vez de ir para o painel
+ * esperando um e-mail que nunca chegaria.
+ */
+export function postSignupPath(result: RegisterOk): string {
+  return result.emailSent ? '/atendente' : '/verificar-email?envio=falhou'
+}
+
+// ── Reenvio da confirmação ──────────────────────────────────────────────────
+// Cada reenvio dispara um e-mail de verdade (e gasta cota do provedor), então tem teto POR CONTA:
+// sem ele o botão vira uma máquina de spam contra a caixa do próprio dono. Estado em memória do
+// processo — zera no reinício, como o teto do /signup; é freio de abuso, não contabilidade.
+
+const RESEND_MAX_PER_WINDOW = 3
+const RESEND_WINDOW_MS = 10 * 60_000 // 10 min
+const resendStateByAccount = new Map<string, RateState>()
+
+export type ResendResult = { ok: true; sent: boolean } | { ok: false; retryAfterSec: number }
+
+/** Reemite o link de confirmação da conta, respeitando o teto de reenvios da janela. */
+export async function resendVerification(
+  account: { id: string; email: string },
+  baseUrl: string,
+  now = Date.now(),
+): Promise<ResendResult> {
+  // Janelas vencidas não valem nada: descarta antes de contar, senão o Map cresce sem fim.
+  for (const [accountId, state] of resendStateByAccount) {
+    if (now - state.windowStart >= RESEND_WINDOW_MS) {
+      resendStateByAccount.delete(accountId)
+    }
+  }
+
+  const previous = resendStateByAccount.get(account.id) ?? { windowStart: now, count: 0 }
+  const rate = checkRate(now, previous, RESEND_MAX_PER_WINDOW, RESEND_WINDOW_MS)
+  resendStateByAccount.set(account.id, rate.state)
+  if (!rate.allowed) {
+    return { ok: false, retryAfterSec: rate.retryAfterSec }
+  }
+
+  const { sent } = await startEmailVerification(account, baseUrl)
+  return { ok: true, sent }
 }
