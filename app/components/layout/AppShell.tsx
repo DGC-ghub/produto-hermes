@@ -8,13 +8,14 @@ type Operator = {
   username: string
 }
 
-const NAV = [
+// O caminho self-service é o QR (/canais). O fluxo oficial (API da Meta) não entra no menu
+// para não dividir a decisão do cliente — o link para ele fica dentro da própria tela /canais.
+export const NAV = [
   { to: '/atendente', label: 'Central' },
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/configuracoes', label: 'Configurações' },
   { to: '/conhecimento', label: 'Conhecimento' },
-  { to: '/canais', label: 'Canais' },
-  { to: '/conectar-whatsapp', label: 'WhatsApp oficial' },
+  { to: '/canais', label: 'Conectar WhatsApp' },
   { to: '/assinar', label: 'Assinatura' },
 ]
 
