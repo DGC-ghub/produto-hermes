@@ -160,6 +160,12 @@ export async function action({ request }: Route.ActionArgs) {
   return redirect('/canais')
 }
 
+export function shouldPollSessions(sessions: Array<{ status: string }>): boolean {
+  return sessions.some((session) =>
+    ['pareando', 'verificando', 'reconectando'].includes(session.status),
+  )
+}
+
 export default function Canais({ loaderData }: Route.ComponentProps) {
   const { sessions, enabled, operator } = loaderData
   const actionData = useActionData<typeof action>()
@@ -167,9 +173,9 @@ export default function Canais({ loaderData }: Route.ComponentProps) {
   const busy = navigation.state !== 'idle'
   const revalidator = useRevalidator()
 
-  // Enquanto houver sessão pareando (o QR expira) ou em verificação (o gerente ainda vai
-  // retomar a sessão), atualiza o QR/status a cada 2,5s.
-  const anyPending = sessions.some((s) => s.status === 'pareando' || s.status === 'verificando')
+  // Enquanto houver sessão pareando (o QR expira), em verificação ou reconectando,
+  // atualiza o QR/status a cada 2,5s até chegar a um estado estável.
+  const anyPending = shouldPollSessions(sessions)
   useEffect(() => {
     if (!anyPending) {
       return
