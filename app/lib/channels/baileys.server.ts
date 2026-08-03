@@ -8,7 +8,12 @@ import makeWASocket, {
 import { db } from '../../db.server'
 import { reportDegradation } from '../alarm.server'
 import { type DbAuthState, useDbAuthState } from './baileys-auth.server'
+import { installLibsignalLogGuard } from './libsignal-log-guard.server'
 import type { InboundEvent } from './types'
+
+// `libsignal` escreve a sessão criptográfica inteira direto no console, ignorando o logger
+// silencioso do socket. Instalar antes de qualquer conexão evita chaves privadas no log.
+installLibsignalLogGuard()
 
 // Gerente dos sockets Baileys (canal WhatsApp NÃO-oficial / QR). Um socket
 // PERSISTENTE por sessão, vivendo no processo (como o sweeper da fila). Resolve os
@@ -442,7 +447,7 @@ export function getSessionView(sessionId: string): { status: string; qr: string 
  */
 export async function sendText(sessionId: string, to: string, text: string): Promise<boolean> {
   const entry = sessions.get(sessionId)
-  if (!entry || entry.status !== 'conectado') {
+  if (entry?.status !== 'conectado') {
     console.warn(`[baileys] envio ignorado — sessão ${sessionId} não conectada`)
     return false
   }
