@@ -59,7 +59,12 @@ export async function createPreapproval(
   }
 }
 
-export type PreapprovalStatus = { id: string; status: string; externalReference: string | null }
+export type PreapprovalStatus = {
+  id: string
+  status: string
+  externalReference: string | null
+  nextPaymentDate: string | null
+}
 
 /** Lê o estado atual de um preapproval (o webhook manda só o id; buscamos a fonte da verdade). */
 export async function getPreapproval(id: string): Promise<PreapprovalStatus | null> {
@@ -74,8 +79,18 @@ export async function getPreapproval(id: string): Promise<PreapprovalStatus | nu
     if (!res.ok) {
       return null
     }
-    const data = (await res.json()) as { id: string; status: string; external_reference?: string }
-    return { id: data.id, status: data.status, externalReference: data.external_reference ?? null }
+    const data = (await res.json()) as {
+      id: string
+      status: string
+      external_reference?: string
+      next_payment_date?: string | null
+    }
+    return {
+      id: data.id,
+      status: data.status,
+      externalReference: data.external_reference ?? null,
+      nextPaymentDate: data.next_payment_date ?? null,
+    }
   } catch {
     return null
   }

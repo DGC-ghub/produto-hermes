@@ -8,7 +8,10 @@ import {
   verifyMpWebhookSignature,
 } from './mercadopago.server'
 
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+})
 
 describe('mapMpStatus (M3)', () => {
   it('traduz os status do Mercado Pago pro interno', () => {
@@ -41,6 +44,34 @@ describe('cliente MP em modo stub (sem MP_ACCESS_TOKEN)', () => {
   it('getMpAccount → null (não valida sem token)', async () => {
     vi.stubEnv('MP_ACCESS_TOKEN', '')
     expect(await getMpAccount()).toBeNull()
+  })
+})
+
+describe('getPreapproval — contrato da API', () => {
+  it('mapeia next_payment_date como próxima renovação', async () => {
+    vi.stubEnv('MP_ACCESS_TOKEN', 'token-de-teste')
+    const nextPaymentDate = '2026-09-03T20:00:00.000-03:00'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: 'pa_123',
+            status: 'authorized',
+            external_reference: 'tenant-1',
+            next_payment_date: nextPaymentDate,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+
+    await expect(getPreapproval('pa_123')).resolves.toEqual({
+      id: 'pa_123',
+      status: 'authorized',
+      externalReference: 'tenant-1',
+      nextPaymentDate,
+    })
   })
 })
 
