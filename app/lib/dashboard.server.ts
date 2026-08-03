@@ -52,6 +52,9 @@ const ACTIVITY_DAYS = 14
  * Não importar em componente React.
  */
 export async function getDashboardData(tenantId: string): Promise<DashboardData> {
+  // Simulações persistem para demonstrar memória e traces, mas não são atendimento real:
+  // ficam fora de volume, autonomia, atividade, conversas recentes e leads do Dashboard.
+  const operationalConversation = { tenantId, channel: { not: 'simulator' } }
   const [
     totalConversations,
     totalMessages,
@@ -59,15 +62,17 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
     needsHumanConversations,
     humanInvolvedConversations,
   ] = await Promise.all([
-    db.conversation.count({ where: { tenantId } }),
-    db.message.count({ where: { conversation: { tenantId } } }),
-    db.lead.count({ where: { tenantId } }),
-    db.conversation.count({ where: { status: 'needs_human', tenantId } }),
-    db.conversation.count({ where: { status: { in: ['needs_human', 'human'] }, tenantId } }),
+    db.conversation.count({ where: operationalConversation }),
+    db.message.count({ where: { conversation: operationalConversation } }),
+    db.lead.count({ where: { tenantId, conversation: { channel: { not: 'simulator' } } } }),
+    db.conversation.count({ where: { ...operationalConversation, status: 'needs_human' } }),
+    db.conversation.count({
+      where: { ...operationalConversation, status: { in: ['needs_human', 'human'] } },
+    }),
   ])
 
   const conversationRows = await db.conversation.findMany({
-    where: { tenantId },
+    where: operationalConversation,
     orderBy: { updatedAt: 'desc' },
     take: RECENT_LIMIT,
     include: {
@@ -78,7 +83,7 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
   })
 
   const leadRows = await db.lead.findMany({
-    where: { tenantId },
+    where: { tenantId, conversation: { channel: { not: 'simulator' } } },
     orderBy: { createdAt: 'desc' },
     take: RECENT_LIMIT,
     include: { tenant: { select: { slug: true, name: true } } },
@@ -90,7 +95,7 @@ export async function getDashboardData(tenantId: string): Promise<DashboardData>
   since.setUTCDate(since.getUTCDate() - (ACTIVITY_DAYS - 1))
   since.setUTCHours(0, 0, 0, 0)
   const activityRows = await db.conversation.findMany({
-    where: { tenantId, createdAt: { gte: since } },
+    where: { ...operationalConversation, createdAt: { gte: since } },
     select: { createdAt: true },
   })
   const activity = buildDailyActivity(

@@ -13,10 +13,10 @@ async function dgcTenantId(): Promise<string> {
   return tenant.id
 }
 
-async function createTestConversation(status = 'open'): Promise<string> {
+async function createTestConversation(status = 'open', channel = 'whatsapp'): Promise<string> {
   const tenantId = await dgcTenantId()
   const conversation = await db.conversation.create({
-    data: { tenantId, channel: 'simulator', contactId: TEST_CONTACT_ID, status },
+    data: { tenantId, channel, contactId: TEST_CONTACT_ID, status },
   })
   return conversation.id
 }
@@ -93,6 +93,26 @@ describe('getDashboardData', () => {
     const mine = data.conversations.find((c) => c.id === conversationId)
     expect(mine?.lastMessagePreview).toBe(longContent.slice(0, 120))
     expect(mine?.lastMessagePreview?.length).toBe(120)
+  })
+
+  it('não mistura conversas do simulador nos indicadores operacionais', async () => {
+    const tenantId = await dgcTenantId()
+    const before = await getDashboardData(tenantId)
+    const conversationId = await createTestConversation('needs_human', 'simulator')
+    await db.message.create({
+      data: { conversationId, role: 'user', content: 'Mensagem de teste' },
+    })
+
+    const after = await getDashboardData(tenantId)
+
+    expect(after.summary.totalConversations).toBe(before.summary.totalConversations)
+    expect(after.summary.totalMessages).toBe(before.summary.totalMessages)
+    expect(after.summary.needsHumanConversations).toBe(before.summary.needsHumanConversations)
+    expect(after.summary.humanInvolvedConversations).toBe(before.summary.humanInvolvedConversations)
+    expect(after.conversations.some((conversation) => conversation.id === conversationId)).toBe(
+      false,
+    )
+    expect(after.activity).toEqual(before.activity)
   })
 
   it('lists a created lead', async () => {
