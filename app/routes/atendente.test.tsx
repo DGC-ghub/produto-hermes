@@ -8,7 +8,7 @@ import {
 } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import type { ContactDossier } from '../lib/dossier.server'
-import Atendente from './atendente'
+import Atendente, { replyComposerKey } from './atendente'
 
 // A Central tem VÁRIOS forms na mesma tela e duas ações lentas (resumo pela IA, resposta pelo
 // WhatsApp). Estes testes olham a marcação renderizada — a suíte roda em ambiente node — para
@@ -105,6 +105,25 @@ function submission(entries: Record<string, string>): FormData {
   }
   return formData
 }
+
+describe('Central do atendente — editor da resposta', () => {
+  it('troca a identidade do editor quando uma resposta é persistida', () => {
+    const before = replyComposerKey(dossier)
+    const after = replyComposerKey({
+      ...dossier,
+      recentMessages: [
+        ...dossier.recentMessages,
+        { id: 'msg-resposta-enviada', role: 'assistant', content: 'Respondido' },
+      ],
+    })
+
+    expect(after).not.toBe(before)
+  })
+
+  it('mantém a identidade quando o envio falha e nenhuma mensagem é persistida', () => {
+    expect(replyComposerKey({ ...dossier })).toBe(replyComposerKey(dossier))
+  })
+})
 
 describe('Central do atendente — feedback nas ações', () => {
   it('deixa todos os botões clicáveis quando nada está em voo', () => {

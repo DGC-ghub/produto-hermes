@@ -197,6 +197,13 @@ function ConversationAction({
   )
 }
 
+export function replyComposerKey(
+  dossier: Pick<ContactDossier, 'contactId' | 'recentMessages'>,
+): string {
+  const lastMessage = dossier.recentMessages[dossier.recentMessages.length - 1]
+  return `${dossier.contactId}:${lastMessage?.id ?? 'sem-mensagens'}`
+}
+
 function Dossier({ dossier }: { dossier: ContactDossier }) {
   const { lead, tickets } = dossier
   const assumed = dossier.status === 'human'
@@ -372,6 +379,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
         <label className="block">
           <span className="mb-1.5 block text-sm font-medium text-ink">Responder o cliente</span>
           <textarea
+            key={replyComposerKey(dossier)}
             name="text"
             rows={2}
             required
