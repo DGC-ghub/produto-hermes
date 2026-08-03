@@ -24,6 +24,9 @@ export type ProcessIncomingMessageInput = {
   // handoff sensível só alarma vindo do WhatsApp — visitante anônimo da demo
   // pública não pode disparar push urgente no celular do operador.
   channel?: 'simulator' | 'whatsapp'
+  // Preview autenticado: executa cérebro/guard/persistência da conversa e métricas,
+  // mas não cria efeitos operacionais (lead, ticket, handoff, status ou alarme).
+  preview?: boolean
 }
 
 export type ProcessIncomingMessageSource = {
@@ -112,6 +115,7 @@ async function runIncomingMessage(
   if (message.length === 0) {
     throw new Error('Message is required')
   }
+  const preview = input.preview === true
 
   // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
   // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
@@ -164,7 +168,7 @@ async function runIncomingMessage(
 
   // Se um humano ASSUMIU esta conversa, o Hermes se cala: registra a mensagem do
   // cliente (para o atendente ver) e devolve sem gerar resposta da IA.
-  if (isHumanHandling(conversationStatus)) {
+  if (isHumanHandling(conversationStatus) && !preview) {
     ctx.outcome = 'human_handling'
     const userMessage = await timer.step('persist_user', async () => {
       const created = await db.message.create({
@@ -203,7 +207,7 @@ async function runIncomingMessage(
       })
       await db.conversation.update({
         where: { id: conversationId },
-        data: { status: 'needs_human', updatedAt: new Date() },
+        data: preview ? { updatedAt: new Date() } : { status: 'needs_human' },
       })
       return created
     })
@@ -244,7 +248,7 @@ async function runIncomingMessage(
 
     // Lead determinístico (barato e confiável); o atendente pode enriquecer depois.
     const detPatch = extractLeadPatch(message)
-    if (Object.keys(detPatch).length > 0) {
+    if (!preview && Object.keys(detPatch).length > 0) {
       await db.lead.upsert({
         where: { conversationId },
         create: { tenantId: tenant.id, conversationId, ...detPatch, stage: 'novo' },
@@ -291,11 +295,13 @@ async function runIncomingMessage(
       })
       await db.conversation.update({
         where: { id: conversationId },
-        data: { status: 'needs_human' },
+        data: preview ? { updatedAt: new Date() } : { status: 'needs_human' },
       })
-      await db.handoffEvent.create({
-        data: { conversationId, reason: guard.reason ?? 'unknown', message },
-      })
+      if (!preview) {
+        await db.handoffEvent.create({
+          data: { conversationId, reason: guard.reason ?? 'unknown', message },
+        })
+      }
       return created
     })
     return {
@@ -312,6 +318,10 @@ async function runIncomingMessage(
   }
 
   const { currentLead, myTickets } = await timer.step('context', async () => {
+    // Preview simula um contato novo sem ler nem misturar dados operacionais do tenant.
+    if (preview) {
+      return { currentLead: null, myTickets: [] }
+    }
     const lead = await db.lead.findUnique({ where: { conversationId } })
 
     // Chamados SÓ deste contato (isolamento determinístico — o LLM nunca vê os de outros).
@@ -370,7 +380,7 @@ async function runIncomingMessage(
     decision.handoffReason === 'provider_error' || decision.handoffReason === 'validacao_falhou'
       ? decision.handoffReason
       : null
-  if (razaoDegradacao) {
+  if (razaoDegradacao && !preview) {
     void reportDegradation(razaoDegradacao)
   }
   // Separar 'fallback' de 'ok' na medição é o que permite ler o p95 do motor SADIO:
@@ -378,6 +388,9 @@ async function runIncomingMessage(
   ctx.outcome = razaoDegradacao ? 'fallback' : 'ok'
 
   await timer.step('effects', async () => {
+    if (preview) {
+      return
+    }
     // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
     if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
       await db.lead.upsert({
@@ -444,9 +457,9 @@ async function runIncomingMessage(
     // contato tem mais de uma não-fechada.
     await db.conversation.update({
       where: { id: conversationId },
-      data: needsHuman ? { status: 'needs_human' } : { updatedAt: new Date() },
+      data: needsHuman && !preview ? { status: 'needs_human' } : { updatedAt: new Date() },
     })
-    if (needsHuman) {
+    if (needsHuman && !preview) {
       await db.handoffEvent.create({
         data: { conversationId, reason: handoffReason ?? 'unknown', message },
       })

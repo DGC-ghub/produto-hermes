@@ -15,6 +15,10 @@ export const NAV = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/configuracoes', label: 'Configurações' },
   { to: '/conhecimento', label: 'Conhecimento' },
+  // Logo depois de Conhecimento: a ordem conta a história — ensine a IA, teste, então ligue
+  // no WhatsApp. Testar antes de conectar é o que evita o cliente descobrir os buracos da
+  // base no número real da empresa.
+  { to: '/testar-ia', label: 'Testar minha IA' },
   { to: '/canais', label: 'Conectar WhatsApp' },
   { to: '/assinar', label: 'Assinatura' },
 ]

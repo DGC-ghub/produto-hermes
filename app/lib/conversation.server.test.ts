@@ -98,6 +98,36 @@ describe('processIncomingMessage', () => {
     expect(events[0].reason).toBe('requested_human')
   })
 
+  it('preview persiste a conversa, mas não cria lead, ticket, handoff ou status operacional', async () => {
+    const first = await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Minha geladeira parou hoje no Jardim América e quero falar com um humano',
+      contactId: TEST_CONTACT_ID,
+      channel: 'simulator',
+      preview: true,
+    })
+
+    expect(first.needsHuman).toBe(true)
+    expect(await db.lead.findUnique({ where: { conversationId: first.conversationId } })).toBeNull()
+    expect(await db.handoffEvent.count({ where: { conversationId: first.conversationId } })).toBe(0)
+    expect(
+      (await db.conversation.findUnique({ where: { id: first.conversationId } }))?.status,
+    ).toBe('open')
+
+    const second = await processIncomingMessage({
+      tenantSlug: 'assistencia-tecnica-demo',
+      message: 'Quero abrir um chamado para a geladeira',
+      conversationId: first.conversationId,
+      contactId: TEST_CONTACT_ID,
+      channel: 'simulator',
+      preview: true,
+    })
+
+    expect(second.reply.length).toBeGreaterThan(0)
+    expect(await db.ticket.count({ where: { contactId: TEST_CONTACT_ID } })).toBe(0)
+    expect(await db.message.count({ where: { conversationId: first.conversationId } })).toBe(4)
+  })
+
   it('does not force handoff just because the base had no match', async () => {
     const result = await processIncomingMessage({
       tenantSlug: 'dgc',

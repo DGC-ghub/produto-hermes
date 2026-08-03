@@ -7,6 +7,7 @@ export default [
   route('atendente', 'routes/atendente.tsx'),
   route('configuracoes', 'routes/configuracoes.tsx'),
   route('conhecimento', 'routes/conhecimento.tsx'),
+  route('testar-ia', 'routes/testar-ia.tsx'),
   route('conectar-whatsapp', 'routes/conectar-whatsapp.tsx'),
   route('canais', 'routes/canais.tsx'),
   route('login', 'routes/login.tsx'),
