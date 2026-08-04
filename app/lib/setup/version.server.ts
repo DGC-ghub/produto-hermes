@@ -148,11 +148,16 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
   }
 
   if (setup.reviewVersionId) {
-    const atual = await db.aiSetupVersion.findFirst({
-      where: { id: setup.reviewVersionId, tenantId },
-    })
+    const atual = await buscarVersaoDoSetup(setup.reviewVersionId, tenantId, setup.id)
     if (atual) {
-      return { ...base, version: toView(atual) }
+      // O ponteiro publicado é conferido AQUI TAMBÉM. Ter revisão pendente não torna o
+      // outro ponteiro confiável: `published` vai para a tela e decide o que ela diz sobre
+      // o que está no ar. Um ponteiro mentiroso não deixa de mentir por haver rascunho.
+      return {
+        published: await conferirPublicada(tenantId, setup),
+        activated: base.activated,
+        version: toView(atual),
+      }
     }
     // Ponteiro órfão. NÃO seguir para a criação: o CAS exige `reviewVersionId: null`, então
     // ele jamais casaria, o `PointerTakenError` mandaria recarregar e a recarga acharia o
@@ -278,17 +283,26 @@ async function materializarResolucao(
   if (decisao.tipo === 'usar-publicada') {
     return semRevisaoPendente(tenantId, setup)
   }
-  const vencedora = await db.aiSetupVersion.findFirst({
-    where: { id: decisao.versionId, tenantId },
-  })
+  const vencedora = await buscarVersaoDoSetup(decisao.versionId, tenantId, setup.id)
   if (!vencedora) {
     throw new OrphanReviewPointerError(tenantId, decisao.versionId)
   }
   return {
-    published: setup.publishedVersionId !== null,
+    published: await conferirPublicada(tenantId, setup),
     activated: setup.activatedAt !== null,
     version: toView(vencedora),
   }
+}
+
+/**
+ * Busca a versão exigindo tenant E setup.
+ *
+ * O `tenantId` sozinho não fecha: um tenant tem um `AiSetup`, mas nada no banco impede uma
+ * linha com o `tenantId` certo e o `setupId` de outro. Deixar passar seria abrir a versão
+ * de outra configuração como se fosse a deste onboarding (INV-12).
+ */
+function buscarVersaoDoSetup(versionId: string, tenantId: string, setupId: string) {
+  return db.aiSetupVersion.findFirst({ where: { id: versionId, tenantId, setupId } })
 }
 
 /** O bastante do `AiSetup` para decidir e conferir os ponteiros. */
@@ -309,11 +323,25 @@ type SetupRow = {
  * esconde corrupção justamente na pergunta que o cliente faz sobre o que está no ar.
  */
 async function semRevisaoPendente(tenantId: string, setup: SetupRow): Promise<SetupWorkspace> {
-  const base = { published: true, activated: setup.activatedAt !== null, version: null }
-  if (!setup.publishedVersionId) {
-    return { ...base, published: false }
+  return {
+    published: await conferirPublicada(tenantId, setup),
+    activated: setup.activatedAt !== null,
+    version: null,
   }
+}
 
+/**
+ * Há publicação? Confere o ponteiro em vez de acreditar nele.
+ *
+ * A FK garante só que o id existe em alguma linha da tabela: nada impede que aponte para
+ * versão de outro tenant, de outro setup, ainda em rascunho ou sem `publishedAt`. Como o
+ * valor devolvido vira `published` na tela — a resposta à pergunta "o que está no ar?" —,
+ * um ponteiro que não bate é incidente, não um `false` silencioso.
+ */
+async function conferirPublicada(tenantId: string, setup: SetupRow): Promise<boolean> {
+  if (!setup.publishedVersionId) {
+    return false
+  }
   const publicada = await db.aiSetupVersion.findFirst({
     where: {
       id: setup.publishedVersionId,
@@ -328,7 +356,7 @@ async function semRevisaoPendente(tenantId: string, setup: SetupRow): Promise<Se
   if (!publicada) {
     throw new OrphanPublishedPointerError(tenantId, setup.publishedVersionId)
   }
-  return base
+  return true
 }
 
 /**

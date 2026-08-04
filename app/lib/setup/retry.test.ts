@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { comRetry, ehContencaoTransitoria, ORCAMENTO_MS, TENTATIVAS_MAXIMAS } from './retry'
+import {
+  comRetry,
+  ehContencaoTransitoria,
+  ORCAMENTO_MINIMO_MS,
+  ORCAMENTO_MS,
+  TENTATIVAS_MAXIMAS,
+} from './retry'
 
 // O retry existe por UM motivo: no SQLite a escrita é serializada, e sob concorrência a
 // transação pode não conseguir nem começar. Insistir em qualquer outra coisa esconderia
@@ -160,23 +166,27 @@ describe('o teto é o orçamento de relógio, não tentativas × timeout', () =>
     expect(recebido).toEqual({ maxWait: 5_000, timeout: 20_000 })
   })
 
-  it('maxWait + timeout nunca passa do que resta — as duas fases são sequenciais', async () => {
+  it('maxWait + timeout nunca passa do orçamento — as duas fases são sequenciais', async () => {
     // Dar o restante INTEIRO para cada uma fazia o teto valer o dobro: espera-se para
     // começar e SÓ ENTÃO se roda, então quem manda é a soma.
-    const inicio = performance.now()
+    //
+    // A comparação é contra o ORÇAMENTO, não contra "o que restava naquele instante".
+    // Medir o restante de dentro do executor traz a deriva entre o relógio que o
+    // `comRetry` leu e o que o teste lê — sob carga ela chega a milissegundos e tornava
+    // este teste intermitente. Contra o orçamento a afirmação é exata, e continua pegando
+    // o defeito: com o restante inteiro em cada fase, a soma já nasce valendo o dobro.
     const somas: number[] = []
     await comRetry(async (opcoes) => {
-      const sobra = 300 - (performance.now() - inicio)
-      somas.push(opcoes.maxWait + opcoes.timeout - sobra)
+      somas.push(opcoes.maxWait + opcoes.timeout)
       throw new Error('database is locked')
     }, 300).catch(() => {})
 
     expect(somas.length).toBeGreaterThan(1)
-    for (const excesso of somas) {
-      // 1 ms de folga é a deriva entre o relógio que o `comRetry` leu e o que o teste lê
-      // um instante depois — o defeito que isto pega dobrava o orçamento, não arranhava.
-      expect(excesso).toBeLessThanOrEqual(1)
+    for (const soma of somas) {
+      expect(soma).toBeLessThanOrEqual(300)
     }
+    // E encolhe a cada tentativa: o orçamento é consumido, não reiniciado.
+    expect(somas[1]).toBeLessThan(somas[0])
   })
 
   it('o backoff também sai do orçamento — o teto vale de ponta a ponta', async () => {
@@ -204,10 +214,32 @@ describe('o teto é o orçamento de relógio, não tentativas × timeout', () =>
     expect(performance.now() - inicio).toBeLessThan(100 + 150)
   })
 
+  it('na FRONTEIRA do orçamento mínimo, nenhuma fatia chega a zero', async () => {
+    // `maxWait: 0` é transação que nem tenta começar. Isso acontecia porque entre marcar o
+    // início e ler o relógio já passou um pedaço de milissegundo: o orçamento de 2 chegava
+    // como 1,99 e o `Math.floor(sobra / 2)` virava 0.
+    for (let orcamento = ORCAMENTO_MINIMO_MS; orcamento <= 40; orcamento += 1) {
+      const vistos: Array<{ maxWait: number; timeout: number }> = []
+      await comRetry(async (opcoes) => {
+        vistos.push({ ...opcoes })
+        throw new Error('database is locked')
+      }, orcamento).catch(() => {})
+
+      expect(vistos.length).toBeGreaterThan(0)
+      for (const { maxWait, timeout } of vistos) {
+        expect(maxWait).toBeGreaterThanOrEqual(1)
+        expect(timeout).toBeGreaterThanOrEqual(1)
+        expect(maxWait + timeout).toBeLessThanOrEqual(orcamento)
+      }
+    }
+  })
+
   const invalidos: Array<[string, number]> = [
     ['zero', 0],
     ['negativo', -1_000],
     ['abaixo do mínimo', 1],
+    ['a fronteira antiga (2 ms, que dava maxWait 0)', 2],
+    ['3 ms, ainda abaixo do mínimo', 3],
     ['NaN', Number.NaN],
     ['Infinity', Number.POSITIVE_INFINITY],
   ]

@@ -538,6 +538,80 @@ describe('estado do ponteiro (caminhos que não criam rascunho)', () => {
         OrphanPublishedPointerError,
       )
     })
+
+    it('publicada INVÁLIDA com review VÁLIDA: continua sendo erro', async () => {
+      // O caminho da review devolvia `published` sem conferir nada. Ter rascunho pendente
+      // não torna o outro ponteiro confiável — e `published` vai para a tela dizer o que
+      // está no ar.
+      const { version } = await loadSetupWorkspace(tenantId) // cria e aponta a review
+      expect(version).not.toBeNull()
+
+      const rascunhoComoPublicada = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'draft', answersJson: '{}' },
+      })
+
+      await expect(apontarPublicadaPara(rascunhoComoPublicada.id)).rejects.toBeInstanceOf(
+        OrphanPublishedPointerError,
+      )
+    })
+
+    it('publicada VÁLIDA com review válida: devolve as duas coisas', async () => {
+      // O contrapeso: conferir não pode passar a recusar o estado legítimo de quem tem
+      // configuração no ar E uma correção em elaboração.
+      const { version } = await loadSetupWorkspace(tenantId)
+      const publicada = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'active', answersJson: '{}', publishedAt: new Date() },
+      })
+
+      const workspace = await apontarPublicadaPara(publicada.id)
+
+      expect(workspace.published).toBe(true)
+      expect(workspace.version?.id).toBe(version?.id)
+    })
+  })
+
+  describe('setupId divergente (INV-12)', () => {
+    // Um tenant tem um `AiSetup`, mas nada no banco impede uma versão com o `tenantId`
+    // certo e o `setupId` de outro: as duas chaves estrangeiras são conferidas em
+    // separado. Casar só por tenant deixaria a versão de outra configuração entrar como
+    // se fosse deste onboarding.
+
+    /** Versão deste tenant, mas pendurada no setup de OUTRO. */
+    async function versaoComSetupAlheio(dados: { state: string; publishedAt?: Date }) {
+      const outro = await db.tenant.create({
+        data: { slug: `div-${crypto.randomUUID().slice(0, 8)}`, name: 'Outro' },
+      })
+      const outroSetup = await db.aiSetup.create({ data: { tenantId: outro.id } })
+      return db.aiSetupVersion.create({
+        data: {
+          setupId: outroSetup.id, // ← o setup é de outro tenant
+          tenantId, // ← mas o tenant é o nosso
+          state: dados.state,
+          answersJson: '{}',
+          publishedAt: dados.publishedAt,
+        },
+      })
+    }
+
+    it('review com setupId de outro setup: erro explícito', async () => {
+      const intrusa = await versaoComSetupAlheio({ state: 'draft' })
+      await db.aiSetup.update({
+        where: { id: setupId },
+        data: { reviewVersionId: intrusa.id },
+      })
+
+      await expect(loadSetupWorkspace(tenantId)).rejects.toBeInstanceOf(OrphanReviewPointerError)
+    })
+
+    it('publicação com setupId de outro setup: erro explícito', async () => {
+      const intrusa = await versaoComSetupAlheio({ state: 'active', publishedAt: new Date() })
+      await db.aiSetup.update({
+        where: { id: setupId },
+        data: { publishedVersionId: intrusa.id },
+      })
+
+      await expect(loadSetupWorkspace(tenantId)).rejects.toBeInstanceOf(OrphanPublishedPointerError)
+    })
   })
 
   it('tenant já publicado nem chega ao CAS — devolve null antes de criar rascunho', async () => {

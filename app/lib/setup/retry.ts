@@ -21,11 +21,16 @@ export const TENTATIVAS_MAXIMAS = 4
  */
 export const ORCAMENTO_MS = 30_000
 
+/** O mínimo que uma tentativa consome: 1 ms para começar e 1 ms para rodar. */
+const FATIA_MINIMA_MS = 2
+
 /**
- * Abaixo disto não há o que orçar: `maxWait` e `timeout` são sequenciais e cada um precisa
- * de pelo menos 1 ms. Orçamento menor é erro de chamada, não caso de uso.
+ * Abaixo disto não há o que orçar. Note que NÃO são os 2 ms da fatia mínima: entre marcar
+ * o início e ler o relógio já passou um pedaço de milissegundo, então um orçamento de 2
+ * chegava aqui como 1,99 e o `Math.floor(sobra / 2)` devolvia `maxWait: 0` — transação
+ * sem tempo nenhum para começar. A folga é para a aritmética não degenerar na fronteira.
  */
-export const ORCAMENTO_MINIMO_MS = 2
+export const ORCAMENTO_MINIMO_MS = 4
 
 /** Espera para COMEÇAR a transação. Não conseguir começar é barato de re-tentar. */
 const MAXWAIT_BASE = 5_000
@@ -105,16 +110,24 @@ export async function comRetry<T>(
   let ultimoErro: unknown
 
   for (let tentativa = 0; tentativa < TENTATIVAS_MAXIMAS; tentativa += 1) {
-    const sobra = restante()
-    if (tentativa > 0 && sobra < ORCAMENTO_MINIMO_MS) {
+    // Milissegundos INTEIROS que ainda cabem: é deles que as duas fatias saem, e é o que
+    // mantém `maxWait + timeout <= restante` sem depender da parte fracionária.
+    const disponivel = Math.floor(restante())
+    if (disponivel < FATIA_MINIMA_MS) {
+      if (tentativa === 0) {
+        throw new Error(
+          `Orçamento de ${orcamentoMs}ms já esgotado antes da primeira tentativa de comRetry`,
+        )
+      }
       break
     }
 
     // As duas fases são SEQUENCIAIS — primeiro espera-se começar (`maxWait`), depois roda
     // (`timeout`) —, então quem manda é a SOMA. Dar o restante inteiro para cada uma
-    // deixava o teto valer o dobro.
-    const maxWait = Math.min(MAXWAIT_BASE, Math.floor(sobra / 2))
-    const timeout = Math.min(TIMEOUT_BASE, Math.max(Math.floor(sobra) - maxWait, 1))
+    // deixava o teto valer o dobro. Nenhuma pode chegar a zero: transação com `maxWait: 0`
+    // nem tenta.
+    const maxWait = Math.min(MAXWAIT_BASE, Math.max(1, Math.floor(disponivel / 2)))
+    const timeout = Math.min(TIMEOUT_BASE, Math.max(1, disponivel - maxWait))
 
     try {
       return await executar({ maxWait, timeout })
