@@ -24,6 +24,7 @@ let draft: {
   answers: SetupAnswers
   submittedAt: Date | null
   basePublishedVersionId: string | null
+  reviewNote: string | null
 }
 
 vi.mock('../lib/auth.server', () => ({
@@ -35,12 +36,17 @@ vi.mock('../lib/auth.server', () => ({
   }),
 }))
 
-const getOrCreateDraft = vi.fn(async () => draft)
+const loadSetupWorkspace = vi.fn(async () => ({
+  version: draft,
+  published: false,
+  activated: false,
+}))
 const saveDraftAnswers = vi.fn(async (input: { expectedRevision: number }) => ({
   ...draft,
   revision: input.expectedRevision + 1,
 }))
 const submitDraft = vi.fn(async () => ({ ...draft, state: 'submitted' }))
+const reopenForChanges = vi.fn(async () => ({ ...draft, state: 'draft' }))
 
 vi.mock('../lib/setup/version.server', async () => {
   const real = await vi.importActual<typeof import('../lib/setup/version.server')>(
@@ -49,7 +55,8 @@ vi.mock('../lib/setup/version.server', async () => {
   return {
     StaleRevisionError: real.StaleRevisionError,
     SubmitNotReadyError: real.SubmitNotReadyError,
-    getOrCreateDraft: (...args: unknown[]) => getOrCreateDraft(...(args as [])),
+    loadSetupWorkspace: (...args: unknown[]) => loadSetupWorkspace(...(args as [])),
+    reopenForChanges: (...args: unknown[]) => reopenForChanges(...(args as [])),
     saveDraftAnswers: (...args: unknown[]) =>
       saveDraftAnswers(...(args as [{ expectedRevision: number }])),
     submitDraft: (...args: unknown[]) => submitDraft(...(args as [])),
@@ -61,6 +68,18 @@ import { action, loader } from './preparar-ia'
 
 function chamarLoader(url = 'https://h/preparar-ia') {
   return loader({ request: new Request(url) } as Parameters<typeof loader>[0])
+}
+
+/** Desembrulha o retorno de `data()`: { status, body }. Conflito precisa ser 409 de verdade. */
+function desembrulhar(result: unknown): { status: number; body: Record<string, unknown> } {
+  const wrapped = result as { data?: unknown; init?: { status?: number } }
+  if (wrapped && typeof wrapped === 'object' && 'data' in wrapped) {
+    return {
+      status: wrapped.init?.status ?? 200,
+      body: (wrapped.data ?? {}) as Record<string, unknown>,
+    }
+  }
+  return { status: 200, body: (result ?? {}) as Record<string, unknown> }
 }
 
 function chamarAction(campos: Record<string, string>) {
@@ -84,6 +103,7 @@ beforeEach(() => {
     answers: { nome: 'Clínica Bem Estar do bairro' },
     submittedAt: null,
     basePublishedVersionId: null,
+    reviewNote: null,
   }
 })
 
@@ -96,7 +116,7 @@ describe('portão', () => {
 
   it('o rascunho é buscado pelo tenant da SESSÃO', async () => {
     await chamarLoader()
-    expect(getOrCreateDraft).toHaveBeenCalledWith(OPERATOR.tenantId)
+    expect(loadSetupWorkspace).toHaveBeenCalledWith(OPERATOR.tenantId)
   })
 })
 
@@ -159,7 +179,9 @@ describe('autosave', () => {
       step: 'empresa',
     })
     expect(saveDraftAnswers).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ ok: false, stale: true })
+    const { status, body } = desembrulhar(result)
+    expect(status).toBe(409)
+    expect(body).toMatchObject({ ok: false, stale: true })
   })
 
   it('revisão ausente ou inválida não salva', async () => {
@@ -172,7 +194,9 @@ describe('autosave', () => {
         step: 'empresa',
       })
       expect(saveDraftAnswers).not.toHaveBeenCalled()
-      expect(result).toMatchObject({ ok: false, stale: true })
+      const { status, body } = desembrulhar(result)
+      expect(status).toBe(409)
+      expect(body).toMatchObject({ ok: false, stale: true })
     }
   })
 
@@ -184,8 +208,11 @@ describe('autosave', () => {
       revision: '3',
       step: 'empresa',
     })
-    expect(result).toMatchObject({ ok: false, stale: true })
-    expect(JSON.stringify(result)).toMatch(/outra aba/i)
+    const { status, body } = desembrulhar(result)
+    // 409 de verdade: um 200 faria o cliente tratar a recusa como sucesso.
+    expect(status).toBe(409)
+    expect(body).toMatchObject({ ok: false, stale: true })
+    expect(JSON.stringify(body)).toMatch(/outra aba/i)
   })
 
   it('falha inesperada não vaza detalhe técnico', async () => {
@@ -196,29 +223,88 @@ describe('autosave', () => {
       revision: '3',
       step: 'empresa',
     })
-    const texto = JSON.stringify(result)
-    expect(texto).not.toContain('SQLITE')
-    expect(result).toMatchObject({ ok: false })
+    const { status, body } = desembrulhar(result)
+    expect(status).toBe(500)
+    expect(JSON.stringify(body)).not.toContain('SQLITE')
+    expect(body).toMatchObject({ ok: false })
   })
 })
 
 describe('envio para revisão', () => {
   it('chama submitDraft com o tenant da sessão', async () => {
     const result = await chamarAction({ intent: 'enviar', versionId: 'ver-1', revision: '3' })
-    expect(submitDraft).toHaveBeenCalledWith({ versionId: 'ver-1', tenantId: 'tenant-1' })
-    expect(result).toMatchObject({ ok: true, submitted: true })
+    expect(submitDraft).toHaveBeenCalledWith({
+      versionId: 'ver-1',
+      tenantId: 'tenant-1',
+      accountId: OPERATOR.accountId,
+      expectedRevision: 3,
+    })
+    // Sucesso REDIRECIONA: o loader revalida e mostra "recebemos suas respostas".
+    expect(result).toMatchObject({ status: 302 })
   })
 
   it('o servidor revalida a completude — POST direto não passa por cima', async () => {
     submitDraft.mockRejectedValueOnce(new SubmitNotReadyError({ empresa: ['nome'] }))
     const result = await chamarAction({ intent: 'enviar', versionId: 'ver-1', revision: '3' })
-    expect(result).toMatchObject({ ok: false })
-    expect(JSON.stringify(result)).toMatch(/faltam/i)
+    const { status, body } = desembrulhar(result)
+    expect(status).toBe(422)
+    expect(body).toMatchObject({ ok: false })
+    expect(JSON.stringify(body)).toMatch(/faltam/i)
   })
 
   it('não envia versão que não é a do tenant', async () => {
     const result = await chamarAction({ intent: 'enviar', versionId: 'outra', revision: '3' })
     expect(submitDraft).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ ok: false, stale: true })
+    const { status, body } = desembrulhar(result)
+    expect(status).toBe(409)
+    expect(body).toMatchObject({ ok: false, stale: true })
+  })
+})
+
+describe('estados que não são rascunho', () => {
+  it('depois de submeter, o loader devolve a MESMA versão em submitted', async () => {
+    // Sem isto a tela abriria um questionário novo — e outro onboarding poderia ser
+    // submetido enquanto o primeiro job ainda está pendente.
+    draft = { ...draft, state: 'submitted' }
+    const data = await chamarLoader()
+    expect(data.state).toBe('submitted')
+    expect(data.versionId).toBe('ver-1')
+  })
+
+  it('needs_changes traz a nota da revisão para o cliente ler', async () => {
+    draft = { ...draft, state: 'needs_changes', reviewNote: 'faltou o horário de sábado' }
+    const data = await chamarLoader()
+    expect(data.state).toBe('needs_changes')
+    expect(data.reviewNote).toBe('faltou o horário de sábado')
+  })
+
+  it('reabrir para correção é explícito e passa pela transição', async () => {
+    const result = await chamarAction({ intent: 'reabrir', versionId: 'ver-1', revision: '3' })
+    expect(reopenForChanges).toHaveBeenCalledWith({
+      versionId: 'ver-1',
+      tenantId: 'tenant-1',
+      expectedRevision: 3,
+    })
+    expect(result).toMatchObject({ status: 302 })
+  })
+
+  it('conflito ao reabrir também responde 409', async () => {
+    reopenForChanges.mockRejectedValueOnce(new StaleRevisionError())
+    const result = await chamarAction({ intent: 'reabrir', versionId: 'ver-1', revision: '3' })
+    const { status, body } = desembrulhar(result)
+    expect(status).toBe(409)
+    expect(body).toMatchObject({ stale: true })
+  })
+
+  it('tenant sem versão pendente não recebe rascunho automático', async () => {
+    loadSetupWorkspace.mockResolvedValueOnce({
+      version: null as unknown as typeof draft,
+      published: true,
+      activated: true,
+    })
+    const data = await chamarLoader()
+    expect(data.versionId).toBeNull()
+    expect(data.state).toBeNull()
+    expect(data.published).toBe(true)
   })
 })

@@ -119,4 +119,3 @@ CREATE INDEX "AiSetupEvent_tenantId_createdAt_idx" ON "AiSetupEvent"("tenantId",
 
 -- CreateIndex
 CREATE UNIQUE INDEX "MessageTrace_assistantMessageId_key" ON "MessageTrace"("assistantMessageId");
-
