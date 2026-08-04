@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db.server'
 import {
+  __setAntesDeTomarPonteiro,
   loadSetupWorkspace,
   reopenForChanges,
   StaleRevisionError,
@@ -427,23 +428,53 @@ describe('submissão (draft → submitted)', () => {
   })
 })
 
-describe('retry é só para lock (spec: erro real não pode virar 3 tentativas)', () => {
-  it('erro que não é lock sobe na primeira vez', async () => {
-    // Antes o retry engolia qualquer erro três vezes, escondendo bug por trás de
-    // tentativas e atrasando a resposta em quase meio segundo à toa.
-    const inexistente = 'tenant-que-nao-existe'
-    const inicio = Date.now()
-    await expect(loadSetupWorkspace(inexistente)).rejects.toThrow(/sem AiSetup/)
-    // Sem espera de backoff: falhou e voltou.
-    expect(Date.now() - inicio).toBeLessThan(500)
+describe('caminho PERDEDOR do CAS de criação', () => {
+  // NOTA sobre o que dá para provar aqui. A corrida real — outra requisição publicando
+  // enquanto esta cria o rascunho — não é simulável neste ambiente: de fora, o SQLite não
+  // deixa outra conexão escrever durante a transação interativa (a escrita não persiste);
+  // de dentro, o rollback do `PointerTakenError` desfaz a própria interferência.
+  //
+  // O que É verificável, e é o que importa, é o COMPORTAMENTO quando o CAS não casa: o
+  // erro interno não vaza, a transação reverte por inteiro (sem versão órfã) e a função
+  // devolve um estado coerente. O gancho força exatamente essa condição.
+  afterEach(() => {
+    __setAntesDeTomarPonteiro(null)
   })
-})
 
-describe('criação do rascunho respeita publicação concorrente', () => {
-  it('não cria rascunho se algo foi publicado no meio', async () => {
-    // O CAS da criação exige reviewVersionId nulo E publishedVersionId nulo: uma
-    // publicação concorrente muda o caso de "inicial" para "já configurado", e o
-    // rascunho não deveria nascer.
+  it('CAS que não casa não vaza erro interno, não deixa órfão e devolve estado coerente', async () => {
+    let vezesQueTentou = 0
+    __setAntesDeTomarPonteiro(async (tx) => {
+      vezesQueTentou += 1
+      if (vezesQueTentou === 1) {
+        // Ocupa o ponteiro DENTRO da transação: o `updateMany` seguinte não vai casar.
+        const outra = await tx.aiSetupVersion.create({
+          data: { setupId, tenantId, state: 'draft', answersJson: '{}' },
+        })
+        await tx.aiSetup.update({
+          where: { id: setupId },
+          data: { reviewVersionId: outra.id },
+        })
+      }
+    })
+
+    // 1. `PointerTakenError` não escapa — se escapasse, isto rejeitaria.
+    const workspace = await loadSetupWorkspace(tenantId)
+
+    // 2. o CAS foi de fato exercitado (a transação rodou mais de uma vez)
+    expect(vezesQueTentou).toBeGreaterThan(1)
+
+    // 3. estado coerente: existe rascunho e o ponteiro aponta para ele
+    expect(workspace.version).not.toBeNull()
+    const setup = await db.aiSetupVersion.findMany({ where: { tenantId } })
+    const ponteiro = await db.aiSetup.findUniqueOrThrow({ where: { id: setupId } })
+    expect(ponteiro.reviewVersionId).toBe(workspace.version?.id)
+
+    // 4. nenhuma versão órfã: a tentativa perdedora foi revertida junto com a transação
+    expect(setup).toHaveLength(1)
+    expect(setup[0].id).toBe(workspace.version?.id)
+  })
+
+  it('tenant já publicado nem chega ao CAS — devolve null antes de criar rascunho', async () => {
     const publicada = await db.aiSetupVersion.create({
       data: { setupId, tenantId, state: 'active', answersJson: '{}', publishedAt: new Date() },
     })
@@ -452,10 +483,16 @@ describe('criação do rascunho respeita publicação concorrente', () => {
       data: { publishedVersionId: publicada.id },
     })
 
+    let chegouAoCas = false
+    __setAntesDeTomarPonteiro(async () => {
+      chegouAoCas = true
+    })
+
     const workspace = await loadSetupWorkspace(tenantId)
 
-    expect(workspace.version).toBeNull()
+    expect(chegouAoCas).toBe(false) // retorno antecipado, como deve ser
     expect(workspace.published).toBe(true)
+    expect(workspace.version).toBeNull()
     expect(await db.aiSetupVersion.count({ where: { tenantId, state: 'draft' } })).toBe(0)
   })
 })

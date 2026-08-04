@@ -6,6 +6,7 @@ import {
   type SetupAnswers,
   serializeAnswers,
 } from './answers'
+import { comRetry } from './retry'
 import { assertSetupTransition, isSetupState } from './state'
 
 // Leitura e escrita da versão de configuração em elaboração (spec §5.2, §3.2, §3.5).
@@ -35,6 +36,22 @@ export class SubmitNotReadyError extends Error {
   }
 }
 
+// Gancho SÓ para teste: roda entre criar o rascunho provisório e tentar tomar o ponteiro.
+// É a única forma de exercitar o caminho PERDEDOR do CAS de forma determinística.
+//
+// Recebe a própria transação porque o SQLite não permite que outra conexão escreva
+// enquanto esta transação está aberta — uma escrita "de fora" simplesmente não persiste.
+// O teste então altera o estado por dentro, o que produz exatamente a condição que
+// importa: o `updateMany` do ponteiro não casa.
+// Mesmo padrão de `__setMakeSocket` em channels/baileys.server.ts.
+type TxLike = Parameters<Parameters<typeof db.$transaction>[0]>[0]
+let aoAntesDeTomarPonteiro: ((tx: TxLike) => Promise<void>) | null = null
+
+/** @internal Apenas para teste. */
+export function __setAntesDeTomarPonteiro(fn: ((tx: TxLike) => Promise<void>) | null): void {
+  aoAntesDeTomarPonteiro = fn
+}
+
 /** Sinaliza que outra requisição tomou o ponteiro primeiro — a transação é desfeita. */
 class PointerTakenError extends Error {
   constructor(readonly discardedVersionId: string) {
@@ -54,48 +71,6 @@ class PointerTakenError extends Error {
  *
  * Mesmo padrão de `provisionTenant` (provisioning.server.ts).
  */
-/**
- * É contenção de escrita — o único caso que justifica tentar de novo?
- *
- * São duas caras do mesmo fenômeno no SQLite:
- *  - `database is locked` / `SQLITE_BUSY`: a escrita bateu num lock;
- *  - P2028 "Operation has timed out": a transação não conseguiu nem COMEÇAR dentro do
- *    `maxWait`, porque outra a segurava.
- *
- * Qualquer outro erro sobe na primeira vez: insistir esconderia bug de lógica atrás de
- * três tentativas e ainda atrasaria a resposta.
- */
-function ehContencaoTransitoria(error: unknown): boolean {
-  const codigo = (error as { code?: unknown })?.code
-  if (codigo === 'P2028') {
-    return true
-  }
-  const texto = error instanceof Error ? error.message : String(error)
-  return /database is locked|SQLITE_BUSY|Operation has timed out/i.test(texto)
-}
-
-async function comRetry<T>(executar: () => Promise<T>): Promise<T> {
-  let ultimoErro: unknown
-  for (let tentativa = 0; tentativa < 4; tentativa += 1) {
-    try {
-      return await executar()
-    } catch (error) {
-      // Só lock é transitório. Insistir em qualquer outro erro esconderia bug real por
-      // trás de três tentativas — e um CAS que não casou é resposta legítima, não falha.
-      if (!ehContencaoTransitoria(error)) {
-        throw error
-      }
-      ultimoErro = error
-      // Espera antes de insistir: re-tentar na hora quase não ajuda, porque o lock que
-      // derrubou esta transação continua nas mãos de quem estava escrevendo.
-      if (tentativa < 3) {
-        await new Promise((resolve) => setTimeout(resolve, 80 * 2 ** tentativa))
-      }
-    }
-  }
-  throw ultimoErro
-}
-
 export type VersionView = {
   id: string
   state: string
@@ -190,6 +165,9 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
             answersJson: JSON.stringify({}),
           },
         })
+        if (aoAntesDeTomarPonteiro) {
+          await aoAntesDeTomarPonteiro(tx)
+        }
         const claimed = await tx.aiSetup.updateMany({
           // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
           // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
@@ -206,16 +184,18 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
       { maxWait: 20_000, timeout: 20_000 },
     ),
   ).catch(async (error) => {
-    if (error instanceof PointerTakenError) {
-      const vencedor = await db.aiSetup.findUnique({ where: { tenantId } })
-      if (vencedor?.reviewVersionId) {
-        return db.aiSetupVersion.findFirstOrThrow({
-          where: { id: vencedor.reviewVersionId, tenantId },
-        })
-      }
+    if (!(error instanceof PointerTakenError)) {
+      throw error
     }
-    throw error
+    // Perdemos a corrida. A transação foi revertida (o rascunho provisório não existe), e
+    // o estado correto é o de quem venceu — que pode ser outro rascunho OU uma publicação
+    // que aconteceu no meio. `PointerTakenError` nunca vaza para o chamador.
+    return null
   })
+
+  if (criada === null) {
+    return loadSetupWorkspace(tenantId)
+  }
 
   return { ...base, version: toView(criada) }
 }
