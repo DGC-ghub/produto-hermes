@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { comRetry, ehContencaoTransitoria, OPCOES_TRANSACAO, TENTATIVAS_MAXIMAS } from './retry'
+import { comRetry, ehContencaoTransitoria, ORCAMENTO_MS, TENTATIVAS_MAXIMAS } from './retry'
 
 // O retry existe por UM motivo: no SQLite a escrita é serializada, e sob concorrência a
 // transação pode não conseguir nem começar. Insistir em qualquer outra coisa esconderia
@@ -148,18 +148,47 @@ describe('comRetry só insiste no que é transitório', () => {
   })
 })
 
-describe('o teto de espera cabe num POST interativo', () => {
-  it('o pior caso fica abaixo de 30 s', () => {
-    // A espera que a contenção causa é a de COMEÇAR a transação (`maxWait`), e ela é paga
-    // uma vez por tentativa. Com `maxWait` em 20 s isto dava ~80 s: ninguém espera oitenta
-    // segundos por um autosave, e o navegador desiste antes.
-    const pior = TENTATIVAS_MAXIMAS * OPCOES_TRANSACAO.maxWait
-    expect(pior).toBeLessThanOrEqual(30_000)
+describe('o teto é o orçamento de relógio, não tentativas × timeout', () => {
+  it('a primeira tentativa recebe o tempo cheio', async () => {
+    let recebido: { maxWait: number; timeout: number } | null = null
+    await comRetry(async (opcoes) => {
+      recebido = opcoes
+      return 'ok'
+    })
+    // 20 s para a transação que JÁ começou: entre uma escrita e outra ela pode ficar
+    // parada esperando o lock, e derrubá-la em 10 s foi o que pintou a suíte de vermelho.
+    expect(recebido).toEqual({ maxWait: 5_000, timeout: 20_000 })
   })
 
-  it('o orçamento total de espera continua sendo o de antes — só fatiado', () => {
-    // A resiliência não caiu: continua-se insistindo por ~20 s no total, agora em quatro
-    // tentativas em vez de uma espera única.
-    expect(TENTATIVAS_MAXIMAS * OPCOES_TRANSACAO.maxWait).toBeGreaterThanOrEqual(20_000)
+  it('as opções encolhem com o que sobra do orçamento', async () => {
+    const recebidos: Array<{ maxWait: number; timeout: number }> = []
+    // Orçamento curto: a segunda tentativa não pode pedir mais do que ainda resta.
+    await comRetry(async (opcoes) => {
+      recebidos.push(opcoes)
+      throw new Error('database is locked')
+    }, 300).catch(() => {})
+
+    expect(recebidos.length).toBeGreaterThan(1)
+    expect(recebidos[0].timeout).toBe(300)
+    expect(recebidos[1].timeout).toBeLessThan(300)
+  })
+
+  it('para de tentar quando o orçamento acaba, mesmo sobrando tentativas', async () => {
+    let chamadas = 0
+    const inicio = Date.now()
+    await comRetry(async () => {
+      chamadas += 1
+      throw new Error('database is locked')
+    }, 100).catch(() => {})
+
+    // O backoff (80 ms, 160 ms…) come o orçamento: sobra menos que as 4 tentativas.
+    expect(chamadas).toBeLessThan(TENTATIVAS_MAXIMAS)
+    expect(Date.now() - inicio).toBeLessThan(1_000)
+  })
+
+  it('o pior caso cabe num POST interativo', () => {
+    // A conta antiga era `tentativas × timeout` = ~80 s. Ninguém espera oitenta segundos
+    // por um autosave, e o navegador desiste antes.
+    expect(ORCAMENTO_MS).toBeLessThanOrEqual(30_000)
   })
 })

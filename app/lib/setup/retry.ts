@@ -8,18 +8,30 @@
 export const TENTATIVAS_MAXIMAS = 4
 
 /**
- * Opções das transações interativas do setup.
+ * Teto de relógio: o pior caso que um POST interativo pode custar, do primeiro tento até
+ * desistir. É ELE que importa, não o número de tentativas.
  *
- * `maxWait` é quanto se espera para COMEÇAR (é onde a contenção aparece) e `timeout` é
- * quanto a transação pode rodar depois de começar. Os dois estavam em 20 s, o que dava um
- * teto de ~80 s somando as re-tentativas — inaceitável num POST interativo: ninguém espera
- * oitenta segundos por um autosave, e o navegador desiste bem antes.
+ * A conta "tentativas × timeout" engana. Com 4 tentativas de 20 s o teto era ~80 s, e
+ * ninguém espera oitenta segundos por um autosave. Cortar os 20 s pela metade parecia
+ * resolver e só trocou o problema de lugar: passou a derrubar transação que tinha
+ * começado e estava esperando o lock — foi assim que a suíte completa ficou vermelha.
  *
- * Com 5 s o orçamento TOTAL de espera continua o mesmo (4 × 5 s ≈ 20 s), só que fatiado:
- * mesma resiliência, teto quatro vezes menor. O `timeout` maior é para o corpo, que faz
- * duas ou três escritas e nunca deveria chegar perto disso.
+ * Com orçamento explícito dá para ter as duas coisas: cada tentativa recebe o tempo de
+ * antes, e o total continua limitado.
  */
-export const OPCOES_TRANSACAO = { maxWait: 5_000, timeout: 10_000 } as const
+export const ORCAMENTO_MS = 30_000
+
+/** Espera para COMEÇAR a transação. Não conseguir começar é barato de re-tentar. */
+const MAXWAIT_BASE = 5_000
+
+/**
+ * Quanto a transação pode levar DEPOIS de começar. Precisa ser generoso: o corpo faz duas
+ * ou três escritas, mas entre elas pode ficar parado esperando o lock de escrita do SQLite,
+ * que é serializado entre todos os tenants.
+ */
+const TIMEOUT_BASE = 20_000
+
+export type OpcoesTransacao = { maxWait: number; timeout: number }
 
 /**
  * É contenção de escrita — o único caso que justifica tentar de novo?
@@ -68,11 +80,26 @@ export function ehContencaoTransitoria(error: unknown): boolean {
  * tentativa que falhou não escreveu nada, e se outra venceu a corrida o CAS da seguinte
  * não casa — o erro vira conflito, que é a verdade, em vez de duplicar.
  */
-export async function comRetry<T>(executar: () => Promise<T>): Promise<T> {
+export async function comRetry<T>(
+  executar: (opcoes: OpcoesTransacao) => Promise<T>,
+  orcamentoMs: number = ORCAMENTO_MS,
+): Promise<T> {
+  const inicio = Date.now()
+  const restante = () => orcamentoMs - (Date.now() - inicio)
   let ultimoErro: unknown
+
   for (let tentativa = 0; tentativa < TENTATIVAS_MAXIMAS; tentativa += 1) {
+    const sobra = restante()
+    if (tentativa > 0 && sobra <= 0) {
+      break
+    }
     try {
-      return await executar()
+      // As opções encolhem junto com o que sobra do orçamento: é isso que faz o teto ser
+      // o orçamento, e não "tentativas × timeout".
+      return await executar({
+        maxWait: Math.min(MAXWAIT_BASE, Math.max(sobra, 1)),
+        timeout: Math.min(TIMEOUT_BASE, Math.max(sobra, 1)),
+      })
     } catch (error) {
       if (!ehContencaoTransitoria(error)) {
         throw error
@@ -80,7 +107,7 @@ export async function comRetry<T>(executar: () => Promise<T>): Promise<T> {
       ultimoErro = error
       // Esperar importa: re-tentar na hora quase não ajuda, porque o lock que derrubou
       // esta transação continua nas mãos de quem estava escrevendo.
-      if (tentativa < TENTATIVAS_MAXIMAS - 1) {
+      if (tentativa < TENTATIVAS_MAXIMAS - 1 && restante() > 0) {
         await new Promise((resolve) => setTimeout(resolve, 80 * 2 ** tentativa))
       }
     }

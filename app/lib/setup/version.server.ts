@@ -6,8 +6,8 @@ import {
   type SetupAnswers,
   serializeAnswers,
 } from './answers'
-import { resolverAposPerderCas } from './claim'
-import { comRetry, OPCOES_TRANSACAO } from './retry'
+import { type ResolucaoAposPerda, resolverAposPerderCas } from './claim'
+import { comRetry, ehContencaoTransitoria } from './retry'
 import { assertSetupTransition, isSetupState } from './state'
 
 // Leitura e escrita da versão de configuração em elaboração (spec §5.2, §3.2, §3.5).
@@ -149,42 +149,56 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
 
   // Criação com CAS no ponteiro: duas requisições concorrentes (a pessoa clicando duas
   // vezes, ou duas abas abrindo juntas) não podem criar dois rascunhos órfãos.
-  const criada = await comRetry(() =>
-    db.$transaction(async (tx) => {
-      const version = await tx.aiSetupVersion.create({
-        data: {
-          setupId: setup.id,
-          tenantId,
-          state: 'draft',
-          origin: 'onboarding',
-          answersJson: JSON.stringify({}),
-        },
-      })
-      const claimed = await tx.aiSetup.updateMany({
-        // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
-        // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
-        // configuração", e aí este rascunho não deveria existir.
-        where: { id: setup.id, tenantId, reviewVersionId: null, publishedVersionId: null },
-        data: { reviewVersionId: version.id },
-      })
-      if (claimed.count !== 1) {
-        // Outra requisição ganhou a corrida. Desfaz a nossa e usa a dela.
-        throw new PointerTakenError(version.id)
-      }
-      return version
-    }, OPCOES_TRANSACAO),
-  ).catch(async (error) => {
-    if (!(error instanceof PointerTakenError)) {
-      throw error
+  let criada: VersionRow
+  try {
+    criada = await comRetry((opcoes) =>
+      db.$transaction(async (tx) => {
+        const version = await tx.aiSetupVersion.create({
+          data: {
+            setupId: setup.id,
+            tenantId,
+            state: 'draft',
+            origin: 'onboarding',
+            answersJson: JSON.stringify({}),
+          },
+        })
+        const claimed = await tx.aiSetup.updateMany({
+          // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
+          // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
+          // configuração", e aí este rascunho não deveria existir.
+          where: { id: setup.id, tenantId, reviewVersionId: null, publishedVersionId: null },
+          data: { reviewVersionId: version.id },
+        })
+        if (claimed.count !== 1) {
+          // Outra requisição ganhou a corrida. Desfaz a nossa e usa a dela.
+          throw new PointerTakenError(version.id)
+        }
+        return version
+      }, opcoes),
+    )
+  } catch (error) {
+    if (error instanceof PointerTakenError) {
+      // Perdemos a corrida no CAS. A transação foi revertida (o rascunho provisório não
+      // existe) e o estado correto é o de quem venceu — outro rascunho OU uma publicação
+      // que aconteceu no meio. `PointerTakenError` nunca vaza para o chamador.
+      return resolverPerdaDoPonteiro(tenantId)
     }
-    // Perdemos a corrida. A transação foi revertida (o rascunho provisório não existe), e
-    // o estado correto é o de quem venceu — que pode ser outro rascunho OU uma publicação
-    // que aconteceu no meio. `PointerTakenError` nunca vaza para o chamador.
-    return null
-  })
 
-  if (criada === null) {
-    return resolverPerdaDoPonteiro(tenantId)
+    // Perder por CONTENÇÃO é o mesmo desfecho por outro caminho: no SQLite a escrita é
+    // serializada entre TODOS os tenants, então sob carga uma das chamadas concorrentes
+    // pode não conseguir nem começar a transação nas quatro tentativas. Desistir com o
+    // P2028 na mão sem olhar o banco é errado — quem venceu já deixou o rascunho pronto,
+    // e o que o chamador precisa é dele, não do erro.
+    //
+    // É seguro porque a transação que não começou não escreveu nada: ou ela commitou (e
+    // aí `comRetry` teria voltado), ou foi revertida por inteiro.
+    if (ehContencaoTransitoria(error)) {
+      const vencedora = await tentarResolverAposContencao(tenantId)
+      if (vencedora) {
+        return vencedora
+      }
+    }
+    throw error
   }
 
   return { ...base, version: toView(criada) }
@@ -203,29 +217,55 @@ async function resolverPerdaDoPonteiro(tenantId: string): Promise<SetupWorkspace
   if (!setup) {
     throw new Error(`Tenant sem AiSetup: ${tenantId}`)
   }
+
+  const decisao = resolverAposPerderCas(setup)
+  if (decisao.tipo === 'incoerente') {
+    // O CAS exige os dois ponteiros nulos: perder com os dois ainda nulos significa que
+    // não foi concorrência, e chutar um rascunho aqui esconderia o problema real.
+    throw new Error(
+      `Setup do tenant ${tenantId} perdeu o CAS de criação sem que ninguém tomasse o ponteiro`,
+    )
+  }
+  return materializarResolucao(tenantId, setup, decisao)
+}
+
+/**
+ * A mesma leitura, para o caso em que a tentativa morreu de contenção em vez de perder o
+ * CAS. Devolve `null` — e não um erro — quando nada apareceu: aí quem manda é o erro
+ * original, que descreve o que de fato aconteceu.
+ */
+async function tentarResolverAposContencao(tenantId: string): Promise<SetupWorkspace | null> {
+  const setup = await db.aiSetup.findUnique({ where: { tenantId } })
+  if (!setup) {
+    return null
+  }
+  const decisao = resolverAposPerderCas(setup)
+  if (decisao.tipo === 'incoerente') {
+    return null
+  }
+  return materializarResolucao(tenantId, setup, decisao)
+}
+
+/** Transforma a decisão (pura) no workspace, buscando a versão vencedora quando é o caso. */
+async function materializarResolucao(
+  tenantId: string,
+  setup: { publishedVersionId: string | null; activatedAt: Date | null },
+  decisao: Exclude<ResolucaoAposPerda, { tipo: 'incoerente' }>,
+): Promise<SetupWorkspace> {
   const base = {
     published: setup.publishedVersionId !== null,
     activated: setup.activatedAt !== null,
   }
-
-  const decisao = resolverAposPerderCas(setup)
-  switch (decisao.tipo) {
-    case 'usar-review': {
-      const vencedora = await db.aiSetupVersion.findFirst({
-        where: { id: decisao.versionId, tenantId },
-      })
-      if (!vencedora) {
-        throw new OrphanReviewPointerError(tenantId, decisao.versionId)
-      }
-      return { ...base, version: toView(vencedora) }
-    }
-    case 'usar-publicada':
-      return { ...base, version: null }
-    case 'incoerente':
-      throw new Error(
-        `Setup do tenant ${tenantId} perdeu o CAS de criação sem que ninguém tomasse o ponteiro`,
-      )
+  if (decisao.tipo === 'usar-publicada') {
+    return { ...base, version: null }
   }
+  const vencedora = await db.aiSetupVersion.findFirst({
+    where: { id: decisao.versionId, tenantId },
+  })
+  if (!vencedora) {
+    throw new OrphanReviewPointerError(tenantId, decisao.versionId)
+  }
+  return { ...base, version: toView(vencedora) }
 }
 
 /**
@@ -355,7 +395,7 @@ export async function submitDraft(input: {
   const generation = version.generation + 1
   const agora = new Date()
 
-  await comRetry(() =>
+  await comRetry((opcoes) =>
     db.$transaction(async (tx) => {
       // A base é lida DENTRO da transação: se uma publicação acontecer entre a leitura
       // acima e este ponto, gravar a base velha faria a candidata nascer obsoleta.
@@ -404,7 +444,7 @@ export async function submitDraft(input: {
           detail: JSON.stringify({ generation }),
         },
       })
-    }, OPCOES_TRANSACAO),
+    }, opcoes),
   )
 
   const submetida = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: version.id } })
