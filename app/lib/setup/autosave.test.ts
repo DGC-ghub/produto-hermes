@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type AutosaveEvent,
   type AutosaveState,
   autosaveInicial,
   autosaveReducer,
   deveAutosalvar,
+  envioLiberado,
   navegacaoPendente,
   podeNavegar,
   revisaoParaEnviar,
@@ -17,9 +19,14 @@ import {
 
 const inicial = autosaveInicial(3)
 
+/** Aplica uma sequência de eventos a partir de um estado qualquer. */
+function seguir(estado: AutosaveState, ...eventos: AutosaveEvent[]): AutosaveState {
+  return eventos.reduce(autosaveReducer, estado)
+}
+
 /** Aplica uma sequência de eventos a partir do estado inicial. */
-function aplicar(...eventos: Parameters<typeof autosaveReducer>[1][]): AutosaveState {
-  return eventos.reduce(autosaveReducer, inicial)
+function aplicar(...eventos: AutosaveEvent[]): AutosaveState {
+  return seguir(inicial, ...eventos)
 }
 
 describe('estado inicial', () => {
@@ -247,5 +254,94 @@ describe('enviar para revisão salva o que está digitado antes', () => {
     const estado = aplicar({ type: 'submit-requested' })
     expect(estado.submitAfterSave).toBe(true)
     expect(estado.dirty).toBe(false)
+  })
+})
+
+// ── As corridas do `dirty` ────────────────────────────────────────────────────
+// O `requestId` resolve a resposta ATRASADA, mas não a edição feita DURANTE o request:
+// o save em voo carrega o texto de antes, e liberar a ação com a resposta dele avança
+// por cima do que a pessoa digitou depois. É a mesma perda de dados dos bugs anteriores,
+// só que na janela de um request.
+
+describe('editar durante o save adia a ação que dependia dele', () => {
+  it('digitar com o save de navegação em voo exige um SEGUNDO save antes de trocar de etapa', () => {
+    const durante = aplicar(
+      { type: 'navigate-requested', step: 'servicos' },
+      { type: 'save-started', requestId: 1 },
+      { type: 'edited' }, // digitou com o request em voo
+      { type: 'save-ok', requestId: 1, revision: 4 },
+    )
+
+    // Navegar aqui trocaria a etapa e o texto digitado sumiria sem nunca ter sido gravado.
+    expect(durante.dirty).toBe(true)
+    expect(navegacaoPendente(durante)).toBeNull()
+    expect(deveAutosalvar(durante)).toBe(true)
+
+    const depois = seguir(
+      durante,
+      { type: 'save-started', requestId: 2 },
+      { type: 'save-ok', requestId: 2, revision: 5 },
+    )
+    expect(navegacaoPendente(depois)).toBe('servicos')
+    expect(depois.revision).toBe(5)
+  })
+
+  it('digitar com o save de envio em voo exige um SEGUNDO save antes de enviar', () => {
+    const durante = aplicar(
+      { type: 'submit-requested' },
+      { type: 'save-started', requestId: 1 },
+      { type: 'edited' },
+      { type: 'save-ok', requestId: 1, revision: 4 },
+    )
+
+    // Enviar aqui mandaria para revisão uma versão sem a última correção — exatamente o
+    // que o "salva antes de enviar" existe para impedir.
+    expect(envioLiberado(durante)).toBe(false)
+    expect(deveAutosalvar(durante)).toBe(true)
+
+    const depois = seguir(
+      durante,
+      { type: 'save-started', requestId: 2 },
+      { type: 'save-ok', requestId: 2, revision: 5 },
+    )
+    expect(envioLiberado(depois)).toBe(true)
+    expect(revisaoParaEnviar(depois)).toBe(5)
+  })
+
+  it('sem edição no meio, a ação sai no primeiro save — nada de save extra', () => {
+    // O contrapeso: a espera é pela edição pendente, não uma rodada a mais por precaução.
+    const estado = aplicar(
+      { type: 'navigate-requested', step: 'servicos' },
+      { type: 'save-started', requestId: 1 },
+      { type: 'save-ok', requestId: 1, revision: 4 },
+    )
+    expect(navegacaoPendente(estado)).toBe('servicos')
+    expect(deveAutosalvar(estado)).toBe(false)
+  })
+})
+
+describe('conflito trava TAMBÉM a navegação manual', () => {
+  it('depois do conflito não se pode navegar', () => {
+    // Os botões de etapa são `disabled={!podeNavegar(...)}`. Olhando só `pending`, eles
+    // voltavam a ficar clicáveis assim que o 409 chegava — e o clique dispara um POST com
+    // a revisão que o servidor acabou de recusar, sobrescrevendo a outra aba.
+    const estado = aplicar(
+      { type: 'edited' },
+      { type: 'save-started', requestId: 1 },
+      { type: 'save-conflict', requestId: 1 },
+    )
+    expect(estado.pending).toBe(false)
+    expect(estado.blocked).toBe(true)
+    expect(podeNavegar(estado)).toBe(false)
+  })
+
+  it('falha comum (não conflito) libera a navegação de novo', () => {
+    // 500 é transitório: a pessoa pode tentar de novo. 409 não.
+    const estado = aplicar(
+      { type: 'edited' },
+      { type: 'save-started', requestId: 1 },
+      { type: 'save-failed', requestId: 1 },
+    )
+    expect(podeNavegar(estado)).toBe(true)
   })
 })

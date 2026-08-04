@@ -138,9 +138,14 @@ export function deveAutosalvar(state: AutosaveState): boolean {
 /**
  * Para onde navegar agora. Só devolve o destino quando um save de id suficiente já
  * confirmou — a resposta de um autosave anterior não libera a troca de etapa.
+ *
+ * `dirty` entra na conta porque o `requestId` sozinho não cobre a edição feita DURANTE o
+ * request: o save em voo carrega o texto de antes, então navegar com a resposta dele
+ * trocaria a etapa e levaria embora o que foi digitado no meio. Havendo edição pendente,
+ * o autosave dispara outro save e a navegação espera por ele.
  */
 export function navegacaoPendente(state: AutosaveState): SetupStep | null {
-  if (state.pending || !state.navigateTo) {
+  if (state.pending || state.dirty || !state.navigateTo) {
     return null
   }
   // `inFlightId` zera ao confirmar; `revision` avançou. O critério é ter passado por um
@@ -148,14 +153,25 @@ export function navegacaoPendente(state: AutosaveState): SetupStep | null {
   return state.navigateAfterId <= state.lastConfirmedId ? state.navigateTo : null
 }
 
-/** Navegação é permitida? Trava durante qualquer request em voo. */
+/**
+ * Navegação é permitida? Trava durante qualquer request em voo — e continua travada depois
+ * de um conflito: o 409 zera `pending`, e olhando só para ele os botões de etapa voltavam a
+ * ficar clicáveis, mandando um POST com a revisão que o servidor acabou de recusar.
+ */
 export function podeNavegar(state: AutosaveState): boolean {
-  return !state.pending
+  return !state.pending && !state.blocked
 }
 
 /** O envio para revisão já pode acontecer (o save que o precede confirmou)? */
 export function envioLiberado(state: AutosaveState): boolean {
-  return state.submitAfterSave && !state.pending && state.submitAfterId <= state.lastConfirmedId
+  // `dirty` pela mesma razão de `navegacaoPendente`: enviar com edição pendente mandaria
+  // para revisão uma versão sem a última correção.
+  return (
+    state.submitAfterSave &&
+    !state.pending &&
+    !state.dirty &&
+    state.submitAfterId <= state.lastConfirmedId
+  )
 }
 
 /** A revisão que deve ir no POST de envio — sempre a mais recente conhecida. */

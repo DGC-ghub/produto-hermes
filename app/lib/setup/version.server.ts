@@ -6,7 +6,8 @@ import {
   type SetupAnswers,
   serializeAnswers,
 } from './answers'
-import { comRetry } from './retry'
+import { resolverAposPerderCas } from './claim'
+import { comRetry, OPCOES_TRANSACAO } from './retry'
 import { assertSetupTransition, isSetupState } from './state'
 
 // Leitura e escrita da versão de configuração em elaboração (spec §5.2, §3.2, §3.5).
@@ -36,20 +37,21 @@ export class SubmitNotReadyError extends Error {
   }
 }
 
-// Gancho SÓ para teste: roda entre criar o rascunho provisório e tentar tomar o ponteiro.
-// É a única forma de exercitar o caminho PERDEDOR do CAS de forma determinística.
-//
-// Recebe a própria transação porque o SQLite não permite que outra conexão escreva
-// enquanto esta transação está aberta — uma escrita "de fora" simplesmente não persiste.
-// O teste então altera o estado por dentro, o que produz exatamente a condição que
-// importa: o `updateMany` do ponteiro não casa.
-// Mesmo padrão de `__setMakeSocket` em channels/baileys.server.ts.
-type TxLike = Parameters<Parameters<typeof db.$transaction>[0]>[0]
-let aoAntesDeTomarPonteiro: ((tx: TxLike) => Promise<void>) | null = null
-
-/** @internal Apenas para teste. */
-export function __setAntesDeTomarPonteiro(fn: ((tx: TxLike) => Promise<void>) | null): void {
-  aoAntesDeTomarPonteiro = fn
+/**
+ * `reviewVersionId` aponta para uma versão que este tenant não tem. Estado corrompido:
+ * é incidente operacional, não caso de uso — e por isso falha alto em vez de tentar se
+ * curar sozinho.
+ */
+export class OrphanReviewPointerError extends Error {
+  constructor(
+    readonly tenantId: string,
+    readonly danglingVersionId: string,
+  ) {
+    super(
+      `AiSetup.reviewVersionId do tenant ${tenantId} aponta para a versão ${danglingVersionId}, que não existe para ele`,
+    )
+    this.name = 'OrphanReviewPointerError'
+  }
 }
 
 /** Sinaliza que outra requisição tomou o ponteiro primeiro — a transação é desfeita. */
@@ -60,17 +62,7 @@ class PointerTakenError extends Error {
   }
 }
 
-/**
- * Re-tenta uma transação em erro transitório de lock. O SQLite serializa escritas: sob
- * concorrência (webhook + tela em produção; workers de teste no mesmo arquivo) uma
- * transação pode voltar com "database is locked" mesmo com busy_timeout configurado.
- *
- * Só é seguro porque todo corpo aqui é protegido por compare-and-swap: uma tentativa que
- * falhou não escreveu nada, e se a anterior tiver vencido a corrida o CAS da seguinte não
- * casa — em vez de duplicar, o erro vira `StaleRevisionError`, que é a verdade.
- *
- * Mesmo padrão de `provisionTenant` (provisioning.server.ts).
- */
+/** A versão como as telas a enxergam — respostas já desserializadas. */
 export type VersionView = {
   id: string
   state: string
@@ -142,7 +134,11 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
     if (atual) {
       return { ...base, version: toView(atual) }
     }
-    // Ponteiro órfão (não deveria acontecer): segue para o caminho de criação.
+    // Ponteiro órfão. NÃO seguir para a criação: o CAS exige `reviewVersionId: null`, então
+    // ele jamais casaria, o `PointerTakenError` mandaria recarregar e a recarga acharia o
+    // mesmo ponteiro órfão — laço infinito. Consertar por conta própria seria pior: não dá
+    // para saber se a versão sumiu, mudou de dono ou nunca deveria estar apontada ali.
+    throw new OrphanReviewPointerError(tenantId, setup.reviewVersionId)
   }
 
   if (base.published) {
@@ -154,35 +150,29 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
   // Criação com CAS no ponteiro: duas requisições concorrentes (a pessoa clicando duas
   // vezes, ou duas abas abrindo juntas) não podem criar dois rascunhos órfãos.
   const criada = await comRetry(() =>
-    db.$transaction(
-      async (tx) => {
-        const version = await tx.aiSetupVersion.create({
-          data: {
-            setupId: setup.id,
-            tenantId,
-            state: 'draft',
-            origin: 'onboarding',
-            answersJson: JSON.stringify({}),
-          },
-        })
-        if (aoAntesDeTomarPonteiro) {
-          await aoAntesDeTomarPonteiro(tx)
-        }
-        const claimed = await tx.aiSetup.updateMany({
-          // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
-          // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
-          // configuração", e aí este rascunho não deveria existir.
-          where: { id: setup.id, tenantId, reviewVersionId: null, publishedVersionId: null },
-          data: { reviewVersionId: version.id },
-        })
-        if (claimed.count !== 1) {
-          // Outra requisição ganhou a corrida. Desfaz a nossa e usa a dela.
-          throw new PointerTakenError(version.id)
-        }
-        return version
-      },
-      { maxWait: 20_000, timeout: 20_000 },
-    ),
+    db.$transaction(async (tx) => {
+      const version = await tx.aiSetupVersion.create({
+        data: {
+          setupId: setup.id,
+          tenantId,
+          state: 'draft',
+          origin: 'onboarding',
+          answersJson: JSON.stringify({}),
+        },
+      })
+      const claimed = await tx.aiSetup.updateMany({
+        // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
+        // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
+        // configuração", e aí este rascunho não deveria existir.
+        where: { id: setup.id, tenantId, reviewVersionId: null, publishedVersionId: null },
+        data: { reviewVersionId: version.id },
+      })
+      if (claimed.count !== 1) {
+        // Outra requisição ganhou a corrida. Desfaz a nossa e usa a dela.
+        throw new PointerTakenError(version.id)
+      }
+      return version
+    }, OPCOES_TRANSACAO),
   ).catch(async (error) => {
     if (!(error instanceof PointerTakenError)) {
       throw error
@@ -194,10 +184,48 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
   })
 
   if (criada === null) {
-    return loadSetupWorkspace(tenantId)
+    return resolverPerdaDoPonteiro(tenantId)
   }
 
   return { ...base, version: toView(criada) }
+}
+
+/**
+ * O que devolver quando a criação do rascunho perdeu a corrida pelo ponteiro.
+ *
+ * Relê o estado e aplica `resolverAposPerderCas` (puro, testado em claim.test.ts). NÃO
+ * chama `loadSetupWorkspace` de volta: a recursão parecia inofensiva e não era — com um
+ * ponteiro que o CAS jamais casaria, ela girava para sempre batendo no banco, com a
+ * requisição pendurada até alguém desistir.
+ */
+async function resolverPerdaDoPonteiro(tenantId: string): Promise<SetupWorkspace> {
+  const setup = await db.aiSetup.findUnique({ where: { tenantId } })
+  if (!setup) {
+    throw new Error(`Tenant sem AiSetup: ${tenantId}`)
+  }
+  const base = {
+    published: setup.publishedVersionId !== null,
+    activated: setup.activatedAt !== null,
+  }
+
+  const decisao = resolverAposPerderCas(setup)
+  switch (decisao.tipo) {
+    case 'usar-review': {
+      const vencedora = await db.aiSetupVersion.findFirst({
+        where: { id: decisao.versionId, tenantId },
+      })
+      if (!vencedora) {
+        throw new OrphanReviewPointerError(tenantId, decisao.versionId)
+      }
+      return { ...base, version: toView(vencedora) }
+    }
+    case 'usar-publicada':
+      return { ...base, version: null }
+    case 'incoerente':
+      throw new Error(
+        `Setup do tenant ${tenantId} perdeu o CAS de criação sem que ninguém tomasse o ponteiro`,
+      )
+  }
 }
 
 /**
@@ -328,58 +356,55 @@ export async function submitDraft(input: {
   const agora = new Date()
 
   await comRetry(() =>
-    db.$transaction(
-      async (tx) => {
-        // A base é lida DENTRO da transação: se uma publicação acontecer entre a leitura
-        // acima e este ponto, gravar a base velha faria a candidata nascer obsoleta.
-        const atual = await tx.aiSetup.findUniqueOrThrow({ where: { tenantId: input.tenantId } })
+    db.$transaction(async (tx) => {
+      // A base é lida DENTRO da transação: se uma publicação acontecer entre a leitura
+      // acima e este ponto, gravar a base velha faria a candidata nascer obsoleta.
+      const atual = await tx.aiSetup.findUniqueOrThrow({ where: { tenantId: input.tenantId } })
 
-        const claimed = await tx.aiSetupVersion.updateMany({
-          where: {
-            id: version.id,
-            tenantId: input.tenantId,
-            state: version.state,
-            revision: input.expectedRevision,
-          },
-          data: {
-            state: 'submitted',
-            submittedAt: agora,
-            generation,
-            revision: { increment: 1 },
-            basePublishedVersionId: atual.publishedVersionId,
-            reviewStartedAt: null,
-            reviewCompletedAt: null,
-            reviewer: null,
-            reviewNote: null,
-          },
-        })
-        if (claimed.count !== 1) {
-          throw new StaleRevisionError('A versão mudou de estado durante o envio.')
-        }
+      const claimed = await tx.aiSetupVersion.updateMany({
+        where: {
+          id: version.id,
+          tenantId: input.tenantId,
+          state: version.state,
+          revision: input.expectedRevision,
+        },
+        data: {
+          state: 'submitted',
+          submittedAt: agora,
+          generation,
+          revision: { increment: 1 },
+          basePublishedVersionId: atual.publishedVersionId,
+          reviewStartedAt: null,
+          reviewCompletedAt: null,
+          reviewer: null,
+          reviewNote: null,
+        },
+      })
+      if (claimed.count !== 1) {
+        throw new StaleRevisionError('A versão mudou de estado durante o envio.')
+      }
 
-        await tx.aiSetupJob.create({
-          data: {
-            versionId: version.id,
-            tenantId: input.tenantId,
-            kind: 'generate',
-            generation,
-            idempotencyKey: `${version.id}:${generation}:generate:1`,
-          },
-        })
+      await tx.aiSetupJob.create({
+        data: {
+          versionId: version.id,
+          tenantId: input.tenantId,
+          kind: 'generate',
+          generation,
+          idempotencyKey: `${version.id}:${generation}:generate:1`,
+        },
+      })
 
-        await tx.aiSetupEvent.create({
-          data: {
-            tenantId: input.tenantId,
-            versionId: version.id,
-            kind: 'submitted',
-            // Auditoria precisa dizer QUEM enviou, não só "um cliente".
-            actor: `customer:${input.accountId}`,
-            detail: JSON.stringify({ generation }),
-          },
-        })
-      },
-      { maxWait: 20_000, timeout: 20_000 },
-    ),
+      await tx.aiSetupEvent.create({
+        data: {
+          tenantId: input.tenantId,
+          versionId: version.id,
+          kind: 'submitted',
+          // Auditoria precisa dizer QUEM enviou, não só "um cliente".
+          actor: `customer:${input.accountId}`,
+          detail: JSON.stringify({ generation }),
+        },
+      })
+    }, OPCOES_TRANSACAO),
   )
 
   const submetida = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: version.id } })

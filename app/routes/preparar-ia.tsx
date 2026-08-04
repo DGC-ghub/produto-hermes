@@ -269,6 +269,10 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
   const pronto = progress.done === progress.total
   const salvando = maquina.pending
   const stale = maquina.blocked
+  // A reabertura é um `fetcher.Form` nativo: ela não passa por `postar`, então a máquina
+  // nunca fica `pending` e o botão continuaria clicável durante o envio. Aqui quem sabe se
+  // há request em voo é o próprio fetcher.
+  const fetcherOcupado = fetcher.state !== 'idle'
   const revisaoAtual = revisaoParaEnviar(maquina)
   // Erro vindo do servidor, seja de save, envio ou reabertura — todos passam pelo mesmo
   // fetcher, então a mensagem aparece em qualquer um dos caminhos.
@@ -405,8 +409,8 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
           <input type="hidden" name="intent" value="reabrir" />
           <input type="hidden" name="versionId" value={versionId ?? ''} />
           <input type="hidden" name="revision" value={revisaoAtual} />
-          <Button type="submit" variant="primary" disabled={salvando}>
-            {salvando ? 'Abrindo…' : 'Corrigir as respostas'}
+          <Button type="submit" variant="primary" disabled={fetcherOcupado}>
+            {fetcherOcupado ? 'Abrindo…' : 'Corrigir as respostas'}
           </Button>
         </fetcher.Form>
         {erroServidor && (
@@ -580,7 +584,7 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
                 .{' '}
                 <button
                   type="button"
-                  disabled={salvando}
+                  disabled={!podeNavegar(maquina)}
                   onClick={() => {
                     const alvo = SETUP_STEPS.find((_, i) => !stepsDone[i])
                     if (alvo) {

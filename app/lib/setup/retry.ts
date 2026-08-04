@@ -8,26 +8,57 @@
 export const TENTATIVAS_MAXIMAS = 4
 
 /**
+ * Opções das transações interativas do setup.
+ *
+ * `maxWait` é quanto se espera para COMEÇAR (é onde a contenção aparece) e `timeout` é
+ * quanto a transação pode rodar depois de começar. Os dois estavam em 20 s, o que dava um
+ * teto de ~80 s somando as re-tentativas — inaceitável num POST interativo: ninguém espera
+ * oitenta segundos por um autosave, e o navegador desiste bem antes.
+ *
+ * Com 5 s o orçamento TOTAL de espera continua o mesmo (4 × 5 s ≈ 20 s), só que fatiado:
+ * mesma resiliência, teto quatro vezes menor. O `timeout` maior é para o corpo, que faz
+ * duas ou três escritas e nunca deveria chegar perto disso.
+ */
+export const OPCOES_TRANSACAO = { maxWait: 5_000, timeout: 10_000 } as const
+
+/**
  * É contenção de escrita — o único caso que justifica tentar de novo?
  *
  * No SQLite a escrita é serializada, e a contenção aparece de três formas:
  *  - `SQLITE_BUSY` — a escrita bateu num lock;
  *  - `database is locked` — o mesmo, na mensagem que o Prisma repassa;
- *  - `P2028` **de aquisição** ("Operation has timed out") — a transação não conseguiu nem
- *    começar dentro do `maxWait`, porque outra a segurava.
+ *  - `P2028` **de aquisição** — a transação não conseguiu nem começar dentro do `maxWait`
+ *    porque outra a segurava ("Operation has timed out" / "Unable to start a transaction
+ *    in the given time").
  *
- * ⚠️ `P2028` tem um segundo sentido, oposto: *"Transaction already closed"*. Esse não é
- * contenção, é erro de uso — a transação já acabou e alguém tentou usá-la. Insistir não
- * muda nada e ainda esconde o bug. Por isso o código sozinho não basta: a mensagem decide.
+ * ⚠️ `P2028` também cobre o sentido OPOSTO — *"Transaction already closed"*, *"expired
+ * transaction"* —, que é a transação que já começou e morreu. Aí insistir não muda nada,
+ * esconde o bug de uso e, pior, a tentativa anterior pode ter escrito. Por isso o código
+ * sozinho não basta.
  *
- * Qualquer outro erro sobe na primeira tentativa.
+ * E a mensagem sozinha também não: *"timed out"* aparece em erro de socket, de fetch, de
+ * qualquer biblioteca. Sem exigir o código do Prisma, um timeout de outra origem seria
+ * repetido quatro vezes antes de aparecer. Só a dupla (código + redação) identifica a
+ * aquisição. Qualquer outro erro sobe na primeira tentativa.
  */
 export function ehContencaoTransitoria(error: unknown): boolean {
   const texto = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  if (/transaction already closed|closed transaction/i.test(texto)) {
+
+  // Transação que já morreu: permanente, mesmo que a redação também case lá embaixo.
+  if (/transaction already closed|closed transaction|expired transaction/i.test(texto)) {
     return false
   }
-  return /database is locked|SQLITE_BUSY|Operation has timed out/i.test(texto)
+
+  // Lock do próprio SQLite: a mensagem basta — vem de baixo do Prisma e não traz código.
+  if (/database is locked|SQLITE_BUSY/i.test(texto)) {
+    return true
+  }
+
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return (
+    code === 'P2028' &&
+    /Operation has timed out|Unable to start a transaction in the given time/i.test(texto)
+  )
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { comRetry, ehContencaoTransitoria, TENTATIVAS_MAXIMAS } from './retry'
+import { comRetry, ehContencaoTransitoria, OPCOES_TRANSACAO, TENTATIVAS_MAXIMAS } from './retry'
 
 // O retry existe por UM motivo: no SQLite a escrita é serializada, e sob concorrência a
 // transação pode não conseguir nem começar. Insistir em qualquer outra coisa esconderia
@@ -31,6 +31,10 @@ describe('classificação: o que é contenção e o que não é', () => {
       'P2028 de aquisição (não conseguiu começar)',
       erroPrisma('P2028', 'Transaction API error: Operation has timed out'),
     ],
+    [
+      'P2028 de aquisição na outra redação do Prisma',
+      erroPrisma('P2028', 'Unable to start a transaction in the given time.'),
+    ],
   ]
 
   it.each(transitorios)('%s é transitório', (_label, erro) => {
@@ -47,6 +51,19 @@ describe('classificação: o que é contenção e o que não é', () => {
         'Transaction already closed: A query cannot be executed on a closed transaction.',
       ),
     ],
+    [
+      // A transação COMEÇOU e estourou o `timeout`. Insistir na mesma transação morta não
+      // adianta — e diferente da aquisição, aqui já pode ter havido escrita.
+      'P2028 de transação expirada',
+      erroPrisma('P2028', 'A query cannot be executed on an expired transaction.'),
+    ],
+    [
+      // Sem o código do Prisma, "timed out" é só uma palavra: pode vir de fetch, de socket,
+      // de qualquer biblioteca. Re-tentar três vezes esconderia o erro de verdade.
+      'timeout de OUTRA origem (sem código P2028)',
+      new Error('Operation has timed out'),
+    ],
+    ['timeout com código de outro erro', erroPrisma('P1008', 'Operation has timed out')],
     ['P2002 (violação de unique)', erroPrisma('P2002', 'Unique constraint failed')],
     ['P2025 (registro não encontrado)', erroPrisma('P2025', 'An operation failed')],
     ['erro genérico', new Error('deu ruim')],
@@ -77,6 +94,10 @@ describe('comRetry só insiste no que é transitório', () => {
   it('P2028 de transação já fechada é tentado UMA vez', async () => {
     const erro = erroPrisma('P2028', 'Transaction already closed')
     expect(await contarTentativas(erro)).toBe(1)
+  })
+
+  it('timeout sem o código P2028 é tentado UMA vez', async () => {
+    expect(await contarTentativas(new Error('Operation has timed out'))).toBe(1)
   })
 
   it('P2002 é tentado UMA vez', async () => {
@@ -124,5 +145,21 @@ describe('comRetry só insiste no que é transitório', () => {
       throw new Error('bug de lógica')
     }).catch(() => {})
     expect(Date.now() - inicio).toBeLessThan(50)
+  })
+})
+
+describe('o teto de espera cabe num POST interativo', () => {
+  it('o pior caso fica abaixo de 30 s', () => {
+    // A espera que a contenção causa é a de COMEÇAR a transação (`maxWait`), e ela é paga
+    // uma vez por tentativa. Com `maxWait` em 20 s isto dava ~80 s: ninguém espera oitenta
+    // segundos por um autosave, e o navegador desiste antes.
+    const pior = TENTATIVAS_MAXIMAS * OPCOES_TRANSACAO.maxWait
+    expect(pior).toBeLessThanOrEqual(30_000)
+  })
+
+  it('o orçamento total de espera continua sendo o de antes — só fatiado', () => {
+    // A resiliência não caiu: continua-se insistindo por ~20 s no total, agora em quatro
+    // tentativas em vez de uma espera única.
+    expect(TENTATIVAS_MAXIMAS * OPCOES_TRANSACAO.maxWait).toBeGreaterThanOrEqual(20_000)
   })
 })

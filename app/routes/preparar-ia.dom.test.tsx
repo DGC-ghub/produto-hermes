@@ -27,8 +27,16 @@ async function respostasCompletas() {
 
 type Resposta = { status?: number; body: Record<string, unknown> }
 
-/** Monta a tela com uma action falsa que registra as chamadas. */
-async function montar(opcoes: { completo?: boolean; respostas?: Resposta[] } = {}) {
+/**
+ * Monta a tela com uma action falsa que registra as chamadas.
+ *
+ * `reter` são os índices dos requests que ficam PENDURADOS até o teste chamar `liberar`.
+ * Sem isso não existe janela para digitar durante um save — e a corrida que interessa
+ * (continuar escrevendo enquanto o request do clique está em voo) fica sem cobertura.
+ */
+async function montar(
+  opcoes: { completo?: boolean; respostas?: Resposta[]; reter?: number[] } = {},
+) {
   const answers = opcoes.completo ? await respostasCompletas() : {}
   const { SETUP_STEPS, isStepComplete, missingFieldsByStep, setupProgress } = await import(
     '../lib/setup/answers'
@@ -36,33 +44,48 @@ async function montar(opcoes: { completo?: boolean; respostas?: Resposta[] } = {
 
   const chamadas: FormData[] = []
   const fila = [...(opcoes.respostas ?? [])]
+  const reter = opcoes.reter ?? []
+  const portoes = new Map<number, () => void>()
   let revisao = 3
+
+  // Cada passagem do loader com a etapa pedida e QUANTOS posts já tinham saído. É assim
+  // que se observa a ordem "navegou depois de qual save" sem depender de quando o React
+  // termina de pintar a tela nova.
+  const carregamentos: Array<{ etapa: string; posts: number }> = []
 
   const Stub = createRoutesStub([
     {
       path: '/preparar-ia',
       Component: PrepararIa as never,
-      loader: ({ request }) => ({
+      loader: ({ request }) => {
         // O stub precisa ler a etapa da URL, senão a navegação (que é ?etapa=) não muda
         // nada e o teste de "só troca depois do save" provaria o oposto do que diz.
-        step:
+        const etapa =
           new URL(request.url).searchParams.get('etapa') ??
-          (opcoes.completo ? 'seguranca' : 'empresa'),
-        versionId: 'ver-1',
-        revision: revisao,
-        state: 'draft',
-        reviewNote: null,
-        published: false,
-        activated: false,
-        answers,
-        progress: setupProgress(answers),
-        stepsDone: SETUP_STEPS.map((s) => isStepComplete(s, answers)),
-        missing: missingFieldsByStep(answers),
-        operator: { username: 'dono@acme.com', tenantSlug: 'acme' },
-      }),
+          (opcoes.completo ? 'seguranca' : 'empresa')
+        carregamentos.push({ etapa, posts: chamadas.length })
+        return {
+          step: etapa,
+          versionId: 'ver-1',
+          revision: revisao,
+          state: 'draft',
+          reviewNote: null,
+          published: false,
+          activated: false,
+          answers,
+          progress: setupProgress(answers),
+          stepsDone: SETUP_STEPS.map((s) => isStepComplete(s, answers)),
+          missing: missingFieldsByStep(answers),
+          operator: { username: 'dono@acme.com', tenantSlug: 'acme' },
+        }
+      },
       action: async ({ request }) => {
         const form = await request.formData()
+        const indice = chamadas.length
         chamadas.push(form)
+        if (reter.includes(indice)) {
+          await new Promise<void>((resolve) => portoes.set(indice, resolve))
+        }
         const proxima = fila.shift()
         if (proxima) {
           return new Response(JSON.stringify(proxima.body), {
@@ -78,7 +101,31 @@ async function montar(opcoes: { completo?: boolean; respostas?: Resposta[] } = {
 
   render(<Stub initialEntries={['/preparar-ia']} />)
   await screen.findByRole('heading', { name: /preparar sua ia/i })
-  return { chamadas }
+
+  /**
+   * Solta a resposta de um request retido. Lança se não havia nada retido ali — um
+   * `liberar` que não libera nada faria o teste "passar" sem exercitar corrida nenhuma.
+   */
+  function liberar(indice: number) {
+    const abrir = portoes.get(indice)
+    if (!abrir) {
+      throw new Error(`nenhum request retido no índice ${indice}`)
+    }
+    portoes.delete(indice)
+    abrir()
+  }
+
+  return { chamadas, liberar, carregamentos }
+}
+
+/** O texto do rótulo de estado ("salvando…" / "salvo às HH:MM"). */
+function estado(): string {
+  return screen.getByRole('status').textContent ?? ''
+}
+
+/** A etapa 2 está na tela? É por ela que se vê se a navegação aconteceu. */
+function naEtapaDeServicos(): boolean {
+  return screen.queryByLabelText(/quais serviços vocês oferecem/i) !== null
 }
 
 beforeEach(() => {
@@ -209,6 +256,106 @@ describe('erros do servidor aparecem em role="alert"', () => {
     await user.type(screen.getByLabelText(/nome da empresa/i), ' mais texto')
     await vi.advanceTimersByTimeAsync(3000)
     expect(chamadas).toHaveLength(1)
+  })
+})
+
+// ── As corridas do `dirty` ────────────────────────────────────────────────────
+// Os testes acima usam uma action que responde na hora: não existe janela para digitar
+// durante um save, então a corrida que mais custa caro — a pessoa continua escrevendo
+// enquanto o request do clique está em voo — passava batida. Aqui o teste segura a
+// resposta e escreve dentro dessa janela.
+
+describe('editar durante o save de navegação', () => {
+  it('a etapa só troca depois de um SEGUNDO save, com o texto novo', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    // Os dois requests ficam retidos: assim nada avança por conta do relógio, e a negativa
+    // ("ainda não trocou de etapa") não depende de quanto tempo o teste deixou passar.
+    const { chamadas, liberar, carregamentos } = await montar({ reter: [0, 1] })
+
+    await user.type(screen.getByLabelText(/nome da empresa/i), 'Acme')
+    await user.click(screen.getByRole('button', { name: /salvar e continuar/i }))
+    await waitFor(() => expect(chamadas).toHaveLength(1))
+    expect(chamadas[0].get('nome')).toBe('Acme')
+
+    // Digita COM o request em voo: este texto não está no save que vai responder.
+    await user.type(screen.getByLabelText(/nome da empresa/i), ' Saúde')
+
+    liberar(0)
+    await waitFor(() => expect(estado()).toMatch(/salvo/))
+
+    // O segundo save sai pelo debounce, levando o texto completo.
+    await vi.advanceTimersByTimeAsync(1300)
+    await waitFor(() => expect(chamadas).toHaveLength(2))
+    expect(chamadas[1].get('nome')).toBe('Acme Saúde')
+
+    // E só quando ELE confirma a etapa troca.
+    liberar(1)
+    await waitFor(() => expect(naEtapaDeServicos()).toBe(true))
+
+    // A prova de ORDEM, e é ela que discrimina: quando o loader foi chamado para a etapa
+    // 2, os DOIS saves já tinham saído. Se a navegação se contentasse com a resposta do
+    // save do clique, ele teria sido chamado com um só — e " Saúde" iria embora sem nunca
+    // ter sido gravado. (a contagem, e não a tela, porque a pintura da etapa nova é
+    // assíncrona: "ainda não apareceu" não prova "ainda não navegou")
+    const idaParaServicos = carregamentos.find((c) => c.etapa === 'servicos')
+    expect(idaParaServicos?.posts).toBe(2)
+  })
+})
+
+describe('editar durante o save de envio', () => {
+  it('o envio só sai depois de um SEGUNDO save, com o texto novo', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { chamadas, liberar } = await montar({ completo: true, reter: [0, 1] })
+    const enviou = () => chamadas.some((c) => c.get('intent') === 'enviar')
+
+    await user.click(screen.getByRole('button', { name: /enviar para revisão/i }))
+    await waitFor(() => expect(chamadas).toHaveLength(1))
+    expect(chamadas[0].get('intent')).not.toBe('enviar')
+
+    await user.type(screen.getByLabelText(/nunca pode prometer/i), '\nnada de prazo curto')
+
+    liberar(0)
+    await waitFor(() => expect(estado()).toMatch(/salvo/))
+
+    // Enviar agora mandaria para revisão uma versão sem a última correção — e nossa equipe
+    // revisaria material velho.
+    expect(enviou()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1300)
+    await waitFor(() => expect(chamadas).toHaveLength(2))
+    expect(chamadas[1].get('nuncaPrometer')).toContain('nada de prazo curto')
+    expect(enviou()).toBe(false)
+
+    liberar(1)
+    await waitFor(() => expect(enviou()).toBe(true))
+  })
+})
+
+describe('conflito trava também o clique manual', () => {
+  it('depois do 409 os botões de etapa ficam desabilitados e não sai mais POST', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { chamadas } = await montar({
+      respostas: [{ status: 409, body: { ok: false, stale: true, error: 'mensagem-do-servidor' } }],
+    })
+
+    await user.type(screen.getByLabelText(/nome da empresa/i), 'Acme')
+    await vi.advanceTimersByTimeAsync(1300)
+    await waitFor(() => expect(chamadas).toHaveLength(1))
+    // O aviso de CONFLITO, não o de erro genérico: só ele prova que a máquina bloqueou.
+    // (o texto do conflito é da tela; o do erro genérico viria do corpo da resposta)
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/Recarregue a página/),
+    )
+
+    // O 409 zera `pending`. Olhando só para ele, o botão voltava a ficar clicável — e o
+    // clique manda um POST com a revisão que o servidor acabou de recusar.
+    const botaoEtapa = screen.getByRole('button', { name: /serviços/i }) as HTMLButtonElement
+    expect(botaoEtapa.disabled).toBe(true)
+
+    await user.click(botaoEtapa)
+    await vi.advanceTimersByTimeAsync(1300)
+    expect(chamadas).toHaveLength(1)
+    expect(naEtapaDeServicos()).toBe(false)
   })
 })
 
