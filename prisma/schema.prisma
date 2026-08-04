@@ -28,22 +28,26 @@ model Tenant {
   knowledgeDocs   KnowledgeDoc[]
   subscription    Subscription?
   messageTraces   MessageTrace[]
+  aiSetup         AiSetup?
+  aiSetupVersions AiSetupVersion[]
+  aiSetupJobs     AiSetupJob[]
+  aiSetupEvents   AiSetupEvent[]
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
 // É por aqui que o webhook resolve o tenant de uma mensagem recebida — vindo do
 // BANCO, não de env, para adicionar um cliente sem redeploy. Ver plano 1.1.
 model WhatsappNumber {
-  id            String   @id @default(cuid())
-  phoneNumberId String   @unique
-  tenantId      String
-  label         String? // ajuda o operador a saber de qual número se trata
+  id             String   @id @default(cuid())
+  phoneNumberId  String   @unique
+  tenantId       String
+  label          String? // ajuda o operador a saber de qual número se trata
   // Credenciais PRÓPRIAS do tenant, cifradas em repouso (crypto.server, AAD `tenant:<id>`).
   // Null = usa o env global (fallback de transição — estratégia C, igual ao config/knowledge).
   accessTokenEnc String? // token de envio da Cloud API deste número (cifrado)
   appSecretEnc   String? // App Secret p/ validar a assinatura do webhook deste número (cifrado)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
@@ -166,27 +170,27 @@ model Ticket {
 // restart no meio do processamento não perde mensagem (a fila retoma), e o
 // @unique no messageId (wamid) mata resposta duplicada em redelivery.
 model WebhookEvent {
-  id            String    @id @default(cuid())
+  id               String    @id @default(cuid())
   // Meta: wamid (globalmente único). Baileys: `b:<channelSessionId>:<key.id>` — o
   // prefixo escopa o dedup por sessão (o key.id do Baileys não é único global).
-  messageId     String    @unique
-  phoneNumberId String // Meta: número que recebeu → resolve o tenant. Baileys: vazio.
+  messageId        String    @unique
+  phoneNumberId    String // Meta: número que recebeu → resolve o tenant. Baileys: vazio.
   // Baileys: a sessão que recebeu → resolve o tenant (e distingue a origem do evento).
   // Null = evento da Meta (usa phoneNumberId). Aditivo (não mexe nos eventos Meta).
   channelSessionId String?
-  contactId     String // wa_id (Meta) / MSISDN (Baileys) do remetente
+  contactId        String // wa_id (Meta) / MSISDN (Baileys) do remetente
   // Baileys: o jid ORIGINAL de entrada (`<lid>@lid` ou `<phone>@s.whatsapp.net`). O
   // WhatsApp novo endereça por @lid (número oculto) — responder aos dígitos vai pro
   // vácuo. Guardado pra o operador humano e pendências pós-restart responderem ao jid
   // certo. Null = evento Meta (usa contactId como wa_id).
-  remoteJid     String?
-  text          String
-  kind          String    @default("text") // text (roda o motor) | unsupported (cortesia)
-  status        String    @default("pending") // pending | processing | done | failed
-  attempts      Int       @default(0)
-  createdAt     DateTime  @default(now())
-  claimedAt     DateTime? // quando um drain reivindicou a linha (requeue de órfão)
-  processedAt   DateTime?
+  remoteJid        String?
+  text             String
+  kind             String    @default("text") // text (roda o motor) | unsupported (cortesia)
+  status           String    @default("pending") // pending | processing | done | failed
+  attempts         Int       @default(0)
+  createdAt        DateTime  @default(now())
+  claimedAt        DateTime? // quando um drain reivindicou a linha (requeue de órfão)
+  processedAt      DateTime?
 
   @@index([status, createdAt])
   @@index([channelSessionId])
@@ -196,16 +200,16 @@ model WebhookEvent {
 // do Tenant: uma conta pode ter papel em mais de uma empresa (via Membership). O signup
 // self-service (marco M2) cria uma Account nova; o billing (M3) liga a assinatura aqui.
 model Account {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  passwordHash    String
-  name            String?
-  legacyUsername  String?   @unique // login antigo por username=slug (operadores migrados)
-  emailVerifiedAt DateTime? //          marco M2 (verificação de e-mail); null = não verificado
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  passwordHash         String
+  name                 String?
+  legacyUsername       String?   @unique // login antigo por username=slug (operadores migrados)
+  emailVerifiedAt      DateTime? //          marco M2 (verificação de e-mail); null = não verificado
   emailVerifyToken     String?   @unique // token do link de confirmação por e-mail (M2.6)
   emailVerifyExpiresAt DateTime? //         validade do token de confirmação
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   memberships Membership[]
 }
@@ -287,14 +291,184 @@ model MessageTrace {
   conversationId String? //                     só para cruzar com a conversa ao investigar
   channel        String   @default("simulator") // simulator | whatsapp
   provider       String   @default("nenhum") //   mock | claude_cli | anthropic_api | nenhum
-  outcome        String //                        ok | fallback | guard_handoff | billing_blocked | human_handling | erro
+  outcome        String //                        ok | fallback | guard_handoff | billing_blocked | human_handling | erro | setup_blocked
   totalMs        Float //                         ponta a ponta
   brainMs        Float? //                        desnormalizado: é o gargalo, merece query barata
   stepsJson      String //                        {"brain":20500,"retrieval":40,...}
   createdAt      DateTime @default(now())
 
+  // ── Setup de IA (spec §7.7) ────────────────────────────────────────────────
+  // `channel` não distingue a demo pública do simulador do dono (ambos "simulator"),
+  // e `outcome` é sobrescrito pelo desfecho real — então, sem estas colunas, o rollout
+  // em modo observação não teria como mostrar o que TERIA sido bloqueado.
+  executionMode      String? //  public_demo | owner_preview | whatsapp
+  setupGateReason    String? //  razão HIPOTÉTICA do gate, mesmo quando ele permite
+  //                          a flag SETUP_GATE_ENABLED estava ligada nesta mensagem?
+  setupGateEnforced  Boolean?
+  // Vínculo com a Message gerada: é a prova de que uma resposta de validação foi mesmo
+  // executada (spec §10.2). @unique garante UMA evidência por resposta — em SQLite
+  // múltiplos NULL convivem, então só execuções de validação recebem valor.
+  assistantMessageId String?  @unique
+
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([createdAt])
+  @@index([tenantId, createdAt])
+}
+
+// ─── Setup de IA (onboarding assistido) ──────────────────────────────────────
+// docs/spec-onboarding-ia-assistido-fatia-1.md — primeira estrutura VERSIONADA do
+// sistema: o que a IA usa em produção é sempre uma versão publicada, e um rascunho
+// em revisão nunca altera o que está no ar.
+
+/// Um por tenant. Guarda os PONTEIROS: o que está publicado e o que está em revisão.
+model AiSetup {
+  id       String @id @default(cuid())
+  tenantId String @unique
+
+  publishedVersionId String? @unique //  o que a IA usa AGORA; null = nunca publicou
+  reviewVersionId    String? @unique //  em elaboração/revisão; null = nada pendente
+
+  // Decisão humana registrada ("Liberar minha IA"), não reflexo do canal. Uma vez
+  // preenchido NUNCA é limpo por revisão — é o que faz uma correção aprovada continuar
+  // atendendo em vez de exigir reativação.
+  activatedAt   DateTime?
+  activatedById String?
+
+  // Escape de legado: tenant anterior ao onboarding obrigatório. TEMPORÁRIO e auditado.
+  grandfathered   Boolean   @default(false)
+  grandfatheredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  publishedVersion AiSetupVersion?  @relation("published", fields: [publishedVersionId], references: [id])
+  reviewVersion    AiSetupVersion?  @relation("review", fields: [reviewVersionId], references: [id])
+  versions         AiSetupVersion[] @relation("all")
+}
+
+/// Uma versão da configuração. É AQUI que vivem os sete estados — não no setup: assim
+/// um tenant ativo que edita um campo de risco não muda de estado, só ganha uma versão
+/// em revisão, enquanto a publicada continua servindo o motor.
+model AiSetupVersion {
+  id       String @id @default(cuid())
+  setupId  String
+  tenantId String //  desnormalizado: todo filtro de isolamento passa por aqui
+
+  /// draft | submitted | needs_changes | ready_to_test | customer_approved | active | superseded
+  state String @default("draft")
+
+  origin   String  @default("onboarding") //  onboarding | edit | rollback
+  editRisk String? //                         safe | risky — CALCULADO NO SERVIDOR
+
+  // Ciclo de correção. Incrementa a cada draft → submitted. Sem ele, a candidata
+  // reprovada e a corrigida compartilhariam a conversa do simulador, e o histórico de
+  // uma contaminaria o teste da outra.
+  generation Int @default(0)
+
+  // A versão publicada que serviu de base. A publicação exige que ela AINDA seja a
+  // publicada — é o que impede uma candidata antiga sobrescrever uma alteração nova.
+  basePublishedVersionId  String?
+  /// Só em origin='rollback': de qual versão os snapshots foram copiados (auditoria).
+  rollbackSourceVersionId String?
+
+  /// Compare-and-swap de toda escrita mutável (respostas e marcações de validação).
+  revision Int @default(0)
+
+  answersJson String //  as 4 etapas; mutável SÓ enquanto state='draft'
+  submittedAt DateTime?
+
+  // ── Artefatos candidatos: nunca tocam produção; limpos ao reabrir para correção ──
+  candidateConfigJson    String?
+  candidateKnowledgeJson String?
+  summaryJson            String?
+  gapsJson               String?
+  risksJson              String?
+  validationJson         String? //  as 5 perguntas de validação
+  validationResultsJson  String? //  as marcações humanas, ligadas à execução real
+
+  // ── Revisão interna: resetados a cada ciclo ────────────────────────────────
+  reviewStartedAt   DateTime?
+  reviewCompletedAt DateTime?
+  reviewer          String?
+  reviewNote        String?
+  changesRequested  Int       @default(0) //  acumula entre ciclos
+
+  approvedByAccountId String?
+  approvedAt          DateTime?
+
+  publishedAt  DateTime?
+  supersededAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  setup  AiSetup @relation("all", fields: [setupId], references: [id], onDelete: Cascade)
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  publishedFor AiSetup?       @relation("published")
+  reviewFor    AiSetup?       @relation("review")
+  jobs         AiSetupJob[]
+  events       AiSetupEvent[]
+
+  @@index([tenantId, state])
+  @@index([setupId, createdAt])
+}
+
+/// Fila DEDICADA do job de geração. Tabela própria e não WebhookEvent porque o drain
+/// daquela é sequencial: um job de agentes de minutos travaria o WhatsApp de todos.
+model AiSetupJob {
+  id        String @id @default(cuid())
+  versionId String
+  tenantId  String
+
+  kind           String @default("generate")
+  /// `${versionId}:${generation}:${kind}:${tentativa}` — dois cliques não viram dois jobs
+  idempotencyKey String @unique
+
+  /// pending | processing | retry_wait | failed | completed
+  status String @default("pending")
+
+  attempts      Int       @default(0)
+  // A fila do WhatsApp não tem backoff (falha volta direto a pending). Aqui precisa:
+  // sem espera, uma falha transitória de LLM queimaria as tentativas em segundos.
+  nextAttemptAt DateTime  @default(now())
+  claimedAt     DateTime? //  também é o heartbeat: job de agentes roda por minutos
+  claimToken    String? //    lease: só o dono do token escreve
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  failureKind   String? //    transient | invalid_output | terminal | superseded
+  lastError     String? //    SANITIZADO e truncado — nunca prompt ou saída crua
+
+  generation Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  version AiSetupVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+/// Trilha de auditoria append-only do setup. Só `createdAt`, como Message/HandoffEvent.
+model AiSetupEvent {
+  id        String  @id @default(cuid())
+  tenantId  String
+  versionId String?
+  /// submitted | job_started | job_failed | job_completed | review_started |
+  /// internal_approved | changes_requested | base_changed | customer_approved |
+  /// published | activated | rolled_back | safe_edit_published |
+  /// superseded_by_publish | grandfathered | grandfather_removed
+  kind      String
+  actor     String //   'customer:<accountId>' | 'internal:<reviewer>@<host>' | 'system'
+  detail    String? //  JSON estruturado e limitado — nunca prompt, saída crua ou PII
+
+  createdAt DateTime @default(now())
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version AiSetupVersion? @relation(fields: [versionId], references: [id])
+
   @@index([tenantId, createdAt])
 }
