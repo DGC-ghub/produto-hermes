@@ -54,6 +54,26 @@ export class OrphanReviewPointerError extends Error {
   }
 }
 
+/**
+ * `publishedVersionId` aponta para algo que não é uma versão publicada DESTE tenant.
+ *
+ * A chave estrangeira só garante que o id existe em algum lugar da tabela — nada impede
+ * que ele aponte para versão de outro tenant, de outro setup, ainda em rascunho ou sem
+ * `publishedAt`. E o ponteiro publicado é o que decide se a tela diz "sua IA já está
+ * configurada": aceitá-lo sem conferir é mentir sobre o que está no ar (INV-1, INV-12).
+ */
+export class OrphanPublishedPointerError extends Error {
+  constructor(
+    readonly tenantId: string,
+    readonly danglingVersionId: string,
+  ) {
+    super(
+      `AiSetup.publishedVersionId do tenant ${tenantId} aponta para a versão ${danglingVersionId}, que não é uma publicação válida dele`,
+    )
+    this.name = 'OrphanPublishedPointerError'
+  }
+}
+
 /** Sinaliza que outra requisição tomou o ponteiro primeiro — a transação é desfeita. */
 class PointerTakenError extends Error {
   constructor(readonly discardedVersionId: string) {
@@ -142,7 +162,10 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
   }
 
   if (base.published) {
-    return { ...base, version: null }
+    // Mesma conferência do caminho de recuperação: o ponteiro publicado é a base da
+    // resposta "já está configurada", então ele é verificado nos dois lugares. Estados
+    // corrompidos não podem depender de por qual caminho a requisição passou.
+    return semRevisaoPendente(tenantId, setup)
   }
 
   assertSetupTransition(null, 'draft', 'system', { activated: base.activated })
@@ -249,15 +272,11 @@ async function tentarResolverAposContencao(tenantId: string): Promise<SetupWorks
 /** Transforma a decisão (pura) no workspace, buscando a versão vencedora quando é o caso. */
 async function materializarResolucao(
   tenantId: string,
-  setup: { publishedVersionId: string | null; activatedAt: Date | null },
+  setup: SetupRow,
   decisao: Exclude<ResolucaoAposPerda, { tipo: 'incoerente' }>,
 ): Promise<SetupWorkspace> {
-  const base = {
-    published: setup.publishedVersionId !== null,
-    activated: setup.activatedAt !== null,
-  }
   if (decisao.tipo === 'usar-publicada') {
-    return { ...base, version: null }
+    return semRevisaoPendente(tenantId, setup)
   }
   const vencedora = await db.aiSetupVersion.findFirst({
     where: { id: decisao.versionId, tenantId },
@@ -265,7 +284,51 @@ async function materializarResolucao(
   if (!vencedora) {
     throw new OrphanReviewPointerError(tenantId, decisao.versionId)
   }
-  return { ...base, version: toView(vencedora) }
+  return {
+    published: setup.publishedVersionId !== null,
+    activated: setup.activatedAt !== null,
+    version: toView(vencedora),
+  }
+}
+
+/** O bastante do `AiSetup` para decidir e conferir os ponteiros. */
+type SetupRow = {
+  id: string
+  publishedVersionId: string | null
+  activatedAt: Date | null
+}
+
+/**
+ * "Já tem configuração no ar e nada pendente" — a resposta que faz a tela dizer que a IA
+ * está configurada e parar de oferecer questionário.
+ *
+ * Aqui o ponteiro publicado é CONFERIDO, não acreditado. A FK garante só que o id existe
+ * em alguma linha da tabela; ela não impede que aponte para versão de outro tenant, de
+ * outro setup, ainda em rascunho ou sem `publishedAt`. Qualquer um desses casos significa
+ * que nada está de fato publicado, e responder "está tudo certo" seria a pior saída:
+ * esconde corrupção justamente na pergunta que o cliente faz sobre o que está no ar.
+ */
+async function semRevisaoPendente(tenantId: string, setup: SetupRow): Promise<SetupWorkspace> {
+  const base = { published: true, activated: setup.activatedAt !== null, version: null }
+  if (!setup.publishedVersionId) {
+    return { ...base, published: false }
+  }
+
+  const publicada = await db.aiSetupVersion.findFirst({
+    where: {
+      id: setup.publishedVersionId,
+      tenantId,
+      setupId: setup.id,
+      // INV-1: publicada vive em `active` ou `customer_approved` E tem `publishedAt`.
+      state: { in: ['active', 'customer_approved'] },
+      publishedAt: { not: null },
+    },
+    select: { id: true },
+  })
+  if (!publicada) {
+    throw new OrphanPublishedPointerError(tenantId, setup.publishedVersionId)
+  }
+  return base
 }
 
 /**

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db.server'
 import {
   loadSetupWorkspace,
+  OrphanPublishedPointerError,
   OrphanReviewPointerError,
   reopenForChanges,
   StaleRevisionError,
@@ -456,6 +457,87 @@ describe('estado do ponteiro (caminhos que não criam rascunho)', () => {
 
     // E não sobrou rascunho nenhum de tentativa perdida.
     expect(await db.aiSetupVersion.count({ where: { tenantId } })).toBe(0)
+  })
+
+  describe('o ponteiro publicado é CONFERIDO, não acreditado', () => {
+    // A chave estrangeira garante só que o id existe em alguma linha da tabela. Ela não
+    // impede apontar para versão de outro tenant, de outro setup, ainda em rascunho ou sem
+    // `publishedAt` — e é esse ponteiro que faz a tela dizer "sua IA já está configurada".
+    // Aceitá-lo sem conferir é mentir sobre o que está no ar (INV-1, INV-12).
+
+    /** Aponta `publishedVersionId` para a versão dada e carrega o workspace. */
+    async function apontarPublicadaPara(versionId: string) {
+      await db.aiSetup.update({
+        where: { id: setupId },
+        data: { publishedVersionId: versionId },
+      })
+      return loadSetupWorkspace(tenantId)
+    }
+
+    it('publicação válida do mesmo tenant e setup: devolve publicado', async () => {
+      const publicada = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'active', answersJson: '{}', publishedAt: new Date() },
+      })
+
+      const workspace = await apontarPublicadaPara(publicada.id)
+
+      expect(workspace.published).toBe(true)
+      expect(workspace.version).toBeNull()
+    })
+
+    it('customer_approved também vale (INV-1)', async () => {
+      const publicada = await db.aiSetupVersion.create({
+        data: {
+          setupId,
+          tenantId,
+          state: 'customer_approved',
+          answersJson: '{}',
+          publishedAt: new Date(),
+        },
+      })
+
+      expect((await apontarPublicadaPara(publicada.id)).published).toBe(true)
+    })
+
+    it('apontando versão de OUTRO tenant: erro explícito (INV-12)', async () => {
+      const outro = await db.tenant.create({
+        data: { slug: `pub-${crypto.randomUUID().slice(0, 8)}`, name: 'Outro' },
+      })
+      const outroSetup = await db.aiSetup.create({ data: { tenantId: outro.id } })
+      const alheia = await db.aiSetupVersion.create({
+        data: {
+          setupId: outroSetup.id,
+          tenantId: outro.id,
+          state: 'active',
+          answersJson: '{}',
+          publishedAt: new Date(),
+        },
+      })
+
+      await expect(apontarPublicadaPara(alheia.id)).rejects.toBeInstanceOf(
+        OrphanPublishedPointerError,
+      )
+    })
+
+    it('apontando um RASCUNHO: erro explícito (INV-1)', async () => {
+      const rascunho = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'draft', answersJson: '{}', publishedAt: new Date() },
+      })
+
+      await expect(apontarPublicadaPara(rascunho.id)).rejects.toBeInstanceOf(
+        OrphanPublishedPointerError,
+      )
+    })
+
+    it('apontando versão SEM publishedAt: erro explícito (INV-1)', async () => {
+      const semData = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'active', answersJson: '{}' },
+      })
+
+      await expect(apontarPublicadaPara(semData.id)).rejects.toBeInstanceOf(
+        OrphanPublishedPointerError,
+      )
+    })
   })
 
   it('tenant já publicado nem chega ao CAS — devolve null antes de criar rascunho', async () => {

@@ -2,15 +2,17 @@
 // `db.server.ts` ser importado, que é quando ele lê `DATABASE_URL` e abre a conexão.
 //
 // Cada worker recebe uma cópia própria do molde criado em vitest.global-setup.ts. Ver lá o
-// porquê: um arquivo compartilhado entre 4 processos leva a inanição de escrita no SQLite,
-// que não é uma condição de produção (o serviço é um processo só).
+// porquê: um arquivo compartilhado entre workers leva a inanição de escrita no SQLite, que
+// não é uma condição de produção (o serviço é um processo só).
 import { copyFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
+import { threadId } from 'node:worker_threads'
 import { TEST_TEMPLATE_PATH } from './vitest.global-setup'
+import { nomeDoBancoDoWorker } from './vitest.worker-db'
 
-// `pid` em vez de VITEST_WORKER_ID: é único por processo sem depender de variável do
-// vitest continuar existindo com o mesmo nome na próxima versão.
-const bancoDoWorker = path.join(process.cwd(), `.test-${process.pid}.db`)
+// `pid` E `threadId`: o primeiro distingue no pool `forks` (default), o segundo no pool
+// `threads`, onde todas as threads compartilham o pid. Ver vitest.worker-db.ts.
+const bancoDoWorker = path.join(process.cwd(), nomeDoBancoDoWorker(process.pid, threadId))
 
 if (!existsSync(TEST_TEMPLATE_PATH)) {
   // Se o molde não está lá, algo quebrou no global setup. Parar aqui é obrigatório: seguir

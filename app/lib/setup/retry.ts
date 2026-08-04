@@ -21,6 +21,12 @@ export const TENTATIVAS_MAXIMAS = 4
  */
 export const ORCAMENTO_MS = 30_000
 
+/**
+ * Abaixo disto não há o que orçar: `maxWait` e `timeout` são sequenciais e cada um precisa
+ * de pelo menos 1 ms. Orçamento menor é erro de chamada, não caso de uso.
+ */
+export const ORCAMENTO_MINIMO_MS = 2
+
 /** Espera para COMEÇAR a transação. Não conseguir começar é barato de re-tentar. */
 const MAXWAIT_BASE = 5_000
 
@@ -84,31 +90,47 @@ export async function comRetry<T>(
   executar: (opcoes: OpcoesTransacao) => Promise<T>,
   orcamentoMs: number = ORCAMENTO_MS,
 ): Promise<T> {
-  const inicio = Date.now()
-  const restante = () => orcamentoMs - (Date.now() - inicio)
+  // Orçamento que não dá para dividir entre as duas fases não é orçamento apertado, é
+  // chamada errada. Rodar uma tentativa de 1 ms "para tentar" só produz erro confuso.
+  if (!Number.isFinite(orcamentoMs) || orcamentoMs < ORCAMENTO_MINIMO_MS) {
+    throw new Error(
+      `Orçamento inválido para comRetry: ${orcamentoMs}ms (mínimo ${ORCAMENTO_MINIMO_MS}ms)`,
+    )
+  }
+
+  // Relógio MONOTÔNICO: `Date.now()` anda para trás com ajuste de NTP, e aí o "restante"
+  // aumenta sozinho — justamente o que o teto não pode permitir.
+  const inicio = performance.now()
+  const restante = () => orcamentoMs - (performance.now() - inicio)
   let ultimoErro: unknown
 
   for (let tentativa = 0; tentativa < TENTATIVAS_MAXIMAS; tentativa += 1) {
     const sobra = restante()
-    if (tentativa > 0 && sobra <= 0) {
+    if (tentativa > 0 && sobra < ORCAMENTO_MINIMO_MS) {
       break
     }
+
+    // As duas fases são SEQUENCIAIS — primeiro espera-se começar (`maxWait`), depois roda
+    // (`timeout`) —, então quem manda é a SOMA. Dar o restante inteiro para cada uma
+    // deixava o teto valer o dobro.
+    const maxWait = Math.min(MAXWAIT_BASE, Math.floor(sobra / 2))
+    const timeout = Math.min(TIMEOUT_BASE, Math.max(Math.floor(sobra) - maxWait, 1))
+
     try {
-      // As opções encolhem junto com o que sobra do orçamento: é isso que faz o teto ser
-      // o orçamento, e não "tentativas × timeout".
-      return await executar({
-        maxWait: Math.min(MAXWAIT_BASE, Math.max(sobra, 1)),
-        timeout: Math.min(TIMEOUT_BASE, Math.max(sobra, 1)),
-      })
+      return await executar({ maxWait, timeout })
     } catch (error) {
       if (!ehContencaoTransitoria(error)) {
         throw error
       }
       ultimoErro = error
       // Esperar importa: re-tentar na hora quase não ajuda, porque o lock que derrubou
-      // esta transação continua nas mãos de quem estava escrevendo.
-      if (tentativa < TENTATIVAS_MAXIMAS - 1 && restante() > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 80 * 2 ** tentativa))
+      // esta transação continua nas mãos de quem estava escrevendo. Mas a espera sai do
+      // MESMO orçamento — sem limitá-la, o backoff sozinho estourava o teto.
+      if (tentativa < TENTATIVAS_MAXIMAS - 1) {
+        const espera = Math.min(80 * 2 ** tentativa, Math.max(restante(), 0))
+        if (espera > 0) {
+          await new Promise((resolve) => setTimeout(resolve, espera))
+        }
       }
     }
   }

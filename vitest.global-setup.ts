@@ -13,12 +13,10 @@
 import { execFileSync } from 'node:child_process'
 import { readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { TEST_DB_PREFIX } from './vitest.worker-db'
 
 /** Molde: criado uma vez e copiado por worker. Nunca é usado como banco de teste direto. */
-export const TEST_TEMPLATE_PATH = path.join(process.cwd(), '.test-template.db')
-
-/** Prefixo dos bancos por worker (`.test-<pid>.db`) — e do que o teardown apaga. */
-export const TEST_DB_PREFIX = '.test-'
+export const TEST_TEMPLATE_PATH = path.join(process.cwd(), `${TEST_DB_PREFIX}template.db`)
 
 export function setup(): void {
   limpar()

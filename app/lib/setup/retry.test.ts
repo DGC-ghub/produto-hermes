@@ -160,30 +160,67 @@ describe('o teto é o orçamento de relógio, não tentativas × timeout', () =>
     expect(recebido).toEqual({ maxWait: 5_000, timeout: 20_000 })
   })
 
-  it('as opções encolhem com o que sobra do orçamento', async () => {
-    const recebidos: Array<{ maxWait: number; timeout: number }> = []
-    // Orçamento curto: a segunda tentativa não pode pedir mais do que ainda resta.
+  it('maxWait + timeout nunca passa do que resta — as duas fases são sequenciais', async () => {
+    // Dar o restante INTEIRO para cada uma fazia o teto valer o dobro: espera-se para
+    // começar e SÓ ENTÃO se roda, então quem manda é a soma.
+    const inicio = performance.now()
+    const somas: number[] = []
     await comRetry(async (opcoes) => {
-      recebidos.push(opcoes)
+      const sobra = 300 - (performance.now() - inicio)
+      somas.push(opcoes.maxWait + opcoes.timeout - sobra)
       throw new Error('database is locked')
     }, 300).catch(() => {})
 
-    expect(recebidos.length).toBeGreaterThan(1)
-    expect(recebidos[0].timeout).toBe(300)
-    expect(recebidos[1].timeout).toBeLessThan(300)
+    expect(somas.length).toBeGreaterThan(1)
+    for (const excesso of somas) {
+      // 1 ms de folga é a deriva entre o relógio que o `comRetry` leu e o que o teste lê
+      // um instante depois — o defeito que isto pega dobrava o orçamento, não arranhava.
+      expect(excesso).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('o backoff também sai do orçamento — o teto vale de ponta a ponta', async () => {
+    // A medição que denunciou isto: orçamento de 300 ms terminando em ~580 ms, porque o
+    // backoff (80 + 160 + 320 ms) não olhava o relógio.
+    const inicio = performance.now()
+    await comRetry(async () => {
+      throw new Error('database is locked')
+    }, 300).catch(() => {})
+    const gasto = performance.now() - inicio
+
+    // A folga cobre o atraso normal de timer; o que não pode é dobrar o orçamento.
+    expect(gasto).toBeLessThan(300 + 150)
   })
 
   it('para de tentar quando o orçamento acaba, mesmo sobrando tentativas', async () => {
     let chamadas = 0
-    const inicio = Date.now()
+    const inicio = performance.now()
     await comRetry(async () => {
       chamadas += 1
       throw new Error('database is locked')
     }, 100).catch(() => {})
 
-    // O backoff (80 ms, 160 ms…) come o orçamento: sobra menos que as 4 tentativas.
     expect(chamadas).toBeLessThan(TENTATIVAS_MAXIMAS)
-    expect(Date.now() - inicio).toBeLessThan(1_000)
+    expect(performance.now() - inicio).toBeLessThan(100 + 150)
+  })
+
+  const invalidos: Array<[string, number]> = [
+    ['zero', 0],
+    ['negativo', -1_000],
+    ['abaixo do mínimo', 1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ]
+
+  it.each(invalidos)('orçamento %s recusa sem executar nada', async (_label, orcamento) => {
+    let chamadas = 0
+    await expect(
+      comRetry(async () => {
+        chamadas += 1
+        return 'ok'
+      }, orcamento),
+    ).rejects.toThrow(/Orçamento inválido/)
+    expect(chamadas).toBe(0)
   })
 
   it('o pior caso cabe num POST interativo', () => {

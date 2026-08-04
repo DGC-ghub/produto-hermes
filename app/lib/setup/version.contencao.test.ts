@@ -34,7 +34,9 @@ vi.mock('./retry', async (importOriginal) => {
   }
 })
 
-const { loadSetupWorkspace } = await import('./version.server')
+const { loadSetupWorkspace, OrphanPublishedPointerError, OrphanReviewPointerError } = await import(
+  './version.server'
+)
 
 let tenantId: string
 let setupId: string
@@ -88,6 +90,39 @@ describe('contenção esgotada: olhar o banco antes de desistir', () => {
     expect(workspace.published).toBe(true)
     expect(workspace.version).toBeNull()
     expect(await db.aiSetupVersion.count({ where: { tenantId, state: 'draft' } })).toBe(0)
+  })
+
+  it('ponteiro de review CORROMPIDO no meio → erro do ponteiro, não o P2028', async () => {
+    // Corrupção de ponteiro é o diagnóstico mais preciso que existe para este estado, e
+    // continua fail-closed: devolver o P2028 aqui mandaria procurar contenção, que não é
+    // o problema.
+    controle.duranteAContencao = async () => {
+      const outro = await db.tenant.create({
+        data: { slug: `alheio-${crypto.randomUUID().slice(0, 8)}`, name: 'Outro' },
+      })
+      const outroSetup = await db.aiSetup.create({ data: { tenantId: outro.id } })
+      const alheia = await db.aiSetupVersion.create({
+        data: { setupId: outroSetup.id, tenantId: outro.id, state: 'draft', answersJson: '{}' },
+      })
+      await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: alheia.id } })
+    }
+
+    await expect(loadSetupWorkspace(tenantId)).rejects.toBeInstanceOf(OrphanReviewPointerError)
+  })
+
+  it('ponteiro de PUBLICAÇÃO inválido no meio → erro do ponteiro, não "está publicado"', async () => {
+    controle.duranteAContencao = async () => {
+      // Rascunho apontado como publicação: a FK aceita, o invariante não (INV-1).
+      const rascunho = await db.aiSetupVersion.create({
+        data: { setupId, tenantId, state: 'draft', answersJson: '{}' },
+      })
+      await db.aiSetup.update({
+        where: { id: setupId },
+        data: { publishedVersionId: rascunho.id },
+      })
+    }
+
+    await expect(loadSetupWorkspace(tenantId)).rejects.toBeInstanceOf(OrphanPublishedPointerError)
   })
 
   it('NINGUÉM venceu → propaga o P2028 original, sem inventar rascunho', async () => {
