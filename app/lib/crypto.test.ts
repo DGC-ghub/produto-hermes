@@ -20,7 +20,12 @@ describe('cifra de segredos (M4)', () => {
   it('texto cifrado adulterado → lança (tag GCM detecta)', () => {
     const enc = encryptSecret('confidencial')
     const [iv, tag, data] = enc.split(':')
-    const adulterado = `${iv}:${tag}:${data.slice(0, -2)}00`
+    // Trocar o último hex por um valor FIXO não adultera nada quando a cifra já termina
+    // nele — e o IV é aleatório, então isso acontecia uma vez a cada 256 rodadas e o teste
+    // passava sem ter testado. Aqui o dígito muda sempre.
+    const ultimo = data.slice(-1)
+    const adulterado = `${iv}:${tag}:${data.slice(0, -1)}${ultimo === '0' ? '1' : '0'}`
+    expect(adulterado).not.toBe(enc)
     expect(() => decryptSecret(adulterado)).toThrow()
   })
 
