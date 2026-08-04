@@ -54,18 +54,35 @@ class PointerTakenError extends Error {
  *
  * Mesmo padrão de `provisionTenant` (provisioning.server.ts).
  */
+/**
+ * É contenção de escrita — o único caso que justifica tentar de novo?
+ *
+ * São duas caras do mesmo fenômeno no SQLite:
+ *  - `database is locked` / `SQLITE_BUSY`: a escrita bateu num lock;
+ *  - P2028 "Operation has timed out": a transação não conseguiu nem COMEÇAR dentro do
+ *    `maxWait`, porque outra a segurava.
+ *
+ * Qualquer outro erro sobe na primeira vez: insistir esconderia bug de lógica atrás de
+ * três tentativas e ainda atrasaria a resposta.
+ */
+function ehContencaoTransitoria(error: unknown): boolean {
+  const codigo = (error as { code?: unknown })?.code
+  if (codigo === 'P2028') {
+    return true
+  }
+  const texto = error instanceof Error ? error.message : String(error)
+  return /database is locked|SQLITE_BUSY|Operation has timed out/i.test(texto)
+}
+
 async function comRetry<T>(executar: () => Promise<T>): Promise<T> {
   let ultimoErro: unknown
   for (let tentativa = 0; tentativa < 4; tentativa += 1) {
     try {
       return await executar()
     } catch (error) {
-      // Conflito de CAS é resposta legítima, não erro transitório: não adianta insistir.
-      if (
-        error instanceof StaleRevisionError ||
-        error instanceof SubmitNotReadyError ||
-        error instanceof PointerTakenError
-      ) {
+      // Só lock é transitório. Insistir em qualquer outro erro esconderia bug real por
+      // trás de três tentativas — e um CAS que não casou é resposta legítima, não falha.
+      if (!ehContencaoTransitoria(error)) {
         throw error
       }
       ultimoErro = error
@@ -174,8 +191,10 @@ export async function loadSetupWorkspace(tenantId: string): Promise<SetupWorkspa
           },
         })
         const claimed = await tx.aiSetup.updateMany({
-          // Só toma o ponteiro se ele AINDA estiver livre.
-          where: { id: setup.id, tenantId, reviewVersionId: null },
+          // Só toma o ponteiro se ele AINDA estiver livre E nada tiver sido publicado
+          // no meio: uma publicação concorrente muda o caso de "inicial" para "já tem
+          // configuração", e aí este rascunho não deveria existir.
+          where: { id: setup.id, tenantId, reviewVersionId: null, publishedVersionId: null },
           data: { reviewVersionId: version.id },
         })
         if (claimed.count !== 1) {

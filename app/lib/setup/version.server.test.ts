@@ -426,3 +426,36 @@ describe('submissão (draft → submitted)', () => {
     expect(intacta?.state).toBe('draft')
   })
 })
+
+describe('retry é só para lock (spec: erro real não pode virar 3 tentativas)', () => {
+  it('erro que não é lock sobe na primeira vez', async () => {
+    // Antes o retry engolia qualquer erro três vezes, escondendo bug por trás de
+    // tentativas e atrasando a resposta em quase meio segundo à toa.
+    const inexistente = 'tenant-que-nao-existe'
+    const inicio = Date.now()
+    await expect(loadSetupWorkspace(inexistente)).rejects.toThrow(/sem AiSetup/)
+    // Sem espera de backoff: falhou e voltou.
+    expect(Date.now() - inicio).toBeLessThan(500)
+  })
+})
+
+describe('criação do rascunho respeita publicação concorrente', () => {
+  it('não cria rascunho se algo foi publicado no meio', async () => {
+    // O CAS da criação exige reviewVersionId nulo E publishedVersionId nulo: uma
+    // publicação concorrente muda o caso de "inicial" para "já configurado", e o
+    // rascunho não deveria nascer.
+    const publicada = await db.aiSetupVersion.create({
+      data: { setupId, tenantId, state: 'active', answersJson: '{}', publishedAt: new Date() },
+    })
+    await db.aiSetup.update({
+      where: { id: setupId },
+      data: { publishedVersionId: publicada.id },
+    })
+
+    const workspace = await loadSetupWorkspace(tenantId)
+
+    expect(workspace.version).toBeNull()
+    expect(workspace.published).toBe(true)
+    expect(await db.aiSetupVersion.count({ where: { tenantId, state: 'draft' } })).toBe(0)
+  })
+})

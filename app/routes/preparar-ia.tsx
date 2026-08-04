@@ -1,13 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import {
-  data,
-  Form,
-  Link,
-  redirect,
-  useFetcher,
-  useNavigation,
-  useSearchParams,
-} from 'react-router'
+import { useEffect, useReducer, useRef, useState } from 'react'
+import { data, Link, redirect, useFetcher, useSearchParams } from 'react-router'
 import { WingMark } from '../components/brand/BrandMark'
 import { AppShell } from '../components/layout/AppShell'
 import { Button } from '../components/ui/Button'
@@ -23,6 +15,15 @@ import {
   type SetupStep,
   setupProgress,
 } from '../lib/setup/answers'
+import {
+  autosaveInicial,
+  autosaveReducer,
+  deveAutosalvar,
+  envioLiberado,
+  navegacaoPendente,
+  podeNavegar,
+  revisaoParaEnviar,
+} from '../lib/setup/autosave'
 import {
   loadSetupWorkspace,
   reopenForChanges,
@@ -202,7 +203,15 @@ const FALTAM = 'Ainda faltam informações obrigatórias.'
 const inputClass =
   'w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-soft/60 focus-visible:border-brand focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand'
 
-function Campo({ field, value }: { field: FieldDef; value: string | string[] | undefined }) {
+function Campo({
+  field,
+  value,
+  onEdit,
+}: {
+  field: FieldDef
+  value: string | string[] | undefined
+  onEdit: () => void
+}) {
   const texto = Array.isArray(value) ? value.join('\n') : (value ?? '')
   const id = `campo-${field.key}`
   const helpId = field.help ? `${id}-ajuda` : undefined
@@ -232,6 +241,8 @@ function Campo({ field, value }: { field: FieldDef; value: string | string[] | u
         rows={field.kind === 'list' ? 4 : 2}
         defaultValue={texto}
         placeholder={field.placeholder}
+        // Sem isto o autosave nunca dispara: nada marcava o rascunho como sujo.
+        onChange={onEdit}
         aria-describedby={helpId}
         aria-required={field.required || undefined}
         className={inputClass}
@@ -244,68 +255,110 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
   const { step, versionId, revision, state, reviewNote, answers, progress, stepsDone, operator } =
     loaderData
   const fetcher = useFetcher<typeof action>()
-  const navigation = useNavigation()
   const [, setSearchParams] = useSearchParams()
   const formRef = useRef<HTMLFormElement>(null)
   const [salvoEm, setSalvoEm] = useState<string | null>(null)
 
+  // Toda a coordenação (quando salvar, quando navegar, quando enviar) vive numa máquina
+  // pura e testada — ver app/lib/setup/autosave.ts. O componente só traduz eventos.
+  const [maquina, enviar] = useReducer(autosaveReducer, revision, autosaveInicial)
+  const proximoId = useRef(0)
+
   const indice = SETUP_STEPS.indexOf(step)
   const ultima = indice === SETUP_STEPS.length - 1
-  const enviando = navigation.state !== 'idle'
-  const stale = fetcher.data?.stale === true
   const pronto = progress.done === progress.total
-  const salvando = fetcher.state !== 'idle'
+  const salvando = maquina.pending
+  const stale = maquina.blocked
+  const revisaoAtual = revisaoParaEnviar(maquina)
+  // Erro vindo do servidor, seja de save, envio ou reabertura — todos passam pelo mesmo
+  // fetcher, então a mensagem aparece em qualquer um dos caminhos.
+  const erroServidor = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null
 
-  // A revisão que o próximo POST deve usar: enquanto o loader não revalida, quem sabe a
-  // revisão atual é a última resposta do autosave. Mandar a do loader faria o segundo
-  // salvamento nascer desatualizado e levar 409 de si mesmo.
-  const revisaoAtual =
-    fetcher.data && 'revision' in fetcher.data && typeof fetcher.data.revision === 'number'
-      ? fetcher.data.revision
-      : revision
-
-  // Autosave por MUDANÇA, não por render. Um `useEffect` sem lista de dependências rodaria
-  // a cada render — e como o submit provoca render, viraria um POST a cada 1,2s para
-  // sempre. Aqui o timer só é armado quando o conteúdo muda de fato.
-  const [sujo, setSujo] = useState(false)
-  useEffect(() => {
-    if (!sujo || stale || state !== 'draft' || salvando) {
-      return
-    }
-    const timer = setTimeout(() => {
-      const form = formRef.current
-      if (form) {
-        setSujo(false)
-        fetcher.submit(form, { method: 'post' })
-      }
-    }, 1200)
-    return () => clearTimeout(timer)
-  }, [sujo, stale, state, salvando, fetcher])
-
-  useEffect(() => {
-    if (fetcher.data?.ok === true && 'revision' in fetcher.data) {
-      setSalvoEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
-    }
-  }, [fetcher.data])
-
-  // Trocar de etapa só DEPOIS que o salvamento confirmou: navegar antes descartaria em
-  // silêncio o que a pessoa acabou de escrever se o POST falhasse.
-  const [destino, setDestino] = useState<SetupStep | null>(null)
-  useEffect(() => {
-    if (destino && fetcher.state === 'idle' && fetcher.data?.ok === true) {
-      setSearchParams({ etapa: destino })
-      setDestino(null)
-    }
-  }, [destino, fetcher.state, fetcher.data, setSearchParams])
-
-  function irPara(proxima: SetupStep) {
+  /** Dispara um POST e registra o id na máquina, para correlacionar a resposta. */
+  function postar(campos: Record<string, string> = {}) {
     const form = formRef.current
     if (!form) {
       return
     }
-    setSujo(false)
-    setDestino(proxima)
-    fetcher.submit(form, { method: 'post' })
+    const dados = new FormData(form)
+    for (const [chave, valor] of Object.entries(campos)) {
+      dados.set(chave, valor)
+    }
+    dados.set('revision', String(revisaoAtual))
+    proximoId.current += 1
+    enviar({ type: 'save-started', requestId: proximoId.current })
+    fetcher.submit(dados, { method: 'post' })
+  }
+
+  // Traduz a resposta do fetcher em evento da máquina, carimbada com o id do request que
+  // estava em voo — resposta atrasada não mexe em nada.
+  const respostaTratada = useRef<unknown>(null)
+  useEffect(() => {
+    if (fetcher.state !== 'idle' || fetcher.data === undefined) {
+      return
+    }
+    if (respostaTratada.current === fetcher.data) {
+      return
+    }
+    respostaTratada.current = fetcher.data
+    const id = maquina.inFlightId
+    if (fetcher.data.ok === true && 'revision' in fetcher.data) {
+      enviar({ type: 'save-ok', requestId: id, revision: fetcher.data.revision })
+      setSalvoEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
+    } else if (fetcher.data.stale === true) {
+      enviar({ type: 'save-conflict', requestId: id })
+    } else {
+      enviar({ type: 'save-failed', requestId: id })
+    }
+  }, [fetcher.state, fetcher.data, maquina.inFlightId])
+
+  // `postar` muda a cada render; os efeitos abaixo dependem só da MÁQUINA, então leem a
+  // função por ref em vez de listá-la como dependência (o que os re-armaria sem parar).
+  const postarRef = useRef(postar)
+  postarRef.current = postar
+
+  // Autosave: só quando a máquina diz que há edição pendente e nada em voo.
+  useEffect(() => {
+    if (!deveAutosalvar(maquina)) {
+      return
+    }
+    const timer = setTimeout(() => postarRef.current(), 1200)
+    return () => clearTimeout(timer)
+  }, [maquina])
+
+  // Navegação: só depois que o save DESTE pedido confirmou.
+  useEffect(() => {
+    const destino = navegacaoPendente(maquina)
+    if (destino) {
+      setSearchParams({ etapa: destino })
+      enviar({ type: 'navigated' })
+    }
+  }, [maquina, setSearchParams])
+
+  // Envio para revisão: só depois que o que estava digitado foi salvo.
+  useEffect(() => {
+    if (envioLiberado(maquina)) {
+      enviar({ type: 'submitted' })
+      postarRef.current({ intent: 'enviar' })
+    }
+  }, [maquina])
+
+  function irPara(proxima: SetupStep) {
+    if (!podeNavegar(maquina)) {
+      return
+    }
+    enviar({ type: 'navigate-requested', step: proxima })
+    postar()
+  }
+
+  function enviarParaRevisao() {
+    if (!podeNavegar(maquina)) {
+      return
+    }
+    // Salva primeiro: o que está no textarea e ainda não foi salvo precisa entrar na
+    // versão que vai para revisão.
+    enviar({ type: 'submit-requested' })
+    postar()
   }
 
   /** Casca das telas de estado (nada para preencher agora). */
@@ -348,14 +401,19 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
           Suas respostas foram guardadas. Ao continuar, você volta ao questionário para ajustar o
           que faltou.
         </p>
-        <Form method="post">
+        <fetcher.Form method="post">
           <input type="hidden" name="intent" value="reabrir" />
           <input type="hidden" name="versionId" value={versionId ?? ''} />
           <input type="hidden" name="revision" value={revisaoAtual} />
-          <Button type="submit" variant="primary" disabled={enviando}>
-            {enviando ? 'Abrindo…' : 'Corrigir as respostas'}
+          <Button type="submit" variant="primary" disabled={salvando}>
+            {salvando ? 'Abrindo…' : 'Corrigir as respostas'}
           </Button>
-        </Form>
+        </fetcher.Form>
+        {erroServidor && (
+          <p role="alert" className="text-sm text-urgent">
+            {erroServidor}
+          </p>
+        )}
       </Aviso>
     )
   }
@@ -406,6 +464,7 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
             <button
               key={s}
               type="button"
+              disabled={!podeNavegar(maquina)}
               onClick={() => irPara(s)}
               aria-current={s === step ? 'step' : undefined}
               className={cx(
@@ -439,12 +498,12 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
             {RECARREGAR}
           </div>
         )}
-        {fetcher.data?.ok === false && !stale && (
+        {erroServidor && !stale && (
           <div
             role="alert"
             className="rounded-lg border border-urgent/30 bg-urgent/8 p-3 text-sm text-urgent"
           >
-            {fetcher.data.error}
+            {erroServidor}
           </div>
         )}
 
@@ -460,7 +519,12 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
               <p className="mt-0.5 text-xs text-ink-soft">{STEP_HINT[step]}</p>
             </div>
             {SETUP_FIELDS.filter((f) => f.step === step).map((field) => (
-              <Campo key={field.key} field={field} value={answers[field.key]} />
+              <Campo
+                key={field.key}
+                field={field}
+                value={answers[field.key]}
+                onEdit={() => enviar({ type: 'edited' })}
+              />
             ))}
           </Card>
 
@@ -469,7 +533,7 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
               <Button
                 type="button"
                 variant="secondary"
-                disabled={salvando}
+                disabled={!podeNavegar(maquina)}
                 onClick={() => irPara(SETUP_STEPS[indice - 1])}
               >
                 Voltar
@@ -479,7 +543,7 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
               <Button
                 type="button"
                 variant="primary"
-                disabled={salvando}
+                disabled={!podeNavegar(maquina)}
                 onClick={() => irPara(SETUP_STEPS[indice + 1])}
               >
                 {salvando ? 'Salvando…' : 'Salvar e continuar'}
@@ -499,14 +563,14 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
                 ? 'Tudo respondido. Nossa equipe prepara e confere a configuração antes de a IA falar com alguém.'
                 : 'Ainda faltam respostas obrigatórias — complete as etapas marcadas para poder enviar.'}
             </p>
-            <Form method="post">
-              <input type="hidden" name="intent" value="enviar" />
-              <input type="hidden" name="versionId" value={versionId ?? ''} />
-              <input type="hidden" name="revision" value={revisaoAtual} />
-              <Button type="submit" variant="primary" disabled={!pronto || enviando}>
-                {enviando ? 'Enviando…' : 'Enviar para revisão'}
-              </Button>
-            </Form>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={!pronto || salvando || stale}
+              onClick={enviarParaRevisao}
+            >
+              {salvando ? 'Enviando…' : 'Enviar para revisão'}
+            </Button>
             {!pronto && (
               <p className="text-xs text-ink-soft">
                 Falta preencher:{' '}
@@ -514,12 +578,19 @@ export default function PrepararIa({ loaderData }: Route.ComponentProps) {
                   .map((s) => STEP_LABEL[s])
                   .join(', ')}
                 .{' '}
-                <Link
-                  to={`?etapa=${SETUP_STEPS.find((_, i) => !stepsDone[i])}`}
-                  className="font-medium text-ink underline"
+                <button
+                  type="button"
+                  disabled={salvando}
+                  onClick={() => {
+                    const alvo = SETUP_STEPS.find((_, i) => !stepsDone[i])
+                    if (alvo) {
+                      irPara(alvo)
+                    }
+                  }}
+                  className="font-medium text-ink underline disabled:opacity-50"
                 >
                   Ir para a primeira
-                </Link>
+                </button>
               </p>
             )}
           </Card>

@@ -308,3 +308,42 @@ describe('estados que não são rascunho', () => {
     expect(data.published).toBe(true)
   })
 })
+
+// ── Marcação da tela ────────────────────────────────────────────────────────
+// A suíte roda em node; olhamos o HTML renderizado, como nas outras telas do projeto.
+// A COORDENAÇÃO (quando salvar, quando navegar, quando enviar) é testada isolada e a
+// fundo em app/lib/setup/autosave.test.ts — aqui só se prende o que é marcação.
+
+describe('tela — marcação', () => {
+  it('todo textarea avisa edição, senão o autosave nunca dispara', async () => {
+    const { SETUP_FIELDS } = await import('../lib/setup/answers')
+    const fonte = await import('node:fs').then((fs) =>
+      fs.readFileSync('app/routes/preparar-ia.tsx', 'utf8'),
+    )
+    // O onChange precisa existir no componente de campo — sem ele, nada marca "sujo".
+    expect(fonte).toContain('onChange={onEdit}')
+    expect(SETUP_FIELDS.length).toBeGreaterThan(0)
+  })
+
+  it('estados assíncronos são anunciados a leitor de tela', async () => {
+    const fonte = await import('node:fs').then((fs) =>
+      fs.readFileSync('app/routes/preparar-ia.tsx', 'utf8'),
+    )
+    expect(fonte).toContain('role="alert"')
+    expect(fonte).toContain('role="status"')
+    expect(fonte).toContain('aria-live="polite"')
+    expect(fonte).toContain("aria-current={s === step ? 'step' : undefined}")
+    expect(fonte).toContain('aria-required')
+  })
+
+  it('nenhuma navegação escapa do save: sem Link de etapa e sem Form direto de envio', async () => {
+    const fonte = await import('node:fs').then((fs) =>
+      fs.readFileSync('app/routes/preparar-ia.tsx', 'utf8'),
+    )
+    // "Ir para a primeira" virou botão que passa por irPara(); o envio passa por
+    // enviarParaRevisao(), que salva antes.
+    expect(fonte).not.toContain('to={`?etapa=')
+    expect(fonte).toContain('enviarParaRevisao')
+    expect(fonte).toContain('disabled={!podeNavegar(maquina)}')
+  })
+})
