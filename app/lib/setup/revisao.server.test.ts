@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db.server'
 import { assumirRevisao, olharRevisao } from './revisao.server'
 
@@ -171,6 +171,31 @@ describe('o reviewer é validado NA FRONTEIRA DO SERVIDOR', () => {
     expect(versao.reviewStartedAt).toBeNull()
     expect(versao.reviewer).toBeNull()
     expect(await db.aiSetupEvent.count({ where: { versionId } })).toBe(0)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a recusa acontece ANTES de abrir transação', async () => {
+    // O teste vizinho prova "nenhuma escrita". Isto é outra coisa: prova que nem se
+    // CONSULTA. Sem esta asserção, mover o `normalizarReviewer` para dentro do callback
+    // transacional continuaria verde — o tenant e o setup já teriam sido lidos, a transação
+    // aberta, e o teste não notaria.
+    //
+    // Alcance exato: prova que nenhuma transação/consulta OPERACIONAL roda. Não prova nada
+    // sobre o import de `db.server`, que este módulo faz estaticamente por desenho.
+    const transacao = vi.spyOn(db, '$transaction')
+
+    const resultado = await assumirRevisao({
+      tenantSlug: slug,
+      reviewer: ' ',
+      hostname: 'host',
+      usuarioDoProcesso: 'pi',
+    })
+
+    expect(resultado).toEqual({ tipo: 'reviewer_invalido', motivo: 'ausente' })
+    expect(transacao).not.toHaveBeenCalled()
   })
 
   it('o servidor grava a forma NORMALIZADA, não a que recebeu', async () => {
