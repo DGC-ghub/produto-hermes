@@ -81,16 +81,42 @@ export function proximaTentativaEm(attempts: number, agora: Date): Date {
   return new Date(agora.getTime() + 2 ** expoente * 60_000)
 }
 
-/** Limite do texto de erro guardado no banco. */
+/**
+ * Os únicos valores que podem ir para `lastError`.
+ *
+ * É uma ALLOWLIST, não uma sanitização. Sanitizar texto livre é uma corrida que se perde:
+ * o erro de um job de agentes carrega pedaço do prompt e da saída crua — ou seja, as
+ * respostas da empresa —, e qualquer regra de recorte deixa passar algum formato novo. Com
+ * um conjunto fechado de códigos, o que entra no banco é sabido de antemão.
+ *
+ * O detalhe continua existindo: vai para o log do processo, que não é auditoria e não é
+ * lido por outra empresa.
+ */
+export const CODIGOS_DE_ERRO = [
+  'provider_indisponivel',
+  'provider_timeout',
+  'banco_ocupado',
+  'saida_invalida',
+  'validacao_reprovou',
+  'geracao_obsoleta',
+  'erro_desconhecido',
+] as const
+
+export type CodigoErro = (typeof CODIGOS_DE_ERRO)[number]
+
+/** O código veio da allowlist? Guarda de runtime — o tipo não protege de dado externo. */
+export function ehCodigoConhecido(valor: unknown): valor is CodigoErro {
+  return typeof valor === 'string' && (CODIGOS_DE_ERRO as readonly string[]).includes(valor)
+}
+
+/** Limite do texto de erro escrito no LOG (nunca no banco). */
 export const ERRO_MAX_CHARS = 200
 
 /**
- * O que pode ser gravado em `lastError`.
+ * Reduz um erro a uma linha para o LOG do processo.
  *
- * O erro de um job de agentes carrega, com frequência, um pedaço do prompt ou da saída
- * crua — que contém as respostas da empresa. Isso não entra no banco de fila: fica só a
- * primeira linha, sem quebras, truncada. Quem precisa do detalhe olha o log do processo,
- * que não é auditoria e não é lido por outra empresa.
+ * Não serve — e não pode servir — para o banco: o que vai para `lastError` é um
+ * `CodigoErro`. Aqui só se evita despejar um stack inteiro com prompt no hermes.log.
  */
 export function sanitizarErro(error: unknown): string {
   const bruto =

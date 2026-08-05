@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { type AlarmState, decideAlarm, formatAlarm, formatSensitiveAlarm } from './alarm.server'
+import {
+  type AlarmState,
+  decideAlarm,
+  formatAlarm,
+  formatSensitiveAlarm,
+  formatSetupAlarm,
+} from './alarm.server'
 
 const COOLDOWN = 10 * 60 * 1000 // 10 min
 const fresh: AlarmState = { lastSentAt: null, suppressed: 0 }
@@ -62,5 +68,25 @@ describe('formatSensitiveAlarm', () => {
 
   it('conta as escalações suprimidas no intervalo', () => {
     expect(formatSensitiveAlarm('csmed', 2)).toContain('+2')
+  })
+})
+
+describe('formatSetupAlarm', () => {
+  it('NÃO afirma que um cliente ficou sem resposta', () => {
+    // O alarme de degradação diz "o cliente recebeu a resposta genérica" — verdade quando
+    // o motor cai no fallback, e FALSO no setup: ali ninguém está esperando no WhatsApp.
+    // Reaproveitar aquele texto mandaria o operador caçar um atendimento quebrado que não
+    // existe.
+    const message = formatSetupAlarm('job xyz falhou (saida_invalida)', 0)
+    expect(message).not.toContain('resposta genérica')
+    expect(message).toContain('NENHUM cliente ficou sem resposta')
+  })
+
+  it('diz o que fazer', () => {
+    expect(formatSetupAlarm('fila parada', 0)).toContain('setup:processar')
+  })
+
+  it('conta os suprimidos', () => {
+    expect(formatSetupAlarm('fila parada', 4)).toContain('+4')
   })
 })

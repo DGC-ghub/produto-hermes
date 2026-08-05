@@ -7,6 +7,7 @@ import {
   serializeAnswers,
 } from './answers'
 import { type ResolucaoAposPerda, resolverAposPerderCas } from './claim'
+import { criarJobDeGeracao } from './job.server'
 import { comRetry, ehContencaoTransitoria } from './retry'
 import { assertSetupTransition, isSetupState } from './state'
 
@@ -515,14 +516,13 @@ export async function submitDraft(input: {
         throw new StaleRevisionError('A versão mudou de estado durante o envio.')
       }
 
-      await tx.aiSetupJob.create({
-        data: {
-          versionId: version.id,
-          tenantId: input.tenantId,
-          kind: 'generate',
-          generation,
-          idempotencyKey: `${version.id}:${generation}:generate:1`,
-        },
+      // A criação do job vive na fila (job.server.ts): o formato da chave de idempotência
+      // é assunto dela, e importar daqui é o que carrega o módulo — e portanto liga o
+      // sweeper das faxinas — no boot do servidor.
+      await criarJobDeGeracao(tx, {
+        versionId: version.id,
+        tenantId: input.tenantId,
+        generation,
       })
 
       await tx.aiSetupEvent.create({

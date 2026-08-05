@@ -49,6 +49,19 @@ export function formatAlarm(reason: string, suppressed: number): string {
 }
 
 /**
+ * Mensagem do alarme do ONBOARDING (pura).
+ *
+ * Formato próprio porque o de degradação afirma que "o cliente recebeu a resposta
+ * genérica" — verdade quando o motor cai no fallback, FALSO aqui: no setup ninguém está
+ * esperando resposta no WhatsApp. Reaproveitar aquele texto mandaria o operador procurar
+ * um atendimento quebrado que não existe, e faria parecer que há cliente sem resposta.
+ */
+export function formatSetupAlarm(reason: string, suppressed: number): string {
+  const extra = suppressed > 0 ? ` (+${suppressed} no intervalo)` : ''
+  return `[ALARM] Onboarding parado: ${reason}${extra}. NENHUM cliente ficou sem resposta — o que travou foi a preparação da IA de uma empresa. Veja o hermes.log e rode \`npm run setup:processar\`.`
+}
+
+/**
  * Mensagem do alarme de handoff SENSÍVEL (pura). Sem conteúdo da conversa — PII não
  * sai do banco; o operador abre a Central pra ver.
  */
@@ -98,6 +111,38 @@ export async function reportSensitiveHandoff(tenantSlug: string): Promise<void> 
   }
 }
 
+// Throttle PRÓPRIO do onboarding, pela mesma razão do sensível: um alarme de fila parada
+// não pode silenciar um alarme de motor degradado, que é o que deixa cliente sem resposta.
+let setupState: AlarmState = { lastSentAt: null, suppressed: 0 }
+
+/**
+ * Reporta um incidente do onboarding (job da fila). Mesmo contrato do `reportDegradation`:
+ * sempre loga, POST best-effort, nunca lança. Prioridade `default` — é trabalho interno
+ * parado, não atendimento caindo.
+ */
+export async function reportSetupIncident(reason: string): Promise<void> {
+  try {
+    const decision = decideAlarm(Date.now(), setupState)
+    setupState = decision.state
+    if (!decision.send) {
+      return
+    }
+    const message = formatSetupAlarm(reason, decision.suppressed)
+    console.error(message)
+
+    const url = process.env.ALARM_WEBHOOK_URL
+    if (url) {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain', Title: 'Onboarding parado', Priority: 'default' },
+        body: message,
+      }).catch(() => {})
+    }
+  } catch {
+    // engole tudo: alarme é secundário
+  }
+}
+
 /**
  * Reporta uma degradação do motor. SEMPRE loga um `[ALARM]` (visível no hermes.log)
  * e, se `ALARM_WEBHOOK_URL` estiver definido, faz um POST best-effort com o texto puro
@@ -131,4 +176,5 @@ export async function reportDegradation(reason: string): Promise<void> {
 export function __resetAlarmState(): void {
   state = { lastSentAt: null, suppressed: 0 }
   sensitiveState = { lastSentAt: null, suppressed: 0 }
+  setupState = { lastSentAt: null, suppressed: 0 }
 }
