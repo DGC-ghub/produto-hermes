@@ -71,14 +71,22 @@ export type ResultadoDaPassada =
       status: 'retry_wait' | 'failed'
     }
   /**
-   * O trabalho ficou pronto e o banco não aceitou a gravação nem com insistência. O lease
-   * é LIBERADO junto (`status` diz para onde o job foi) — deixá-lo preso empurraria a
-   * recuperação para o sweeper, que só age depois de 30 minutos.
+   * O trabalho ficou pronto e o banco não aceitou a gravação nem com insistência.
+   *
+   * `status` diz o que aconteceu com o LEASE depois disso, e a distinção importa:
+   *
+   *  - `retry_wait` / `failed`: deu para registrar a falha, o lease foi devolvido e o job
+   *    volta pela fila normalmente;
+   *  - `lease_perdido`: outro processo já tinha herdado o job;
+   *  - `recuperacao_pendente`: o banco continuou travado e NEM a liberação passou. O job
+   *    segue `processing` com o token. É a única resposta honesta — liberar o lease
+   *    também é uma escrita, e prometer `retry_wait` quando nada pôde ser escrito seria
+   *    inventar um estado que não existe no banco.
    */
   | {
       tipo: 'persistencia_falhou'
       jobId: string
-      status: 'retry_wait' | 'failed' | 'lease_perdido'
+      status: 'retry_wait' | 'failed' | 'lease_perdido' | 'recuperacao_pendente'
     }
 
 /** Quantas vezes a GRAVAÇÃO é repetida. A geração nunca é refeita — ver `persistir`. */
@@ -124,21 +132,19 @@ export async function processarProximoJob(opcoes: OpcoesDaPassada): Promise<Resu
       return persistencia.resultado
     }
 
-    // A gravação esgotou. O job NÃO pode ficar `processing` com o lease na mão: o desfecho
-    // que a taxonomia manda para contenção é `retry_wait` (§6.4), e deixar como está
-    // empurraria a recuperação para o sweeper — que só age depois de 30 minutos de lease
-    // vencido. Isso é fallback de crash, não desfecho de falha que o comando VIU acontecer.
-    const desfecho = await failSetupJob({
-      jobId: job.id,
-      claimToken: job.claimToken,
-      kind: 'transient',
-      codigo: 'banco_ocupado',
-      detalhe: persistencia.erro,
-    })
+    // A gravação esgotou. A primeira escolha é devolver o job à fila — a taxonomia manda
+    // `retry_wait` para contenção (§6.4), e deixá-lo `processing` empurraria a recuperação
+    // para o sweeper, que só age 30 minutos depois. Isso é fallback de crash, não desfecho
+    // de uma falha que o comando VIU acontecer.
+    //
+    // Mas devolver TAMBÉM é escrever. Se o banco continuar travado, esta chamada estoura
+    // igual — e aí o único desfecho honesto é dizer que o job ficou protegido pelo lease e
+    // que o sweeper o recupera quando ele vencer. Prometer `retry_wait` aqui seria inventar
+    // um estado que não existe no banco, e o operador iria procurá-lo.
     return {
       tipo: 'persistencia_falhou',
       jobId: job.id,
-      status: desfecho?.status ?? 'lease_perdido',
+      status: await liberarLeaseAposFalha(job, persistencia.erro),
     }
   } finally {
     pulsar()
@@ -163,6 +169,34 @@ function iniciarHeartbeat(job: JobReivindicado, intervaloMs: number): () => void
   return () => clearInterval(timer)
 }
 
+/**
+ * Tenta devolver o job à fila depois de a gravação esgotar.
+ *
+ * Nunca lança: o chamador precisa de um desfecho para contar, não de mais uma exceção em
+ * cima de uma falha que ele já observou.
+ */
+async function liberarLeaseAposFalha(
+  job: JobReivindicado,
+  erro: unknown,
+): Promise<'retry_wait' | 'failed' | 'lease_perdido' | 'recuperacao_pendente'> {
+  try {
+    const desfecho = await failSetupJob({
+      jobId: job.id,
+      claimToken: job.claimToken,
+      kind: 'transient',
+      codigo: 'banco_ocupado',
+      detalhe: erro,
+    })
+    // `null` aqui é o CAS não casando: outro processo herdou o job. Diferente de "não
+    // consegui escrever".
+    return desfecho?.status ?? 'lease_perdido'
+  } catch {
+    // O banco continua recusando escrita. Nada foi alterado, o token segue de pé e o
+    // sweeper recupera quando o lease vencer.
+    return 'recuperacao_pendente'
+  }
+}
+
 /** Traduz o erro do processador em desfecho de fila. */
 async function registrarFalha(job: JobReivindicado, error: unknown): Promise<ResultadoDaPassada> {
   const { kind, codigo } =
@@ -170,13 +204,21 @@ async function registrarFalha(job: JobReivindicado, error: unknown): Promise<Res
       ? { kind: error.kind, codigo: error.codigo }
       : ({ kind: 'transient', codigo: 'erro_desconhecido' } as const)
 
-  const desfecho = await failSetupJob({
-    jobId: job.id,
-    claimToken: job.claimToken,
-    kind,
-    codigo,
-    detalhe: error,
-  })
+  let desfecho: Awaited<ReturnType<typeof failSetupJob>>
+  try {
+    desfecho = await failSetupJob({
+      jobId: job.id,
+      claimToken: job.claimToken,
+      kind,
+      codigo,
+      detalhe: error,
+    })
+  } catch {
+    // Falhou o processamento E o banco não aceita nem o registro da falha. O job fica
+    // protegido pelo lease até o sweeper recuperá-lo — mesma honestidade do caminho de
+    // persistência: não se anuncia um estado que não foi gravado.
+    return { tipo: 'persistencia_falhou', jobId: job.id, status: 'recuperacao_pendente' }
+  }
   if (!desfecho) {
     // O lease já era de outro: outro processo herdou o job e vai gerar de novo. Nada a
     // registrar — insistir aqui sobrescreveria o trabalho dele.

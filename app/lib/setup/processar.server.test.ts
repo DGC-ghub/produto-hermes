@@ -350,6 +350,69 @@ describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
     expect(depois.nextAttemptAt.getTime()).toBeGreaterThan(Date.now())
   })
 
+  it('banco travado ATÉ na liberação: recuperacao_pendente, e o lease FICA', async () => {
+    // A resposta honesta quando nenhuma escrita é possível. Liberar o lease também é
+    // escrever: prometer `retry_wait` aqui inventaria um estado que não existe no banco, e
+    // o operador iria procurá-lo.
+    const job = await criarJob()
+    const modulo = await import('./job.server')
+    const travado = new Error('database is locked')
+    const espiaoFinal = vi.spyOn(modulo, 'finalizarJobComSucesso').mockRejectedValue(travado)
+    const espiaoFalha = vi.spyOn(modulo, 'failSetupJob').mockRejectedValue(travado)
+
+    try {
+      const resultado = await processarProximoJob({
+        processador: async () => ({ artefatos: ARTEFATOS, temLacunas: false }),
+        ...SEM_ESPERA,
+      })
+
+      expect(resultado).toEqual({
+        tipo: 'persistencia_falhou',
+        jobId: job.id,
+        status: 'recuperacao_pendente',
+      })
+    } finally {
+      espiaoFinal.mockRestore()
+      espiaoFalha.mockRestore()
+    }
+
+    // O job continua protegido pelo lease — nada foi apagado por fora do banco.
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.status).toBe('processing')
+    expect(depois.claimToken).not.toBeNull()
+    expect(depois.claimedAt).not.toBeNull()
+    // E não se inventou um desfecho: nenhum código de erro foi gravado.
+    expect(depois.lastError).toBeNull()
+  })
+
+  it('falha do processador com banco travado também vira recuperacao_pendente', async () => {
+    const job = await criarJob()
+    const modulo = await import('./job.server')
+    const espiao = vi
+      .spyOn(modulo, 'failSetupJob')
+      .mockRejectedValue(new Error('database is locked'))
+
+    try {
+      const resultado = await processarProximoJob({
+        processador: async () => {
+          throw new FalhaDoProcessamento('transient', 'provider_timeout')
+        },
+        ...SEM_ESPERA,
+      })
+
+      expect(resultado).toMatchObject({
+        tipo: 'persistencia_falhou',
+        status: 'recuperacao_pendente',
+      })
+    } finally {
+      espiao.mockRestore()
+    }
+
+    expect((await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe(
+      'processing',
+    )
+  })
+
   it('erro que NÃO é contenção não vira "banco ocupado" — ele sobe', async () => {
     // Um `catch` genérico transformava bug de lógica em três tentativas idênticas e depois
     // num desfecho que diz "banco ocupado": mentira que manda alguém investigar o lugar

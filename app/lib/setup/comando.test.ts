@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  descreverModo,
-  ehBancoDescartavel,
-  FLAGS_DE_SIMULACAO,
-  interpretarArgumentos,
-} from './comando'
+import { descreverModo, FLAGS_DE_SIMULACAO, interpretarArgumentos } from './comando'
 
 // O contrato do `--sim` tem teste porque neste repositório o mesmo flag significa coisas
 // opostas em dois comandos do prefixo `setup:` — lá ele APLICA, aqui ele não toca em nada.
@@ -71,34 +66,5 @@ describe('o modo é anunciado', () => {
   it('o falso diz que o artefato é de mentira', () => {
     // Sem isto alguém aprova uma candidata gerada pelo processador falso.
     expect(descreverModo({ tipo: 'executar_falso' })).toContain('FALSO')
-  })
-})
-
-describe('banco descartável: onde o gerador de mentira pode escrever', () => {
-  it.each([
-    ['file:/tmp/hermes-teste.db'],
-    ['file:/tmp/claude-1000/x/cmd.db'],
-    ['file:/home/pi/projects/produto-hermes/.test-123-1.db'],
-  ])('%s é descartável', (url) => {
-    expect(ehBancoDescartavel(url)).toBe(true)
-  })
-
-  const proibidos: Array<[string, string | undefined]> = [
-    // O caso que importa: no Pi o `dev.db` do repositório É o banco do serviço.
-    ['dev.db do repositório', 'file:./dev.db'],
-    ['dev.db por caminho absoluto', 'file:/home/pi/projects/produto-hermes/dev.db'],
-    ['o banco do deploy', 'file:/home/pi/hermes-deploy/shared/dev.db'],
-    // Nome parecido não basta: `/tmp` tem que ser diretório, não prefixo.
-    ['diretório que só COMEÇA com tmp', 'file:/tmpfoo/x.db'],
-    ['nome que contém .test no meio', 'file:/home/pi/prod.test.db'],
-    ['url que não é sqlite', 'postgresql://host/db'],
-    ['ausente', undefined],
-    ['vazia', ''],
-  ]
-
-  it.each(proibidos)('%s NÃO é descartável', (_rotulo, url) => {
-    // Na dúvida a resposta é "não": negar a mais custa um `export`, negar a menos custa
-    // dado de cliente.
-    expect(ehBancoDescartavel(url)).toBe(false)
   })
 })

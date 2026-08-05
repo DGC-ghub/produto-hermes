@@ -52,39 +52,6 @@ export function interpretarArgumentos(argv: readonly string[]): ModoDoComando {
   return { tipo: 'executar_real' }
 }
 
-/**
- * O caminho do arquivo por trás de uma `DATABASE_URL` de SQLite.
- *
- * Devolve `null` quando não é um `file:` — nesse caso não dá para afirmar que é
- * descartável, e o chamador deve tratar como se não fosse.
- */
-export function caminhoDoBanco(url: string | undefined): string | null {
-  if (!url?.startsWith('file:')) {
-    return null
-  }
-  return url.slice('file:'.length)
-}
-
-/**
- * O banco é seguramente DESCARTÁVEL?
- *
- * A pergunta importa porque no Pi o `dev.db` do repositório É o banco do serviço em
- * produção, e o `db.server.ts` cai nele quando ninguém define `DATABASE_URL`. Rodar o
- * gerador de mentira ali gravaria candidata falsa na configuração de empresa de verdade.
- *
- * A regra é uma ALLOWLIST estreita de propósito: só `/tmp` e os bancos da suíte. Na
- * dúvida a resposta é "não", porque o custo de errar para cada lado não é o mesmo — negar
- * a mais custa um `export`, negar a menos custa dado de cliente.
- */
-export function ehBancoDescartavel(url: string | undefined): boolean {
-  const caminho = caminhoDoBanco(url)
-  if (caminho === null) {
-    return false
-  }
-  const arquivo = caminho.split('/').pop() ?? ''
-  return caminho.startsWith('/tmp/') || arquivo.startsWith('.test')
-}
-
 /** A primeira linha da saída. Existe porque `--sim` é ambíguo entre os comandos. */
 export function descreverModo(modo: ModoDoComando): string {
   switch (modo.tipo) {

@@ -15,7 +15,7 @@
 //
 // O gerador de verdade ainda não existe (etapa 6). Sem `--sim` nem `--falso`, o comando
 // recusa em vez de fingir que fez algo.
-import { descreverModo, ehBancoDescartavel, interpretarArgumentos } from '../app/lib/setup/comando'
+import { descreverModo, interpretarArgumentos } from '../app/lib/setup/comando'
 import type { Processador, ResultadoDaPassada } from '../app/lib/setup/processar.server'
 
 // TUDO o que vem antes dos imports dinâmicos da fila é de propósito — import estático é
@@ -37,7 +37,14 @@ try {
   // banco efetivo é impresso adiante de qualquer forma.
 }
 
-const BANCO = process.env.DATABASE_URL ?? 'file:./dev.db (default do db.server)'
+// Marca se o cliente do banco chegou a ser carregado, para o `finally` não importar
+// `db.server` por conta própria num caminho que recusou tocar o banco.
+//
+// Honestidade sobre o alcance disto: medido, o import seguido de `$disconnect()` NÃO chega
+// a criar nem abrir o arquivo SQLite — o adapter do better-sqlite3 é preguiçoso. Ou seja, a
+// guarda não conserta um vazamento observável hoje; ela evita depender de um detalhe de
+// inicialização de dependência para a promessa "nada foi aberto" continuar verdadeira.
+let bancoFoiAberto = false
 
 // A leitura dos argumentos é pura e testada (app/lib/setup/comando.ts) — o contrato do
 // `--sim` não pode inverter em silêncio.
@@ -63,11 +70,17 @@ const processadorFalso: Processador = async (job) => ({
 })
 
 async function main(): Promise<void> {
+  // `banco.server` só olha o filesystem — não abre conexão nenhuma. Pode vir antes das
+  // recusas, e precisa: é ele que decide se o comando pode seguir.
+  const { avaliarBanco, descreverBanco, explicarRecusa } = await import(
+    '../app/lib/setup/banco.server'
+  )
+
   // O MODO e o BANCO vêm primeiro e sempre: `--sim` quer dizer coisas opostas em dois
   // comandos deste repositório, e qual banco está sendo usado é a pergunta que decide se
   // este comando é inofensivo ou não.
   console.log(`\n${descreverModo(modo)}`)
-  console.log(`Banco: ${BANCO}\n`)
+  console.log(`Banco: ${descreverBanco(process.env.DATABASE_URL)}\n`)
 
   if (modo.tipo === 'argumento_invalido') {
     console.error('Aceito: --sim (ou --simular/--dry-run) e --falso. Nada foi reivindicado.')
@@ -75,24 +88,29 @@ async function main(): Promise<void> {
     return
   }
 
-  // O gerador de mentira só roda em banco DESCARTÁVEL. Sem esta trava, um `--falso` no Pi
-  // gravaria candidata falsa na configuração de empresa de verdade — e o `.env` aponta
-  // justamente para lá.
-  if (modo.tipo === 'executar_falso' && !ehBancoDescartavel(process.env.DATABASE_URL)) {
-    console.error(
-      'O --falso grava artefato de MENTIRA e só roda em banco descartável.\n' +
-        `Este aqui não é: ${BANCO}\n\n` +
-        'Para exercitar o caminho, aponte para um banco de brinquedo:\n' +
-        '  npx prisma db push --url "file:/tmp/hermes-teste.db"\n' +
-        '  DATABASE_URL="file:/tmp/hermes-teste.db" npm run setup:processar -- --falso\n\n' +
-        'Nada foi reivindicado.',
-    )
-    process.exitCode = 1
-    return
+  // O gerador de mentira só roda em banco DESCARTÁVEL, provado pelo filesystem. Sem esta
+  // trava, um `--falso` no Pi gravaria candidata falsa na configuração de empresa de
+  // verdade — e o `.env` aponta justamente para lá.
+  if (modo.tipo === 'executar_falso') {
+    const veredicto = avaliarBanco(process.env.DATABASE_URL)
+    if (!veredicto.descartavel) {
+      console.error(
+        'O --falso grava artefato de MENTIRA e só roda em banco descartável.\n' +
+          `Recusado porque ${explicarRecusa(veredicto.motivo)}.\n\n` +
+          'Para exercitar o caminho, crie um banco de brinquedo primeiro:\n' +
+          '  npx prisma db push --url "file:/tmp/hermes-teste.db"\n' +
+          '  DATABASE_URL="file:/tmp/hermes-teste.db" npm run setup:processar -- --falso\n\n' +
+          'Nada foi reivindicado e nenhuma conexão foi aberta.',
+      )
+      process.exitCode = 1
+      return
+    }
   }
 
+  // Daqui para baixo o banco É tocado. O import abre a conexão.
   const { contarFilaDeSetup, setupWorkerHabilitado } = await import('../app/lib/setup/job.server')
   const { processarProximoJob } = await import('../app/lib/setup/processar.server')
+  bancoFoiAberto = true
 
   const fila = await contarFilaDeSetup()
   console.log('Fila do onboarding')
@@ -171,10 +189,21 @@ function relatar(resultado: ResultadoDaPassada): void {
       return
     case 'persistencia_falhou':
       console.error(
-        `Job ${resultado.jobId}: o trabalho ficou PRONTO e o banco não aceitou a gravação.\n` +
-          `Os artefatos se perderam; o job foi para ${resultado.status} e vai gerar tudo de\n` +
-          'novo. Veja o hermes.log.',
+        `Job ${resultado.jobId}: o trabalho ficou PRONTO e o banco não aceitou a gravação.`,
       )
+      if (resultado.status === 'recuperacao_pendente') {
+        // Não anunciar `retry_wait` aqui: nada foi escrito, nem a liberação do lease.
+        console.error(
+          'O banco continuou travado, então NEM a devolução do job à fila passou. Ele\n' +
+            'segue em `processing`, protegido pelo lease, e o sweeper o recupera quando o\n' +
+            'lease vencer (30 min). Não há nada a fazer além de destravar o banco.',
+        )
+      } else {
+        console.error(
+          `Os artefatos se perderam; o job foi para ${resultado.status} e vai gerar tudo de\n` +
+            'novo. Veja o hermes.log.',
+        )
+      }
       process.exitCode = 1
       return
   }
@@ -187,8 +216,8 @@ main()
     // Um stack do Prisma aqui faria parecer defeito do comando.
     if ((error as { code?: string })?.code === 'P2021') {
       console.error(
-        `As tabelas do onboarding não existem em ${BANCO}.\n` +
-          'A migration ainda não foi aplicada nesse banco. Nada foi lido nem escrito.',
+        'As tabelas do onboarding não existem nesse banco.\n' +
+          'A migration ainda não foi aplicada nele. Nada foi lido nem escrito.',
       )
       process.exitCode = 1
       return
@@ -197,6 +226,10 @@ main()
     process.exitCode = 1
   })
   .finally(() => {
-    // O sweeper é um `setInterval` unref'd, mas a conexão do Prisma segura o processo.
+    // Só desconecta o que foi conectado. Importar `db.server` aqui, num caminho que
+    // recusou tocar o banco, ABRIRIA a conexão que o comando tinha acabado de evitar.
+    if (!bancoFoiAberto) {
+      return
+    }
     void import('../app/db.server').then(({ db }) => db.$disconnect())
   })
