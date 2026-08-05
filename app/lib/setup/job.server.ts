@@ -840,6 +840,11 @@ export function setupWorkerHabilitado(): boolean {
 //
 // Fora dos testes: um `setInterval` mexendo na fila no meio de uma asserção produziria
 // vermelho aleatório, e a varredura já é chamada diretamente pelos testes.
-if (!process.env.VITEST) {
+//
+// E fora dos COMANDOS de terminal: eles importam este módulo para inspecionar a fila, e a
+// varredura ESCREVE. Num `--sim`, que promete não alterar nada, um timer mexendo na fila
+// pelas costas quebraria a promessa — e o comando morre antes dos 60 s de qualquer jeito,
+// então o sweeper ali não serve para nada além de risco.
+if (!process.env.VITEST && process.env.SETUP_SWEEPER_OFF !== '1') {
   startSetupJobSweeper()
 }

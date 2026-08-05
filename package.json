@@ -20,6 +20,7 @@
     "prova:signup": "npx tsx scripts/prova-signup.ts",
     "prova:whatsapp": "npx tsx scripts/prova-whatsapp-credential.ts",
     "setup:backfill": "npx tsx scripts/setup-backfill.ts",
+    "setup:processar": "npx tsx scripts/setup-processar.ts",
     "email:test": "npx tsx scripts/send-test-email.ts",
     "mp:test": "npx tsx scripts/mp-test.ts",
     "postinstall": "prisma generate"
