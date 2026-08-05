@@ -8,6 +8,8 @@
 //
 // Nada aqui reivindica sozinho. A função roda quando alguém a chama, e é isso que mantém
 // o worker automático desligado (§6.2) sem depender de disciplina de quem edita o código.
+
+import { type CodigoErro, type FailureKind, HEARTBEAT_INTERVAL_MS } from './job'
 import type { ArtefatosDoJob, JobReivindicado, MotivoDaRecusa } from './job.server'
 import {
   claimNextSetupJob,
@@ -15,7 +17,7 @@ import {
   finalizarJobComSucesso,
   heartbeatSetupJob,
 } from './job.server'
-import { type CodigoErro, type FailureKind, HEARTBEAT_INTERVAL_MS } from './job'
+import { ehContencaoTransitoria } from './retry'
 
 /** O que o processador devolve quando o trabalho dá certo. */
 export type ResultadoDoProcessador = {
@@ -68,8 +70,16 @@ export type ResultadoDaPassada =
       codigo: CodigoErro
       status: 'retry_wait' | 'failed'
     }
-  /** O trabalho ficou pronto e o banco não aceitou a gravação nem com insistência. */
-  | { tipo: 'persistencia_falhou'; jobId: string }
+  /**
+   * O trabalho ficou pronto e o banco não aceitou a gravação nem com insistência. O lease
+   * é LIBERADO junto (`status` diz para onde o job foi) — deixá-lo preso empurraria a
+   * recuperação para o sweeper, que só age depois de 30 minutos.
+   */
+  | {
+      tipo: 'persistencia_falhou'
+      jobId: string
+      status: 'retry_wait' | 'failed' | 'lease_perdido'
+    }
 
 /** Quantas vezes a GRAVAÇÃO é repetida. A geração nunca é refeita — ver `persistir`. */
 const TENTATIVAS_DE_PERSISTENCIA = 3
@@ -89,9 +99,7 @@ export type OpcoesDaPassada = {
  * comando de terminal, e um stack trace no lugar de um desfecho não ajuda ninguém a
  * decidir o que fazer em seguida.
  */
-export async function processarProximoJob(
-  opcoes: OpcoesDaPassada,
-): Promise<ResultadoDaPassada> {
+export async function processarProximoJob(opcoes: OpcoesDaPassada): Promise<ResultadoDaPassada> {
   const claim = await claimNextSetupJob()
   if (claim.tipo === 'empty') {
     return { tipo: 'nada_a_fazer' }
@@ -111,7 +119,27 @@ export async function processarProximoJob(
       return await registrarFalha(job, error)
     }
 
-    return await persistir(job, resultado, opcoes.esperaDaPersistenciaMs ?? 500)
+    const persistencia = await persistir(job, resultado, opcoes.esperaDaPersistenciaMs ?? 500)
+    if (persistencia.tipo !== 'estourou') {
+      return persistencia.resultado
+    }
+
+    // A gravação esgotou. O job NÃO pode ficar `processing` com o lease na mão: o desfecho
+    // que a taxonomia manda para contenção é `retry_wait` (§6.4), e deixar como está
+    // empurraria a recuperação para o sweeper — que só age depois de 30 minutos de lease
+    // vencido. Isso é fallback de crash, não desfecho de falha que o comando VIU acontecer.
+    const desfecho = await failSetupJob({
+      jobId: job.id,
+      claimToken: job.claimToken,
+      kind: 'transient',
+      codigo: 'banco_ocupado',
+      detalhe: persistencia.erro,
+    })
+    return {
+      tipo: 'persistencia_falhou',
+      jobId: job.id,
+      status: desfecho?.status ?? 'lease_perdido',
+    }
   } finally {
     pulsar()
   }
@@ -157,6 +185,11 @@ async function registrarFalha(job: JobReivindicado, error: unknown): Promise<Res
   return { tipo: 'falhou', jobId: job.id, kind, codigo, status: desfecho.status }
 }
 
+type Persistencia =
+  | { tipo: 'resolvida'; resultado: ResultadoDaPassada }
+  /** As tentativas acabaram. Quem chamou decide o desfecho do job — aqui não se escreve. */
+  | { tipo: 'estourou'; erro: unknown }
+
 /**
  * Grava o resultado, repetindo SÓ a gravação.
  *
@@ -169,7 +202,8 @@ async function persistir(
   job: JobReivindicado,
   resultado: ResultadoDoProcessador,
   esperaMs: number,
-): Promise<ResultadoDaPassada> {
+): Promise<Persistencia> {
+  let ultimoErro: unknown
   for (let tentativa = 0; tentativa < TENTATIVAS_DE_PERSISTENCIA; tentativa += 1) {
     try {
       const final = await finalizarJobComSucesso({
@@ -180,21 +214,34 @@ async function persistir(
       })
       if (final.ok) {
         return {
-          tipo: 'concluido',
-          jobId: job.id,
-          versionId: job.versionId,
-          tenantSlug: job.tenantSlug,
-          comLacunas: resultado.temLacunas,
+          tipo: 'resolvida',
+          resultado: {
+            tipo: 'concluido',
+            jobId: job.id,
+            versionId: job.versionId,
+            tenantSlug: job.tenantSlug,
+            comLacunas: resultado.temLacunas,
+          },
         }
       }
       // Recusa NÃO é erro de banco: o estado mudou embaixo e insistir daria o mesmo
       // resultado. Sai na hora.
-      return { tipo: 'recusado', jobId: job.id, motivo: final.motivo }
-    } catch {
+      return {
+        tipo: 'resolvida',
+        resultado: { tipo: 'recusado', jobId: job.id, motivo: final.motivo },
+      }
+    } catch (error) {
+      // Só CONTENÇÃO é repetida. Um `catch` vazio transformava bug de lógica em três
+      // tentativas idênticas e depois num desfecho que diz "banco ocupado" — mentira que
+      // mandaria alguém investigar o lugar errado.
+      if (!ehContencaoTransitoria(error)) {
+        throw error
+      }
+      ultimoErro = error
       if (tentativa < TENTATIVAS_DE_PERSISTENCIA - 1 && esperaMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, esperaMs * (tentativa + 1)))
       }
     }
   }
-  return { tipo: 'persistencia_falhou', jobId: job.id }
+  return { tipo: 'estourou', erro: ultimoErro }
 }

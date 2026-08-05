@@ -2,13 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db.server'
 import { MAX_ATTEMPTS } from './job'
 import type { ArtefatosDoJob, JobReivindicado } from './job.server'
-import { claimNextSetupJob } from './job.server'
-import {
-  FalhaDoProcessamento,
-  type Processador,
-  processarProximoJob,
-  type ResultadoDoProcessador,
-} from './processar.server'
+import { FalhaDoProcessamento, type Processador, processarProximoJob } from './processar.server'
 
 // A orquestração testada com processador FALSO — que é o ponto de ele ser injetado. Dá
 // para exercitar sucesso, lacuna de negócio, cada tipo de falha e a perda do lease sem
@@ -313,15 +307,14 @@ describe('o estado mudou embaixo enquanto o processador trabalhava', () => {
 })
 
 describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
-  it('gravação que sempre estoura devolve persistencia_falhou, com UMA geração', async () => {
-    await criarJob()
+  it('gravação que sempre estoura: UMA geração, lease LIBERADO e job em retry_wait', async () => {
+    const job = await criarJob()
     let vezesQueGerou = 0
 
-    // Substitui a finalização por uma que sempre lança erro de banco.
     const modulo = await import('./job.server')
-    const original = modulo.finalizarJobComSucesso
     const espiao = vi
       .spyOn(modulo, 'finalizarJobComSucesso')
+      // Contenção — é o único erro que a gravação repete.
       .mockRejectedValue(new Error('database is locked'))
 
     try {
@@ -333,14 +326,52 @@ describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
         ...SEM_ESPERA,
       })
 
-      expect(resultado.tipo).toBe('persistencia_falhou')
+      expect(resultado).toEqual({
+        tipo: 'persistencia_falhou',
+        jobId: job.id,
+        status: 'retry_wait',
+      })
       // A gravação insistiu…
       expect(espiao.mock.calls.length).toBeGreaterThan(1)
       // …e a geração aconteceu UMA vez.
       expect(vezesQueGerou).toBe(1)
     } finally {
       espiao.mockRestore()
-      expect(modulo.finalizarJobComSucesso).toBe(original)
+    }
+
+    // O ponto: o job NÃO fica preso em `processing` com o lease na mão. Deixá-lo assim
+    // empurraria a recuperação para o sweeper, que só age depois de 30 minutos — fallback
+    // de crash, não desfecho de uma falha que o comando VIU acontecer.
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.status).toBe('retry_wait')
+    expect(depois.claimToken).toBeNull()
+    expect(depois.claimedAt).toBeNull()
+    expect(depois.lastError).toBe('banco_ocupado')
+    expect(depois.nextAttemptAt.getTime()).toBeGreaterThan(Date.now())
+  })
+
+  it('erro que NÃO é contenção não vira "banco ocupado" — ele sobe', async () => {
+    // Um `catch` genérico transformava bug de lógica em três tentativas idênticas e depois
+    // num desfecho que diz "banco ocupado": mentira que manda alguém investigar o lugar
+    // errado.
+    await criarJob()
+    const modulo = await import('./job.server')
+    const espiao = vi
+      .spyOn(modulo, 'finalizarJobComSucesso')
+      .mockRejectedValue(new TypeError('x is not a function'))
+
+    try {
+      await expect(
+        processarProximoJob({
+          processador: async () => ({ artefatos: ARTEFATOS, temLacunas: false }),
+          ...SEM_ESPERA,
+        }),
+      ).rejects.toBeInstanceOf(TypeError)
+
+      // Uma tentativa só: não se insiste no que não é contenção.
+      expect(espiao.mock.calls).toHaveLength(1)
+    } finally {
+      espiao.mockRestore()
     }
   })
 })

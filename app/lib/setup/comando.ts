@@ -17,17 +17,32 @@ export type ModoDoComando =
   | { tipo: 'executar_falso' }
   /** Reivindica e processa de verdade. O gerador real entra na etapa 6. */
   | { tipo: 'executar_real' }
+  /** Argumento que ninguém reconhece: o comando para em vez de adivinhar. */
+  | { tipo: 'argumento_invalido'; argumento: string }
 
 /** Os três jeitos de pedir simulação. Aliases porque `--sim` é ambíguo aqui. */
 export const FLAGS_DE_SIMULACAO = ['--sim', '--simular', '--dry-run'] as const
 
+/** Tudo o que o comando aceita. Qualquer outra coisa faz ele parar. */
+export const FLAGS_CONHECIDOS: readonly string[] = [...FLAGS_DE_SIMULACAO, '--falso']
+
 /**
  * Decide o modo.
  *
- * A simulação VENCE qualquer outro flag: quem digitou `--sim` está pedindo para não
- * mexer em nada, e combinar isso com `--falso` é engano — o desfecho seguro é não tocar.
+ * Duas regras que existem por segurança, não por gosto:
+ *
+ *  1. A simulação VENCE qualquer outro flag. Quem digitou `--sim` está pedindo para não
+ *     mexer em nada, e combinar com `--falso` é engano — o desfecho seguro é não tocar.
+ *  2. Argumento desconhecido PARA o comando. Hoje um `--simulacao` errado cairia em
+ *     execução real, que por acaso não faz nada porque o gerador real ainda não existe.
+ *     Quando ele entrar (etapa 6), o mesmo erro de digitação passaria a processar de
+ *     verdade — bomba-relógio no contrato da linha de comando.
  */
 export function interpretarArgumentos(argv: readonly string[]): ModoDoComando {
+  const desconhecido = argv.find((arg) => !FLAGS_CONHECIDOS.includes(arg))
+  if (desconhecido !== undefined) {
+    return { tipo: 'argumento_invalido', argumento: desconhecido }
+  }
   if (FLAGS_DE_SIMULACAO.some((flag) => argv.includes(flag))) {
     return { tipo: 'simular' }
   }
@@ -35,6 +50,39 @@ export function interpretarArgumentos(argv: readonly string[]): ModoDoComando {
     return { tipo: 'executar_falso' }
   }
   return { tipo: 'executar_real' }
+}
+
+/**
+ * O caminho do arquivo por trás de uma `DATABASE_URL` de SQLite.
+ *
+ * Devolve `null` quando não é um `file:` — nesse caso não dá para afirmar que é
+ * descartável, e o chamador deve tratar como se não fosse.
+ */
+export function caminhoDoBanco(url: string | undefined): string | null {
+  if (!url?.startsWith('file:')) {
+    return null
+  }
+  return url.slice('file:'.length)
+}
+
+/**
+ * O banco é seguramente DESCARTÁVEL?
+ *
+ * A pergunta importa porque no Pi o `dev.db` do repositório É o banco do serviço em
+ * produção, e o `db.server.ts` cai nele quando ninguém define `DATABASE_URL`. Rodar o
+ * gerador de mentira ali gravaria candidata falsa na configuração de empresa de verdade.
+ *
+ * A regra é uma ALLOWLIST estreita de propósito: só `/tmp` e os bancos da suíte. Na
+ * dúvida a resposta é "não", porque o custo de errar para cada lado não é o mesmo — negar
+ * a mais custa um `export`, negar a menos custa dado de cliente.
+ */
+export function ehBancoDescartavel(url: string | undefined): boolean {
+  const caminho = caminhoDoBanco(url)
+  if (caminho === null) {
+    return false
+  }
+  const arquivo = caminho.split('/').pop() ?? ''
+  return caminho.startsWith('/tmp/') || arquivo.startsWith('.test')
 }
 
 /** A primeira linha da saída. Existe porque `--sim` é ambíguo entre os comandos. */
@@ -46,5 +94,7 @@ export function descreverModo(modo: ModoDoComando): string {
       return '⚠️  MODO: EXECUÇÃO com PROCESSADOR FALSO — vai reivindicar e gravar artefato de mentira.'
     case 'executar_real':
       return '⚠️  MODO: EXECUÇÃO — vai reivindicar e alterar jobs.'
+    case 'argumento_invalido':
+      return `Argumento desconhecido: ${modo.argumento}`
   }
 }

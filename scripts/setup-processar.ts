@@ -15,14 +15,29 @@
 //
 // O gerador de verdade ainda não existe (etapa 6). Sem `--sim` nem `--falso`, o comando
 // recusa em vez de fingir que fez algo.
-import { descreverModo, interpretarArgumentos } from '../app/lib/setup/comando'
+import { descreverModo, ehBancoDescartavel, interpretarArgumentos } from '../app/lib/setup/comando'
 import type { Processador, ResultadoDaPassada } from '../app/lib/setup/processar.server'
 
-// ANTES de qualquer import dos módulos da fila: o carregamento deles liga o sweeper, que
-// ESCREVE. Num comando de terminal ele não serve (o processo morre antes dos 60 s) e num
-// `--sim` quebraria a promessa de não alterar nada. Os imports abaixo são dinâmicos por
-// causa disto — import estático é içado para antes desta linha.
+// TUDO o que vem antes dos imports dinâmicos da fila é de propósito — import estático é
+// içado para antes de qualquer linha executável, e `db.server.ts` lê `DATABASE_URL` no
+// momento em que é carregado.
+//
+// 1. O sweeper ESCREVE. Num comando de terminal ele não serve (o processo morre antes dos
+//    60 s) e num `--sim` quebraria a promessa de não alterar nada.
 process.env.SETUP_SWEEPER_OFF = '1'
+
+// 2. Sem `.env`, `db.server.ts` cai no default dele: `file:./dev.db` — que no Pi é o banco
+//    do SERVIÇO EM PRODUÇÃO. Todo script deste repositório carrega o `.env` por isso; este
+//    era o único que não carregava. `loadEnvFile` não sobrescreve variável já definida,
+//    então um `DATABASE_URL` exportado no shell continua vencendo.
+try {
+  process.loadEnvFile()
+} catch {
+  // Sem `.env` (ambiente de CI, por exemplo): segue com o que estiver no ambiente. O
+  // banco efetivo é impresso adiante de qualquer forma.
+}
+
+const BANCO = process.env.DATABASE_URL ?? 'file:./dev.db (default do db.server)'
 
 // A leitura dos argumentos é pura e testada (app/lib/setup/comando.ts) — o contrato do
 // `--sim` não pode inverter em silêncio.
@@ -48,12 +63,36 @@ const processadorFalso: Processador = async (job) => ({
 })
 
 async function main(): Promise<void> {
+  // O MODO e o BANCO vêm primeiro e sempre: `--sim` quer dizer coisas opostas em dois
+  // comandos deste repositório, e qual banco está sendo usado é a pergunta que decide se
+  // este comando é inofensivo ou não.
+  console.log(`\n${descreverModo(modo)}`)
+  console.log(`Banco: ${BANCO}\n`)
+
+  if (modo.tipo === 'argumento_invalido') {
+    console.error('Aceito: --sim (ou --simular/--dry-run) e --falso. Nada foi reivindicado.')
+    process.exitCode = 1
+    return
+  }
+
+  // O gerador de mentira só roda em banco DESCARTÁVEL. Sem esta trava, um `--falso` no Pi
+  // gravaria candidata falsa na configuração de empresa de verdade — e o `.env` aponta
+  // justamente para lá.
+  if (modo.tipo === 'executar_falso' && !ehBancoDescartavel(process.env.DATABASE_URL)) {
+    console.error(
+      'O --falso grava artefato de MENTIRA e só roda em banco descartável.\n' +
+        `Este aqui não é: ${BANCO}\n\n` +
+        'Para exercitar o caminho, aponte para um banco de brinquedo:\n' +
+        '  npx prisma db push --url "file:/tmp/hermes-teste.db"\n' +
+        '  DATABASE_URL="file:/tmp/hermes-teste.db" npm run setup:processar -- --falso\n\n' +
+        'Nada foi reivindicado.',
+    )
+    process.exitCode = 1
+    return
+  }
+
   const { contarFilaDeSetup, setupWorkerHabilitado } = await import('../app/lib/setup/job.server')
   const { processarProximoJob } = await import('../app/lib/setup/processar.server')
-
-  // O MODO vem primeiro e sempre, porque `--sim` quer dizer coisas opostas em dois
-  // comandos deste repositório.
-  console.log(`\n${descreverModo(modo)}\n`)
 
   const fila = await contarFilaDeSetup()
   console.log('Fila do onboarding')
@@ -103,11 +142,18 @@ function relatar(resultado: ResultadoDaPassada): void {
       return
     case 'concluido':
       console.log(`Job ${resultado.jobId} concluído para ${resultado.tenantSlug}.`)
-      console.log(
-        resultado.comLacunas
-          ? 'O gerador apontou LACUNAS: a versão voltou ao cliente em needs_changes.'
-          : 'Artefatos gravados. Próximo passo: `npm run setup:revisar`.',
-      )
+      if (resultado.comLacunas) {
+        console.log('O gerador apontou LACUNAS: a versão voltou ao cliente em needs_changes.')
+      } else if (modo.tipo === 'executar_falso') {
+        // Recomendar revisão aqui convidaria alguém a aprovar uma candidata que foi
+        // gerada de mentira, de propósito.
+        console.log(
+          'Artefatos de MENTIRA gravados (gerador falso). NÃO revise nem aprove esta\n' +
+            'candidata: ela existe só para exercitar o caminho.',
+        )
+      } else {
+        console.log('Artefatos gravados. Próximo passo: `npm run setup:revisar`.')
+      }
       return
     case 'recusado':
       console.error(
@@ -126,7 +172,8 @@ function relatar(resultado: ResultadoDaPassada): void {
     case 'persistencia_falhou':
       console.error(
         `Job ${resultado.jobId}: o trabalho ficou PRONTO e o banco não aceitou a gravação.\n` +
-          'Os artefatos se perderam e o job vai gerar tudo de novo. Veja o hermes.log.',
+          `Os artefatos se perderam; o job foi para ${resultado.status} e vai gerar tudo de\n` +
+          'novo. Veja o hermes.log.',
       )
       process.exitCode = 1
       return
@@ -135,6 +182,17 @@ function relatar(resultado: ResultadoDaPassada): void {
 
 main()
   .catch((error) => {
+    // P2021 = tabela inexistente. Acontece quando este comando aponta para um banco em que
+    // a migration do onboarding ainda não foi aplicada — o do serviço, hoje, é um deles.
+    // Um stack do Prisma aqui faria parecer defeito do comando.
+    if ((error as { code?: string })?.code === 'P2021') {
+      console.error(
+        `As tabelas do onboarding não existem em ${BANCO}.\n` +
+          'A migration ainda não foi aplicada nesse banco. Nada foi lido nem escrito.',
+      )
+      process.exitCode = 1
+      return
+    }
     console.error('[setup:processar] falhou:', error instanceof Error ? error.message : error)
     process.exitCode = 1
   })
