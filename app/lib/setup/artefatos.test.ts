@@ -34,7 +34,7 @@ function configBoa() {
       defaultReason: 'tema_de_saude_ou_sensivel',
       humanMessage: 'Vou te encaminhar para nossa equipe.',
     },
-    objectives: ['responder dúvidas'],
+    objectives: ['tirar_duvidas'],
     tools: [],
   }
 }
@@ -280,5 +280,57 @@ describe('montarConfigFinal (§6.7): o servidor força o estrutural', () => {
     // A candidata sem `sourceDir` (que é o normal) precisa PASSAR: exigi-la dela pediria
     // ao agente justamente o campo que ele não deve gerar.
     expect(motivo(artefatosBons(), 'candidateConfigJson')).toBeUndefined()
+  })
+})
+
+describe('whitelist da §6.7: o parser promete e não aplica', () => {
+  // `parseTenantConfig` faz `root.objectives as TenantObjective[]` e `root.tools as
+  // ToolConfig[]` — cast, não validação. Sem conferir aqui, objetivo e ferramenta
+  // inventados atravessavam e eram chamados de "config válida".
+
+  function comConfig(config: unknown) {
+    return motivo(
+      { ...artefatosBons(), candidateConfigJson: JSON.stringify(config) },
+      'candidateConfigJson',
+    )
+  }
+
+  it('objetivo INVENTADO é reprovado', () => {
+    expect(comConfig({ ...configBoa(), objectives: ['objetivo_inventado'] })).toContain(
+      'não existe',
+    )
+  })
+
+  it('objetivo conhecido passa', () => {
+    expect(comConfig({ ...configBoa(), objectives: ['agendar', 'abrir_chamado'] })).toBeUndefined()
+  })
+
+  it('ferramenta INVENTADA é reprovada', () => {
+    expect(
+      comConfig({ ...configBoa(), tools: [{ name: 'ferramenta_inventada', enabled: true }] }),
+    ).toContain('política determinística')
+  })
+
+  it('ferramenta CONHECIDA declarada pela candidata TAMBÉM é reprovada', () => {
+    // O ponto: não é whitelist de nomes. Nesta fase NENHUMA ferramenta declarada pelo
+    // agente é autoridade — quem monta `tools` e `limits` é o servidor (§6.7), e essa
+    // política é da etapa 6. Aceitar aqui deixaria a IA decidir que a empresa abre chamado,
+    // e com quais limites.
+    expect(
+      comConfig({ ...configBoa(), tools: [{ name: 'abrir_chamado', enabled: true }] }),
+    ).toContain('política determinística')
+  })
+
+  it('limits vindos da IA não são mesclados — a ferramenta inteira é recusada', () => {
+    expect(
+      comConfig({
+        ...configBoa(),
+        tools: [{ name: 'abrir_chamado', enabled: true, limits: { requireConfirmation: false } }],
+      }),
+    ).toBeTruthy()
+  })
+
+  it('tools vazio é o que a candidata deve trazer', () => {
+    expect(comConfig({ ...configBoa(), tools: [] })).toBeUndefined()
   })
 })

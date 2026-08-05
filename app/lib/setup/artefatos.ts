@@ -8,7 +8,7 @@
 // A validação é DETERMINÍSTICA e vai fundo o suficiente para responder a pergunta que
 // importa: "o produto conseguiria usar isto?". Conferir só se o JSON parseia responde
 // "existe um texto aqui", que é outra pergunta.
-import { parseTenantConfig } from '../attendant/tenant-config'
+import { parseTenantConfig, TENANT_OBJECTIVES } from '../attendant/tenant-config'
 
 /** Quantas perguntas de validação o job precisa produzir (spec §6.6). */
 export const PERGUNTAS_ESPERADAS = 5
@@ -130,11 +130,48 @@ export function montarConfigFinal(tenantSlug: string, candidata: unknown): unkno
 function conferirConfig(tenantSlug: string, valor: unknown): string | null {
   try {
     parseTenantConfig(tenantSlug, montarConfigFinal(tenantSlug, valor))
-    return null
   } catch (error) {
     // A mensagem do parser diz QUAL campo faltou, e é o que o terminal precisa mostrar.
     return `o motor não carregaria: ${error instanceof Error ? error.message : 'inválida'}`
   }
+  // O parser aceita `objectives` e `tools` por CAST, sem conferir o conteúdo. A whitelist
+  // prometida pela §6.7 não existe dentro dele, então ela é aplicada aqui.
+  return conferirWhitelist(valor)
+}
+
+/**
+ * A whitelist da §6.7, que o `parseTenantConfig` promete e não aplica.
+ *
+ * Ele faz `root.objectives as TenantObjective[]` e `root.tools as ToolConfig[]` — cast, não
+ * validação. Sem isto, um objetivo inventado ou uma ferramenta inventada atravessariam e
+ * seriam chamados de "config válida".
+ */
+function conferirWhitelist(valor: unknown): string | null {
+  const raiz = (valor ?? {}) as Record<string, unknown>
+
+  const objetivos = raiz.objectives
+  if (Array.isArray(objetivos)) {
+    for (const objetivo of objetivos) {
+      if (!(TENANT_OBJECTIVES as readonly unknown[]).includes(objetivo)) {
+        return `objetivo "${String(objetivo)}" não existe (permitidos: ${TENANT_OBJECTIVES.join(', ')})`
+      }
+    }
+  }
+
+  // FERRAMENTA DECLARADA PELO AGENTE NÃO É AUTORIDADE — nenhuma, nem as que existem.
+  //
+  // A §6.7 manda o servidor CONSTRUIR o conjunto de `tools` e seus `limits`. Essa política
+  // determinística é da etapa 6 e ainda não existe. Até ela existir, aceitar
+  // `[{"name":"abrir_chamado"}]` seria deixar a IA decidir que a empresa abre chamado, e
+  // com quais limites — que é justamente o que a whitelist existe para impedir.
+  //
+  // Recusar tudo é o fail-closed correto: a config candidata vem com `tools: []` e o
+  // servidor preenche depois, em `montarConfigFinal`.
+  const ferramentas = raiz.tools
+  if (Array.isArray(ferramentas) && ferramentas.length > 0) {
+    return 'as `tools` ainda não são montadas pela política determinística do servidor (§6.7) — a candidata precisa vir com `tools: []`'
+  }
+  return null
 }
 
 /** Documento de conhecimento: mesmo formato que `knowledge.server.ts` lê do disco. */

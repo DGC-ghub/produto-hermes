@@ -82,7 +82,7 @@ beforeAll(async () => {
             defaultReason: 'saude',
             humanMessage: 'Vou chamar.',
           },
-          objectives: ['responder dúvidas'],
+          objectives: ['tirar_duvidas'],
           tools: [],
         }),
         candidateKnowledgeJson: JSON.stringify([{ title: 'FAQ', content: 'Atendemos 9h-18h.' }]),

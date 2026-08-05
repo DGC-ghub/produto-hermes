@@ -22,7 +22,7 @@ const ARTEFATOS = {
     knowledge: { sourcePolicy: 'answer_only_from_knowledge' },
     guardrails: { neverPromise: ['prazo'] },
     escalationPolicy: { triggers: ['dor'], defaultReason: 'saude', humanMessage: 'Vou chamar.' },
-    objectives: ['responder dúvidas'],
+    objectives: ['tirar_duvidas'],
     tools: [],
   }),
   candidateKnowledgeJson: JSON.stringify([{ title: 'FAQ', content: 'Atendemos 9h às 18h.' }]),
@@ -143,6 +143,54 @@ describe('assumir a revisão', () => {
 
     expect([a, b].filter((r) => r.tipo === 'assumida')).toHaveLength(1)
     expect(await db.aiSetupEvent.count({ where: { versionId, kind: 'review_started' } })).toBe(1)
+  })
+})
+
+describe('o reviewer é validado NA FRONTEIRA DO SERVIDOR', () => {
+  // A CLI já normaliza, mas ela não é a única porta: um teste, um worker ou um script
+  // futuro chamando `assumirRevisao` direto gravaria um claim com identidade inútil, e
+  // "quem assumiu esta revisão?" ficaria sem resposta.
+
+  it.each([
+    [' '],
+    [''],
+    ['  \t '],
+    ['ab'],
+  ])('reviewer %j é recusado sem tocar no banco', async (nome) => {
+    await cenarioPronto()
+
+    const resultado = await assumirRevisao({
+      tenantSlug: slug,
+      reviewer: nome,
+      hostname: 'host',
+      usuarioDoProcesso: 'pi',
+    })
+
+    expect(resultado.tipo).toBe('reviewer_invalido')
+    const versao = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })
+    expect(versao.reviewStartedAt).toBeNull()
+    expect(versao.reviewer).toBeNull()
+    expect(await db.aiSetupEvent.count({ where: { versionId } })).toBe(0)
+  })
+
+  it('o servidor grava a forma NORMALIZADA, não a que recebeu', async () => {
+    // Não basta recusar vazio: a fronteira precisa ser a autoridade da forma persistida,
+    // senão "Ana   Maria" e "Ana Maria" viram dois revisores diferentes na auditoria.
+    await cenarioPronto()
+
+    const resultado = await assumirRevisao({
+      tenantSlug: slug,
+      reviewer: '  Ana   Maria  ',
+      hostname: 'host',
+      usuarioDoProcesso: 'pi',
+    })
+
+    expect(resultado).toMatchObject({ tipo: 'assumida', reviewer: 'Ana Maria' })
+    expect((await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })).reviewer).toBe(
+      'Ana Maria',
+    )
+    const evento = await db.aiSetupEvent.findFirst({ where: { versionId, kind: 'review_started' } })
+    expect(evento?.actor).toBe('internal:Ana Maria@host')
   })
 })
 

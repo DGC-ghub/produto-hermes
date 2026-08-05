@@ -200,6 +200,15 @@ function relatar(resultado: Resultado): void {
       console.error(`A versão está em "${resultado.estado}", e só se revisa "submitted".`)
       process.exitCode = 1
       return
+    case 'reviewer_invalido':
+      // A CLI já barra antes; se chegou aqui, quem chamou foi outro caminho.
+      console.error(
+        resultado.motivo === 'ausente'
+          ? 'O revisor chegou vazio na camada de domínio.'
+          : 'O nome do revisor é curto demais para identificar alguém.',
+      )
+      process.exitCode = 1
+      return
     case 'tenant_desconhecido':
     case 'nada_pendente':
       console.error('Nada pendente para esta empresa.')

@@ -10,7 +10,7 @@
 import { db } from '../../db.server'
 import { type ProblemaDeArtefato, validarArtefatos } from './artefatos'
 import { comRetry } from './retry'
-import { formatarAtor } from './revisao'
+import { formatarAtor, normalizarReviewer, type ReviewerLido } from './revisao'
 
 export type ResultadoDaRevisao =
   | {
@@ -30,6 +30,12 @@ export type ResultadoDaRevisao =
   | { tipo: 'base_mudou' }
   /** Outro revisor chegou primeiro. */
   | { tipo: 'ja_assumida'; reviewer: string | null; desde: Date | null }
+  /**
+   * O nome do revisor não serve. A CLI já confere, mas a fronteira do SERVIDOR é a
+   * autoridade: um teste, um worker ou um script futuro chamando esta função com `" "`
+   * gravaria um claim com identidade inútil, e "quem assumiu?" ficaria sem resposta.
+   */
+  | { tipo: 'reviewer_invalido'; motivo: Extract<ReviewerLido, { ok: false }>['motivo'] }
 
 /**
  * Assume a revisão da versão pendente de um tenant.
@@ -51,6 +57,14 @@ export async function assumirRevisao(input: {
   agora?: Date
 }): Promise<ResultadoDaRevisao> {
   const agora = input.agora ?? new Date()
+
+  // ANTES de qualquer acesso ao banco: o nome é o que vai para a auditoria, e normalizar
+  // aqui — não só na CLI — é o que torna a forma persistida decidida num lugar só.
+  const lido = normalizarReviewer(input.reviewer)
+  if (!lido.ok) {
+    return { tipo: 'reviewer_invalido', motivo: lido.motivo }
+  }
+  const reviewer = lido.nome
 
   return comRetry((opcoes) =>
     db.$transaction(async (tx): Promise<ResultadoDaRevisao> => {
@@ -137,7 +151,7 @@ export async function assumirRevisao(input: {
           state: 'submitted',
           reviewStartedAt: null,
         },
-        data: { reviewStartedAt: agora, reviewer: input.reviewer },
+        data: { reviewStartedAt: agora, reviewer },
       })
       if (claim.count !== 1) {
         // Mostra QUEM assumiu: "conflito" sem nome faz a pessoa ficar tentando de novo.
@@ -157,7 +171,7 @@ export async function assumirRevisao(input: {
           tenantId: tenant.id,
           versionId: versao.id,
           kind: 'review_started',
-          actor: formatarAtor(input.reviewer, input.hostname),
+          actor: formatarAtor(reviewer, input.hostname),
           // Estruturado e curto de propósito: `detail` não é depósito de texto livre nem
           // de ambiente. Só o que a auditoria precisa.
           detail: JSON.stringify({
@@ -171,7 +185,7 @@ export async function assumirRevisao(input: {
         tipo: 'assumida',
         versionId: versao.id,
         generation: versao.generation,
-        reviewer: input.reviewer,
+        reviewer,
         submittedAt: versao.submittedAt,
       }
     }, opcoes),
