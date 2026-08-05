@@ -8,8 +8,9 @@
 // pré-condições: assumir antes de os artefatos existirem faria o relógio de 30 minutos
 // medir ESPERA DO JOB, não trabalho humano.
 import { db } from '../../db.server'
+import { type ProblemaDeArtefato, validarArtefatos } from './artefatos'
 import { comRetry } from './retry'
-import { artefatosPendentes, type CampoDeArtefato, formatarAtor } from './revisao'
+import { formatarAtor } from './revisao'
 
 export type ResultadoDaRevisao =
   | {
@@ -24,7 +25,7 @@ export type ResultadoDaRevisao =
   | { tipo: 'nada_pendente' }
   | { tipo: 'estado_invalido'; estado: string }
   | { tipo: 'job_nao_concluido'; statusDoJob: string | null }
-  | { tipo: 'artefatos_ausentes'; faltando: CampoDeArtefato[] }
+  | { tipo: 'artefatos_ausentes'; problemas: ProblemaDeArtefato[] }
   /** Publicaram depois da submissão: a candidata foi pensada sobre outra base (§4.8). */
   | { tipo: 'base_mudou' }
   /** Outro revisor chegou primeiro. */
@@ -41,6 +42,12 @@ export async function assumirRevisao(input: {
   tenantSlug: string
   reviewer: string
   hostname: string
+  /**
+   * O usuário do processo (§11.2). Vai no detalhe do evento, ao lado do `actor`: o nome
+   * digitado é declarado por quem roda o comando, e a conta do sistema é o que o sistema
+   * observou. Quando as duas discordam, é isso que permite perguntar por quê.
+   */
+  usuarioDoProcesso: string
   agora?: Date
 }): Promise<ResultadoDaRevisao> {
   const agora = input.agora ?? new Date()
@@ -49,7 +56,7 @@ export async function assumirRevisao(input: {
     db.$transaction(async (tx): Promise<ResultadoDaRevisao> => {
       const tenant = await tx.tenant.findUnique({
         where: { slug: input.tenantSlug },
-        select: { id: true },
+        select: { id: true, slug: true },
       })
       if (!tenant) {
         return { tipo: 'tenant_desconhecido' }
@@ -91,7 +98,15 @@ export async function assumirRevisao(input: {
       // O job precisa ter TERMINADO nesta geração. Um job da geração anterior concluído
       // não diz nada sobre os artefatos que estão na linha agora.
       const job = await tx.aiSetupJob.findFirst({
-        where: { versionId: versao.id, tenantId: tenant.id, generation: versao.generation },
+        // `kind: 'generate'` é obrigatório: é o job da GERAÇÃO da candidata. Sem ele, um
+        // job de outro tipo (ou corrompido) com `completed` satisfaria a pré-condição sem
+        // provar que a geração terminou — e alguém assumiria a revisão de nada.
+        where: {
+          versionId: versao.id,
+          tenantId: tenant.id,
+          generation: versao.generation,
+          kind: 'generate',
+        },
         orderBy: { createdAt: 'desc' },
         select: { status: true },
       })
@@ -99,9 +114,11 @@ export async function assumirRevisao(input: {
         return { tipo: 'job_nao_concluido', statusDoJob: job?.status ?? null }
       }
 
-      const faltando = artefatosPendentes(versao)
-      if (faltando.length > 0) {
-        return { tipo: 'artefatos_ausentes', faltando }
+      // A config passa pelo MESMO parser do motor: é o único jeito de saber se o produto
+      // conseguiria carregar o que o job produziu.
+      const problemas = validarArtefatos(tenant.slug, versao)
+      if (problemas.length > 0) {
+        return { tipo: 'artefatos_ausentes', problemas }
       }
 
       // §4.8: publicaram entre a submissão e agora, então a candidata raciocinou sobre uma
@@ -141,7 +158,12 @@ export async function assumirRevisao(input: {
           versionId: versao.id,
           kind: 'review_started',
           actor: formatarAtor(input.reviewer, input.hostname),
-          detail: JSON.stringify({ generation: versao.generation }),
+          // Estruturado e curto de propósito: `detail` não é depósito de texto livre nem
+          // de ambiente. Só o que a auditoria precisa.
+          detail: JSON.stringify({
+            generation: versao.generation,
+            processUser: limitarUsuario(input.usuarioDoProcesso),
+          }),
         },
       })
 
@@ -156,6 +178,20 @@ export async function assumirRevisao(input: {
   )
 }
 
+/** Limite do nome de usuário gravado. Conta de sistema não tem nome de 200 caracteres. */
+const USUARIO_MAX_CHARS = 64
+
+/**
+ * Recorta o usuário do processo para o que cabe num registro de auditoria.
+ *
+ * Vem de `userInfo().username`, mas é tratado como entrada: um valor estranho (vindo de
+ * ambiente exótico ou de container mal configurado) não vira texto arbitrário no banco.
+ */
+function limitarUsuario(bruto: string): string {
+  const limpo = bruto.trim().replace(/\s+/g, ' ').slice(0, USUARIO_MAX_CHARS)
+  return limpo.length > 0 ? limpo : 'desconhecido'
+}
+
 /**
  * O que o comando mostra ANTES de agir, e o que o `--sim` mostra em vez de agir.
  *
@@ -165,7 +201,7 @@ export async function assumirRevisao(input: {
 export async function olharRevisao(tenantSlug: string) {
   const tenant = await db.tenant.findUnique({
     where: { slug: tenantSlug },
-    select: { id: true, name: true },
+    select: { id: true, name: true, slug: true },
   })
   if (!tenant) {
     return null
@@ -200,7 +236,12 @@ export async function olharRevisao(tenantSlug: string) {
     return { tenant, versao: null }
   }
   const job = await db.aiSetupJob.findFirst({
-    where: { versionId: versao.id, tenantId: tenant.id, generation: versao.generation },
+    where: {
+      versionId: versao.id,
+      tenantId: tenant.id,
+      generation: versao.generation,
+      kind: 'generate',
+    },
     orderBy: { createdAt: 'desc' },
     select: { status: true, failureKind: true, lastError: true },
   })
@@ -208,7 +249,7 @@ export async function olharRevisao(tenantSlug: string) {
     tenant,
     versao,
     job,
-    faltando: artefatosPendentes(versao),
+    problemas: validarArtefatos(tenant.slug, versao),
     baseValida: (setup.publishedVersionId ?? null) === versao.basePublishedVersionId,
   }
 }

@@ -73,12 +73,31 @@ beforeAll(async () => {
         generation: 1,
         answersJson: '{}',
         submittedAt: new Date(),
-        candidateConfigJson: '{"slug":"acme"}',
-        candidateKnowledgeJson: '[{"titulo":"FAQ"}]',
-        summaryJson: '{"resumo":"ok"}',
+        candidateConfigJson: JSON.stringify({
+          businessProfile: { name: 'Clínica', segment: 'saúde', tone: 'cordial' },
+          knowledge: { sourcePolicy: 'answer_only_from_knowledge' },
+          guardrails: { neverPromise: ['prazo'] },
+          escalationPolicy: {
+            triggers: ['dor'],
+            defaultReason: 'saude',
+            humanMessage: 'Vou chamar.',
+          },
+          objectives: ['responder dúvidas'],
+          tools: [],
+        }),
+        candidateKnowledgeJson: JSON.stringify([{ title: 'FAQ', content: 'Atendemos 9h-18h.' }]),
+        summaryJson: JSON.stringify({ texto: 'Sua IA responde dúvidas de horário.' }),
         gapsJson: '[]',
         risksJson: '[]',
-        validationJson: '[{"id":"q1"}]',
+        validationJson: JSON.stringify(
+          [1, 2, 3, 4, 5].map((i) => ({
+            id: `q${i}`,
+            question: `Pergunta ${i}?`,
+            expectedFacts: ['um fato'],
+            expectedBehavior: 'responder com o fato',
+            shouldHandoff: false,
+          })),
+        ),
       },
     })
     await cliente.aiSetup.update({
@@ -137,6 +156,30 @@ describe('setup:revisar no processo real', () => {
     const cliente = await clienteDoBrinquedo()
     try {
       expect((await cliente.aiSetupVersion.findFirstOrThrow()).reviewStartedAt).toBeNull()
+    } finally {
+      await cliente.$disconnect()
+    }
+  })
+})
+
+describe('a colisão de flag não pode virar escrita', () => {
+  it('--reviewer --sim NÃO assume e NÃO perde a simulação', { timeout: 120_000 }, async () => {
+    // Era o pior desfecho de um erro de digitação: o parser consumia `--sim` como NOME,
+    // a simulação desaparecia e o comando assumia a revisão com o revisor "--sim".
+    // Merece subprocesso porque é uma colisão de linha de comando que causava escrita.
+    const { saida, codigo } = rodar([slug, '--reviewer', '--sim'], url)
+
+    expect(codigo).not.toBe(0)
+    expect(saida).toContain('precisa de um NOME')
+    // Nada de "MODO: EXECUÇÃO": o comando parou antes de decidir modo.
+    expect(saida).not.toContain('MODO: EXECUÇÃO')
+
+    const cliente = await clienteDoBrinquedo()
+    try {
+      const versao = await cliente.aiSetupVersion.findFirstOrThrow()
+      expect(versao.reviewStartedAt).toBeNull()
+      expect(versao.reviewer).toBeNull()
+      expect(await cliente.aiSetupEvent.count()).toBe(0)
     } finally {
       await cliente.$disconnect()
     }

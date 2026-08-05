@@ -73,13 +73,25 @@ export type ArgumentosDeRevisao =
   | { tipo: 'argumento_invalido'; argumento: string }
   | { tipo: 'slug_ausente' }
   | { tipo: 'slug_repetido'; segundo: string }
+  /** `--reviewer` sem valor, ou seguido de outra flag. */
+  | { tipo: 'valor_ausente'; flag: string; seguido_de: string | undefined }
+  | { tipo: 'flag_repetida'; flag: string }
 
 /**
  * Lê `setup:revisar -- <slug> --reviewer <nome> [--sim]`.
  *
- * Mesma disciplina do outro comando: argumento desconhecido PARA, em vez de virar
- * execução por omissão. E o slug é posicional e único — dois slugs na linha significam
- * que a pessoa não sabe qual empresa está revisando, e adivinhar seria o pior desfecho.
+ * Três recusas que existem por segurança, não por rigor:
+ *
+ *  1. Argumento desconhecido PARA, em vez de virar execução por omissão.
+ *  2. O valor de `--reviewer` NÃO pode ser outra flag. Consumir o argumento seguinte às
+ *     cegas fazia `--reviewer --sim` virar execução real com o revisor chamado "--sim":
+ *     a simulação era engolida pelo nome, e o nome mentiroso ia para a auditoria. É o pior
+ *     desfecho possível de um erro de digitação.
+ *  3. `--reviewer` repetido PARA, em vez de o último ganhar em silêncio: quem digitou dois
+ *     nomes não sabe qual vai ficar registrado.
+ *
+ * E o slug é posicional e único — dois slugs significam que a pessoa não sabe qual empresa
+ * está revisando, e adivinhar seria pior que parar.
  */
 export function interpretarArgumentosDeRevisao(argv: readonly string[]): ArgumentosDeRevisao {
   let slug: string | undefined
@@ -88,17 +100,27 @@ export function interpretarArgumentosDeRevisao(argv: readonly string[]): Argumen
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
+
     if (FLAGS_DE_SIMULACAO.includes(arg as (typeof FLAGS_DE_SIMULACAO)[number])) {
       simular = true
       continue
     }
+
     if (arg === '--reviewer') {
-      // O valor pode faltar; quem valida o nome é `normalizarReviewer`, que devolve o
-      // motivo certo para a mensagem.
-      reviewer = argv[i + 1]
+      if (reviewer !== undefined) {
+        return { tipo: 'flag_repetida', flag: '--reviewer' }
+      }
+      const valor = argv[i + 1]
+      // Qualquer coisa que comece com `-` é flag, não nome. Aceitar aqui perderia a flag
+      // E gravaria o nome errado.
+      if (valor === undefined || valor.startsWith('-')) {
+        return { tipo: 'valor_ausente', flag: '--reviewer', seguido_de: valor }
+      }
+      reviewer = valor
       i += 1
       continue
     }
+
     if (arg.startsWith('-')) {
       return { tipo: 'argumento_invalido', argumento: arg }
     }

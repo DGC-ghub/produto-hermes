@@ -11,13 +11,33 @@ let slug: string
 let setupId: string
 let versionId: string
 
+/**
+ * Artefatos que o produto CONSEGUE usar. O conjunto anterior — `{"slug":"acme"}` como
+ * config, uma pergunta na validação — era reprovado pelo próprio parser do motor: os testes
+ * chamavam de válido material impossível de carregar.
+ */
 const ARTEFATOS = {
-  candidateConfigJson: '{"slug":"acme"}',
-  candidateKnowledgeJson: '[{"titulo":"FAQ"}]',
-  summaryJson: '{"resumo":"ok"}',
+  candidateConfigJson: JSON.stringify({
+    businessProfile: { name: 'Clínica', segment: 'saúde', tone: 'cordial' },
+    knowledge: { sourcePolicy: 'answer_only_from_knowledge' },
+    guardrails: { neverPromise: ['prazo'] },
+    escalationPolicy: { triggers: ['dor'], defaultReason: 'saude', humanMessage: 'Vou chamar.' },
+    objectives: ['responder dúvidas'],
+    tools: [],
+  }),
+  candidateKnowledgeJson: JSON.stringify([{ title: 'FAQ', content: 'Atendemos 9h às 18h.' }]),
+  summaryJson: JSON.stringify({ texto: 'Sua IA responde dúvidas de horário.' }),
   gapsJson: '[]',
   risksJson: '[]',
-  validationJson: '[{"id":"q1"}]',
+  validationJson: JSON.stringify(
+    [1, 2, 3, 4, 5].map((i) => ({
+      id: `q${i}`,
+      question: `Pergunta ${i}?`,
+      expectedFacts: ['um fato'],
+      expectedBehavior: 'responder com o fato',
+      shouldHandoff: false,
+    })),
+  ),
 }
 
 /** Monta o cenário FELIZ: versão submetida, job concluído, artefatos prontos. */
@@ -35,7 +55,7 @@ async function cenarioPronto() {
   })
 }
 
-const REVISOR = { reviewer: 'Gabriel', hostname: 'pi-hermes' }
+const REVISOR = { reviewer: 'Gabriel', hostname: 'pi-hermes', usuarioDoProcesso: 'pi' }
 
 beforeEach(async () => {
   slug = `rev-${crypto.randomUUID().slice(0, 8)}`
@@ -74,6 +94,9 @@ describe('assumir a revisão', () => {
     const evento = await db.aiSetupEvent.findFirst({ where: { versionId, kind: 'review_started' } })
     // O ator leva a máquina junto (§11.2).
     expect(evento?.actor).toBe('internal:Gabriel@pi-hermes')
+    // O usuário do PROCESSO vai junto (§11.2): o nome digitado é declarado por quem roda o
+    // comando, a conta do sistema é o que o sistema observou. Discordância é investigável.
+    expect(JSON.parse(evento?.detail ?? '{}')).toEqual({ generation: 1, processUser: 'pi' })
   })
 
   it('o SEGUNDO revisor recebe conflito, com o nome de quem assumiu (critério 21)', async () => {
@@ -86,6 +109,7 @@ describe('assumir a revisão', () => {
       tenantSlug: slug,
       reviewer: 'Ana',
       hostname: 'outro-pc',
+      usuarioDoProcesso: 'pi',
     })
 
     expect(segundo.tipo).toBe('ja_assumida')
@@ -103,8 +127,18 @@ describe('assumir a revisão', () => {
     await cenarioPronto()
 
     const [a, b] = await Promise.all([
-      assumirRevisao({ tenantSlug: slug, reviewer: 'Gabriel', hostname: 'h1' }),
-      assumirRevisao({ tenantSlug: slug, reviewer: 'Ana', hostname: 'h2' }),
+      assumirRevisao({
+        tenantSlug: slug,
+        reviewer: 'Gabriel',
+        hostname: 'h1',
+        usuarioDoProcesso: 'pi',
+      }),
+      assumirRevisao({
+        tenantSlug: slug,
+        reviewer: 'Ana',
+        hostname: 'h2',
+        usuarioDoProcesso: 'pi',
+      }),
     ])
 
     expect([a, b].filter((r) => r.tipo === 'assumida')).toHaveLength(1)
@@ -179,8 +213,62 @@ describe('pré-condições (§11.1): não se assume o que não está pronto', ()
     expect(resultado.tipo).toBe('artefatos_ausentes')
     if (resultado.tipo === 'artefatos_ausentes') {
       // Saber O QUE faltou é o que decide entre rodar o job de novo e investigar.
-      expect(resultado.faltando).toContain('candidateConfigJson')
+      expect(resultado.problemas.map((p) => p.campo)).toContain('candidateConfigJson')
     }
+  })
+
+  it('config que o MOTOR não carregaria é recusada', async () => {
+    // O caso concreto: `{"slug":"acme"}` passava pela validação anterior. Assumir a
+    // revisão dele iniciaria o relógio humano sobre material inútil.
+    await cenarioPronto()
+    await db.aiSetupVersion.update({
+      where: { id: versionId },
+      data: { candidateConfigJson: '{"slug":"acme"}' },
+    })
+
+    const resultado = await assumirRevisao({ tenantSlug: slug, ...REVISOR })
+
+    expect(resultado.tipo).toBe('artefatos_ausentes')
+    if (resultado.tipo === 'artefatos_ausentes') {
+      expect(resultado.problemas[0].motivo).toContain('o motor não carregaria')
+    }
+    expect(
+      (await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })).reviewStartedAt,
+    ).toBeNull()
+  })
+
+  it('UMA pergunta de validação não é prova', async () => {
+    await cenarioPronto()
+    await db.aiSetupVersion.update({
+      where: { id: versionId },
+      data: {
+        validationJson:
+          '[{"id":"q1","question":"a?","expectedFacts":["f"],"expectedBehavior":"b","shouldHandoff":false}]',
+      },
+    })
+
+    expect((await assumirRevisao({ tenantSlug: slug, ...REVISOR })).tipo).toBe('artefatos_ausentes')
+  })
+
+  it('job completed de OUTRO kind não satisfaz a pré-condição', async () => {
+    // Um job de outro tipo (ou corrompido) com `completed` provaria nada sobre a geração
+    // da candidata.
+    await db.aiSetupVersion.update({ where: { id: versionId }, data: ARTEFATOS })
+    await db.aiSetupJob.create({
+      data: {
+        versionId,
+        tenantId,
+        kind: 'outra_coisa',
+        generation: 1,
+        idempotencyKey: `${versionId}:1:outra:1`,
+        status: 'completed',
+      },
+    })
+
+    expect(await assumirRevisao({ tenantSlug: slug, ...REVISOR })).toEqual({
+      tipo: 'job_nao_concluido',
+      statusDoJob: null,
+    })
   })
 
   it('base publicada mudou depois da submissão: recusa (§4.8)', async () => {
@@ -244,7 +332,7 @@ describe('olhar sem tocar', () => {
     const visao = await olharRevisao(slug)
 
     expect(visao?.versao?.state).toBe('submitted')
-    expect(visao?.faltando).toEqual([])
+    expect(visao?.problemas).toEqual([])
     expect(visao?.baseValida).toBe(true)
     expect(visao?.job?.status).toBe('completed')
 

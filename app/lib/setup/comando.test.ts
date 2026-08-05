@@ -125,6 +125,38 @@ describe('argumentos do setup:revisar', () => {
     })
   })
 
+  it.each([
+    ['--sim'],
+    ['--dry-run'],
+    ['--simular'],
+    ['--xyz'],
+    ['-r'],
+  ])('--reviewer seguido de %s PARA o comando', (seguinte) => {
+    // Era o pior desfecho de um erro de digitação: `--reviewer --sim` virava execução
+    // REAL com o revisor chamado "--sim". A simulação era engolida pelo nome, e o nome
+    // mentiroso ia para a auditoria.
+    expect(interpretarArgumentosDeRevisao(['acme', '--reviewer', seguinte])).toEqual({
+      tipo: 'valor_ausente',
+      flag: '--reviewer',
+      seguido_de: seguinte,
+    })
+  })
+
+  it('--reviewer no fim da linha, sem valor, PARA', () => {
+    expect(interpretarArgumentosDeRevisao(['acme', '--reviewer'])).toEqual({
+      tipo: 'valor_ausente',
+      flag: '--reviewer',
+      seguido_de: undefined,
+    })
+  })
+
+  it('--reviewer repetido PARA em vez de o último ganhar', () => {
+    // Quem digitou dois nomes não sabe qual vai ficar registrado na auditoria.
+    expect(
+      interpretarArgumentosDeRevisao(['acme', '--reviewer', 'Ana', '--reviewer', 'Gabriel']),
+    ).toEqual({ tipo: 'flag_repetida', flag: '--reviewer' })
+  })
+
   it('reviewer ausente NÃO é decidido aqui', () => {
     // Quem valida o nome é `normalizarReviewer`: ele sabe distinguir "faltou" de "curto
     // demais", e é essa diferença que vira mensagem útil.
