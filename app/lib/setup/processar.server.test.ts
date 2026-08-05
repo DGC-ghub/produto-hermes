@@ -329,6 +329,7 @@ describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
       expect(resultado).toEqual({
         tipo: 'persistencia_falhou',
         jobId: job.id,
+        fase: 'gravar_artefatos',
         status: 'retry_wait',
       })
       // A gravação insistiu…
@@ -369,6 +370,8 @@ describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
       expect(resultado).toEqual({
         tipo: 'persistencia_falhou',
         jobId: job.id,
+        // Aqui os artefatos EXISTIAM: é isso que se perdeu.
+        fase: 'gravar_artefatos',
         status: 'recuperacao_pendente',
       })
     } finally {
@@ -411,6 +414,31 @@ describe('falha de gravação repete a GRAVAÇÃO, nunca a geração', () => {
     expect((await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe(
       'processing',
     )
+  })
+
+  it('erro do BANCO que não é contenção, ao liberar o lease, também sobe', async () => {
+    // Um `TypeError` na liberação viraria "recuperação pendente" e mandaria o operador
+    // destravar um banco que nunca esteve travado.
+    await criarJob()
+    const modulo = await import('./job.server')
+    const espiaoFinal = vi
+      .spyOn(modulo, 'finalizarJobComSucesso')
+      .mockRejectedValue(new Error('database is locked'))
+    const espiaoFalha = vi
+      .spyOn(modulo, 'failSetupJob')
+      .mockRejectedValue(new TypeError('x is not a function'))
+
+    try {
+      await expect(
+        processarProximoJob({
+          processador: async () => ({ artefatos: ARTEFATOS, temLacunas: false }),
+          ...SEM_ESPERA,
+        }),
+      ).rejects.toBeInstanceOf(TypeError)
+    } finally {
+      espiaoFinal.mockRestore()
+      espiaoFalha.mockRestore()
+    }
   })
 
   it('erro que NÃO é contenção não vira "banco ocupado" — ele sobe', async () => {

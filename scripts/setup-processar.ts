@@ -105,6 +105,12 @@ async function main(): Promise<void> {
       process.exitCode = 1
       return
     }
+    // Fixa a URL no caminho CANÔNICO que acabou de ser aprovado, antes de o cliente do
+    // banco existir. Entre o `realpath` e o Prisma abrir o arquivo há uma janela em que
+    // alguém poderia trocar o symlink original; abrir o destino resolvido fecha essa
+    // troca. Não elimina toda substituição de inode possível — no modelo atual, operador
+    // local confiável, o resíduo é aceito e está registrado aqui.
+    process.env.DATABASE_URL = `file:${veredicto.caminhoReal}`
   }
 
   // Daqui para baixo o banco É tocado. O import abre a conexão.
@@ -188,21 +194,23 @@ function relatar(resultado: ResultadoDaPassada): void {
       process.exitCode = 1
       return
     case 'persistencia_falhou':
+      // A FASE muda o que aconteceu de fato. Dizer "o trabalho ficou pronto" quando o
+      // processador falhou seria mentira, e mandaria procurar artefato que não existe.
       console.error(
-        `Job ${resultado.jobId}: o trabalho ficou PRONTO e o banco não aceitou a gravação.`,
+        resultado.fase === 'gravar_artefatos'
+          ? `Job ${resultado.jobId}: os artefatos ficaram PRONTOS e o banco não aceitou gravá-los.`
+          : `Job ${resultado.jobId}: o processador falhou e o banco não aceitou nem registrar a falha.`,
       )
       if (resultado.status === 'recuperacao_pendente') {
         // Não anunciar `retry_wait` aqui: nada foi escrito, nem a liberação do lease.
         console.error(
           'O banco continuou travado, então NEM a devolução do job à fila passou. Ele\n' +
-            'segue em `processing`, protegido pelo lease, e o sweeper o recupera quando o\n' +
-            'lease vencer (30 min). Não há nada a fazer além de destravar o banco.',
+            'segue em `processing`, com o lease de pé; o heartbeat parou e o sweeper o\n' +
+            'recupera quando o lease vencer (30 min). Não há o que fazer além de\n' +
+            'destravar o banco.',
         )
       } else {
-        console.error(
-          `Os artefatos se perderam; o job foi para ${resultado.status} e vai gerar tudo de\n` +
-            'novo. Veja o hermes.log.',
-        )
+        console.error(`O job foi para ${resultado.status} e volta pela fila. Veja o hermes.log.`)
       }
       process.exitCode = 1
       return

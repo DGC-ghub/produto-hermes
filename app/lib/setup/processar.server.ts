@@ -86,6 +86,17 @@ export type ResultadoDaPassada =
   | {
       tipo: 'persistencia_falhou'
       jobId: string
+      /**
+       * ONDE a escrita falhou. As duas situações produzem o mesmo aperto no banco e
+       * exigem mensagens diferentes:
+       *
+       *  - `gravar_artefatos`: o processador terminou, os artefatos ficaram prontos e é
+       *    isso que se perdeu;
+       *  - `registrar_falha_processamento`: o processador NÃO produziu nada, e o banco
+       *    ainda por cima recusou registrar a falha. Dizer "o trabalho ficou pronto" aqui
+       *    é mentira.
+       */
+      fase: 'gravar_artefatos' | 'registrar_falha_processamento'
       status: 'retry_wait' | 'failed' | 'lease_perdido' | 'recuperacao_pendente'
     }
 
@@ -103,9 +114,12 @@ export type OpcoesDaPassada = {
 /**
  * Uma passada: reivindica, processa, persiste.
  *
- * Devolve sempre — nunca lança por falha do processador ou do banco. Quem chama é um
- * comando de terminal, e um stack trace no lugar de um desfecho não ajuda ninguém a
- * decidir o que fazer em seguida.
+ * Devolve um desfecho para tudo o que é ESPERADO — falha do processador, contenção do
+ * banco, estado que mudou embaixo. Quem chama é um comando de terminal, e um stack trace
+ * no lugar de um desfecho não ajuda ninguém a decidir o que fazer em seguida.
+ *
+ * O que NÃO é esperado sobe: erro de programação virando "banco ocupado" mandaria o
+ * operador destravar um banco que nunca esteve travado.
  */
 export async function processarProximoJob(opcoes: OpcoesDaPassada): Promise<ResultadoDaPassada> {
   const claim = await claimNextSetupJob()
@@ -144,6 +158,7 @@ export async function processarProximoJob(opcoes: OpcoesDaPassada): Promise<Resu
     return {
       tipo: 'persistencia_falhou',
       jobId: job.id,
+      fase: 'gravar_artefatos',
       status: await liberarLeaseAposFalha(job, persistencia.erro),
     }
   } finally {
@@ -190,7 +205,13 @@ async function liberarLeaseAposFalha(
     // `null` aqui é o CAS não casando: outro processo herdou o job. Diferente de "não
     // consegui escrever".
     return desfecho?.status ?? 'lease_perdido'
-  } catch {
+  } catch (error) {
+    // SÓ contenção vira "recuperação pendente". Um `TypeError` caindo aqui viraria
+    // diagnóstico de SQLite ocupado e mandaria o operador destravar um banco que nunca
+    // esteve travado.
+    if (!ehContencaoTransitoria(error)) {
+      throw error
+    }
     // O banco continua recusando escrita. Nada foi alterado, o token segue de pé e o
     // sweeper recupera quando o lease vencer.
     return 'recuperacao_pendente'
@@ -213,11 +234,20 @@ async function registrarFalha(job: JobReivindicado, error: unknown): Promise<Res
       codigo,
       detalhe: error,
     })
-  } catch {
+  } catch (erroDoBanco) {
+    // Mesma regra do outro caminho: só contenção. Erro de programação sobe.
+    if (!ehContencaoTransitoria(erroDoBanco)) {
+      throw erroDoBanco
+    }
     // Falhou o processamento E o banco não aceita nem o registro da falha. O job fica
     // protegido pelo lease até o sweeper recuperá-lo — mesma honestidade do caminho de
     // persistência: não se anuncia um estado que não foi gravado.
-    return { tipo: 'persistencia_falhou', jobId: job.id, status: 'recuperacao_pendente' }
+    return {
+      tipo: 'persistencia_falhou',
+      jobId: job.id,
+      fase: 'registrar_falha_processamento',
+      status: 'recuperacao_pendente',
+    }
   }
   if (!desfecho) {
     // O lease já era de outro: outro processo herdou o job e vai gerar de novo. Nada a

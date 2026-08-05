@@ -2,7 +2,13 @@ import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } 
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { avaliarBanco, caminhoDoBanco, descreverBanco, explicarRecusa } from './banco.server'
+import {
+  avaliarBanco,
+  caminhoDoBanco,
+  descreverBanco,
+  estaDentroDaRaiz,
+  explicarRecusa,
+} from './banco.server'
 
 // Com arquivos DE VERDADE. Comparar prefixo de string aqui provaria a forma da regra e não
 // a garantia: um symlink `/tmp/x.db → dev.db` passa por qualquer teste de string e escreve
@@ -102,27 +108,6 @@ describe('o que NÃO é descartável', () => {
     })
   })
 
-  it('diretório que só COMEÇA com o nome da raiz descartável', () => {
-    // `/tmpfoo` não está dentro de `/tmp`: a comparação é por separador, não por prefixo.
-    // Criar `/tmpfoo` de verdade exige root, então a raiz é injetada — a regra testada é a
-    // mesma, e o caminho continua sendo um arquivo de verdade no disco.
-    const raizFalsa = path.join(raiz, 'base')
-    mkdirSync(raizFalsa)
-    const vizinho = path.join(raiz, 'basefoo')
-    mkdirSync(vizinho)
-    const alvo = path.join(vizinho, 'x.db')
-    writeFileSync(alvo, 'x')
-
-    expect(avaliarBanco(`file:${alvo}`, raizFalsa)).toEqual({
-      descartavel: false,
-      motivo: 'fora_do_tmp',
-    })
-    // E o de dentro passa, com a MESMA raiz — senão o teste provaria só que tudo é negado.
-    const dentro = path.join(raizFalsa, 'y.db')
-    writeFileSync(dentro, 'x')
-    expect(avaliarBanco(`file:${dentro}`, raizFalsa).descartavel).toBe(true)
-  })
-
   it.each([
     ['postgres com credencial', 'postgresql://usuario:senha@host/db'],
     ['ausente', undefined],
@@ -187,5 +172,31 @@ describe('cada recusa tem explicação própria', () => {
   ] as const)('%s', (motivo) => {
     // Mensagem genérica faria a pessoa tentar de novo do mesmo jeito.
     expect(explicarRecusa(motivo).length).toBeGreaterThan(20)
+  })
+})
+
+describe('estaDentroDaRaiz — a regra de pertencimento, isolada', () => {
+  // Está separada do `avaliarBanco` porque a raiz DELE não é configurável: um parâmetro ali
+  // deixaria qualquer chamador apontar o diretório do banco real como "raiz descartável" e
+  // transformar a fronteira num carimbo. Aqui a regra é testável sem abrir essa porta.
+
+  it('o próprio diretório da raiz conta como dentro', () => {
+    expect(estaDentroDaRaiz('/tmp', '/tmp')).toBe(true)
+  })
+
+  it('arquivo dentro da raiz', () => {
+    expect(estaDentroDaRaiz('/tmp/x.db', '/tmp')).toBe(true)
+    expect(estaDentroDaRaiz('/tmp/a/b/x.db', '/tmp')).toBe(true)
+  })
+
+  it('irmão que só COMPARTILHA O PREFIXO está fora', () => {
+    // O caso que uma comparação por `startsWith` sem separador deixaria passar. Criar
+    // `/tmpfoo` de verdade exige root, então a regra é exercitada aqui.
+    expect(estaDentroDaRaiz('/tmpfoo/x.db', '/tmp')).toBe(false)
+    expect(estaDentroDaRaiz('/tmp-outro/x.db', '/tmp')).toBe(false)
+  })
+
+  it('caminho totalmente fora', () => {
+    expect(estaDentroDaRaiz('/home/pi/projects/produto-hermes/dev.db', '/tmp')).toBe(false)
   })
 })

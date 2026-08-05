@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 // inteiro: qual banco o `db.server` acaba usando, se o `.env` foi carregado, se um caminho
 // de recusa abre conexão sem querer. Nada disso aparece chamando função.
 //
-// Todos os casos deste arquivo são de RECUSA — nenhum toca banco de verdade.
+// Os casos de RECUSA não tocam banco nenhum. O de `--sim` toca um banco descartável em
+// /tmp, criado e destruído aqui — nunca o do serviço.
 
 const RAIZ = path.resolve(import.meta.dirname, '..')
 const SCRIPT = path.join(RAIZ, 'scripts', 'setup-processar.ts')
@@ -102,5 +103,94 @@ describe('recusas do comando, no processo real', () => {
 
     expect(saida).not.toContain('senha-secreta')
     expect(saida).toContain('omitido')
+  })
+})
+
+describe('--sim no processo real, contra banco descartável com job elegível', () => {
+  let bancoTmp: string
+  let url: string
+
+  beforeAll(async () => {
+    bancoTmp = path.join(tmp, 'com-job.db')
+    url = `file:${bancoTmp}`
+    // Schema no banco de brinquedo.
+    execFileSync('npx', ['prisma', 'db', 'push', '--url', url], {
+      cwd: RAIZ,
+      stdio: 'pipe',
+      timeout: 120_000,
+    })
+
+    // Semeia com um cliente PRÓPRIO, apontado para o banco de brinquedo. O `db.server` é
+    // um singleton preso ao banco do worker do vitest; usá-lo aqui semearia no lugar
+    // errado.
+    const { PrismaBetterSqlite3 } = await import('@prisma/adapter-better-sqlite3')
+    const { PrismaClient } = await import('../generated/prisma/client.js')
+    const cliente = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: bancoTmp }) })
+    try {
+      const tenant = await cliente.tenant.create({
+        data: { slug: `sub-${crypto.randomUUID().slice(0, 8)}`, name: 'Demo' },
+      })
+      const setup = await cliente.aiSetup.create({ data: { tenantId: tenant.id } })
+      const { SETUP_FIELDS } = await import('../app/lib/setup/answers')
+      const respostas: Record<string, string | string[]> = {}
+      for (const campo of SETUP_FIELDS) {
+        respostas[campo.key] =
+          campo.kind === 'list' ? ['um item bem descritivo'] : 'resposta com folga acima do mínimo'
+      }
+      const versao = await cliente.aiSetupVersion.create({
+        data: {
+          setupId: setup.id,
+          tenantId: tenant.id,
+          state: 'submitted',
+          generation: 1,
+          answersJson: JSON.stringify(respostas),
+        },
+      })
+      await cliente.aiSetup.update({
+        where: { id: setup.id },
+        data: { reviewVersionId: versao.id },
+      })
+      await cliente.aiSetupJob.create({
+        data: {
+          versionId: versao.id,
+          tenantId: tenant.id,
+          kind: 'generate',
+          generation: 1,
+          idempotencyKey: `${versao.id}:1:generate:1`,
+        },
+      })
+    } finally {
+      await cliente.$disconnect()
+    }
+  }, 180_000)
+
+  it('vê o job e NÃO toca em nada', { timeout: 120_000 }, async () => {
+    const { saida, codigo } = rodar(['--sim'], url)
+
+    expect(codigo).toBe(0)
+    expect(saida).toContain('MODO: SIMULAÇÃO')
+    expect(saida).toContain('elegíveis agora: 1')
+    expect(saida).toContain('nenhum job foi reivindicado')
+
+    // A prova está no banco, não na saída: o comando poderia dizer qualquer coisa.
+    const { PrismaBetterSqlite3 } = await import('@prisma/adapter-better-sqlite3')
+    const { PrismaClient } = await import('../generated/prisma/client.js')
+    const cliente = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: bancoTmp }) })
+    try {
+      const job = await cliente.aiSetupJob.findFirstOrThrow()
+      expect(job.status).toBe('pending')
+      expect(job.attempts).toBe(0)
+      expect(job.claimToken).toBeNull()
+      expect(job.claimedAt).toBeNull()
+
+      expect(await cliente.aiSetupEvent.count()).toBe(0)
+
+      const versao = await cliente.aiSetupVersion.findFirstOrThrow()
+      expect(versao.candidateConfigJson).toBeNull()
+      expect(versao.summaryJson).toBeNull()
+      expect(versao.state).toBe('submitted')
+    } finally {
+      await cliente.$disconnect()
+    }
   })
 })

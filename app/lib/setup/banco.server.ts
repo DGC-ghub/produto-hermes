@@ -36,7 +36,9 @@ export function caminhoDoBanco(url: string | undefined): string | null {
  */
 export function descreverBanco(url: string | undefined): string {
   if (url === undefined) {
-    return 'file:./dev.db (default do db.server — nenhuma DATABASE_URL definida)'
+    // Caminho ABSOLUTO: "file:./dev.db" esconde de onde ele é relativo, e é justamente
+    // esse arquivo que no Pi é o banco do serviço.
+    return `${path.resolve('./dev.db')} (default do db.server — nenhuma DATABASE_URL definida)`
   }
   const caminho = caminhoDoBanco(url)
   if (caminho === null) {
@@ -72,15 +74,7 @@ export type VeredictoDoBanco =
  * `nlink > 1` recusa hardlink: um hardlink não é symlink e o `realpath` não o desfaz, mas
  * escrever nele escreve no arquivo de produção do mesmo jeito.
  */
-export function avaliarBanco(
-  url: string | undefined,
-  /**
-   * A raiz do que se considera descartável. Injetável só para teste: a regra do separador
-   * ("/tmpfoo não está dentro de /tmp") precisa de um diretório irmão da raiz, e criar
-   * `/tmpfoo` de verdade exige root.
-   */
-  raizDescartavel?: string,
-): VeredictoDoBanco {
+export function avaliarBanco(url: string | undefined): VeredictoDoBanco {
   const caminho = caminhoDoBanco(url)
   if (caminho === null) {
     return { descartavel: false, motivo: 'nao_e_sqlite' }
@@ -105,8 +99,7 @@ export function avaliarBanco(
 
   // O `/tmp` REAL: em alguns sistemas ele próprio é um link (`/tmp → /private/tmp`).
   // Comparar contra o texto "/tmp" deixaria passar (ou barraria) pelo motivo errado.
-  const tmpReal = raizDescartavel ?? realpathSync(tmpdir())
-  if (real !== tmpReal && !real.startsWith(`${tmpReal}${path.sep}`)) {
+  if (!estaDentroDaRaiz(real, realpathSync(tmpdir()))) {
     return { descartavel: false, motivo: 'fora_do_tmp' }
   }
   if (info.nlink > 1) {
@@ -114,6 +107,20 @@ export function avaliarBanco(
   }
 
   return { descartavel: true, caminhoReal: real }
+}
+
+/**
+ * O caminho está DENTRO da raiz? Pura, e separada porque a fronteira precisa ser fechada.
+ *
+ * A raiz do `avaliarBanco` não é parâmetro de propósito: se fosse, qualquer chamador
+ * interno poderia passar o diretório do banco real como "raiz descartável" e transformar a
+ * própria função que decide a fronteira num carimbo. Aqui a regra é testável sem abrir
+ * essa porta — o teste injeta caminhos, não a raiz do comando.
+ *
+ * A comparação é por SEPARADOR: `/tmpfoo` começa com `/tmp` e não está dentro dele.
+ */
+export function estaDentroDaRaiz(caminhoReal: string, raizReal: string): boolean {
+  return caminhoReal === raizReal || caminhoReal.startsWith(`${raizReal}${path.sep}`)
 }
 
 /** O texto que explica a recusa para quem está no terminal. */
