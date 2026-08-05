@@ -14,6 +14,25 @@ import { politicaDeFerramentas } from './ferramentas'
 /** Quantas perguntas de validação o job precisa produzir (spec §6.6). */
 export const PERGUNTAS_ESPERADAS = 5
 
+/**
+ * De onde a IA pode tirar resposta. Decisão de produto do dono para o piloto: **só da
+ * base da empresa**.
+ *
+ * O tipo aceita dois valores, e o outro (`allow_general_smalltalk`) libera a IA a
+ * conversar fora da base. Num piloto isso é o caminho mais curto para uma IA de clínica
+ * improvisando sobre saúde — e o campo é alcançável por texto colado no questionário, o
+ * mesmo vetor de `tools`.
+ *
+ * Errar para o lado restritivo custa um cliente achando a IA formal ("não tenho essa
+ * informação"); errar para o outro custa uma IA inventando em nome da empresa. Por isso é
+ * forçado, não sugerido, e a candidata que pedir o outro valor é recusada como sinal.
+ *
+ * Constante e não função (diferente de `politicaDeFerramentas`) porque não há eixo de
+ * variação: não existe tenant do piloto que receba o outro valor. Quando existir, isto
+ * vira função e ganha o argumento que decide.
+ */
+export const POLITICA_DE_FONTE = 'answer_only_from_knowledge'
+
 export type CampoDeArtefato =
   | 'candidateConfigJson'
   | 'candidateKnowledgeJson'
@@ -100,12 +119,11 @@ function conferir(
  * Por isso a validação NÃO passa a candidata crua pelo parser: ela exigiria justamente os
  * campos que o agente não deve gerar. Valida-se o que o servidor vai montar.
  *
- * Campos forçados hoje: `slug`, `knowledge.sourceDir` e o conjunto de `tools` com seus
- * `limits` (via `politicaDeFerramentas`, sempre por SUBSTITUIÇÃO). Os outros itens que a
- * §6.7 cita — campos de provider e limites técnicos — **não existem no `TenantConfig`**
- * (conferido no tipo): não há o que forçar, e inventá-los aqui criaria campo que o motor
- * ignora. `knowledge.sourcePolicy` continua vindo da candidata: ele muda o que a IA faz
- * (responder só pela base ou conversar livremente), e trocar isso é decisão do dono.
+ * Campos forçados hoje: `slug`, `knowledge.sourceDir`, `knowledge.sourcePolicy` e o
+ * conjunto de `tools` com seus `limits` (via `politicaDeFerramentas`), todos por
+ * SUBSTITUIÇÃO. Os outros itens que a §6.7 cita — campos de provider e limites técnicos —
+ * **não existem no `TenantConfig`** (conferido no tipo): não há o que forçar, e inventá-los
+ * aqui criaria campo que o motor ignora.
  *
  * ⚠️ DÍVIDA PARA QUEM ESCREVER A PUBLICAÇÃO E O ROLLBACK (§4.1, §4.6, §7.4)
  *
@@ -132,7 +150,13 @@ export function montarConfigFinal(tenantSlug: string, candidata: unknown): unkno
   return {
     ...raiz,
     slug: tenantSlug,
-    knowledge: { ...conhecimento, sourceDir: `knowledge/${tenantSlug}` },
+    // As duas chaves de `knowledge` vêm DEPOIS do spread do que a candidata mandou: o
+    // spread é a parte que pode ser dela (nada hoje), as duas seguintes não são.
+    knowledge: {
+      ...conhecimento,
+      sourceDir: `knowledge/${tenantSlug}`,
+      sourcePolicy: POLITICA_DE_FONTE,
+    },
     // DEPOIS do spread, e substituindo: o que a candidata trouxe em `tools` não participa.
     // Mesclar aqui (`[...raiz.tools, ...politica]` ou um merge de `limits`) devolveria à IA
     // a palavra final sobre o campo que executa ação — bastaria `requireConfirmation: false`.
@@ -191,6 +215,15 @@ function conferirWhitelist(valor: unknown): string | null {
   // passaria calado.
   if (raiz.tools !== undefined && !(Array.isArray(raiz.tools) && raiz.tools.length === 0)) {
     return '`tools` é decidida pela política determinística do servidor (§6.7) — a candidata deve omitir o campo ou mandar `[]`'
+  }
+
+  // Mesma lógica de SINAL, para o campo que decide se a IA pode responder fora da base.
+  // A diferença em relação a `tools`: aqui o outro valor é LEGÍTIMO no tipo, então o
+  // parser o aceitaria calado. Sem esta linha, uma candidata pedindo conversa livre seria
+  // corrigida em silêncio e ninguém saberia que o questionário pediu isso.
+  const fonte = (raiz.knowledge as { sourcePolicy?: unknown } | undefined)?.sourcePolicy
+  if (fonte !== undefined && fonte !== POLITICA_DE_FONTE) {
+    return `\`knowledge.sourcePolicy\` é forçada pelo servidor como \`${POLITICA_DE_FONTE}\` — a candidata deve omitir o campo ou trazer esse valor, e veio "${String(fonte)}"`
   }
   return null
 }

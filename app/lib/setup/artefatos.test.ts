@@ -82,9 +82,13 @@ describe('config: passa pelo parser do MOTOR, não por teste de forma', () => {
     ).toContain('o motor não carregaria')
   })
 
+  // `knowledge` saiu desta lista de propósito: os DOIS campos dele (`sourceDir` e
+  // `sourcePolicy`) passaram a ser forçados pelo servidor, então a candidata não precisa
+  // — e não deve — produzi-lo. Que a ausência dele agora PASSA é afirmado por teste
+  // próprio ('força até quando a candidata omite o conhecimento inteiro'), e não por
+  // silêncio aqui.
   it.each([
     ['businessProfile', { ...configBoa(), businessProfile: undefined }],
-    ['knowledge', { ...configBoa(), knowledge: undefined }],
     ['guardrails', { ...configBoa(), guardrails: undefined }],
     ['escalationPolicy', { ...configBoa(), escalationPolicy: undefined }],
     [
@@ -344,6 +348,62 @@ describe('tools e limits: a política do servidor SUBSTITUI a da candidata (§6.
     // vez de uma config que silenciosamente executa ações.
     const { tools: _doServidor, ...somenteNegocio } = configBoa()
     expect(() => parseTenantConfig(SLUG, somenteNegocio)).toThrow(/tools/)
+  })
+})
+
+describe('sourcePolicy: o servidor força responder somente pela base', () => {
+  /** Sem o campo — que é o que a candidata deve produzir, já que ele é do servidor. */
+  function semFonte() {
+    const { knowledge: _doServidor, ...resto } = configBoa()
+    return resto
+  }
+
+  it('a config final SEMPRE traz answer_only_from_knowledge', () => {
+    const final = montarConfigFinal(SLUG, {
+      ...configBoa(),
+      knowledge: { sourcePolicy: 'allow_general_smalltalk' },
+    }) as { knowledge: { sourcePolicy: string } }
+
+    expect(final.knowledge.sourcePolicy).toBe('answer_only_from_knowledge')
+  })
+
+  it('força até quando a candidata omite o conhecimento inteiro', () => {
+    const final = montarConfigFinal(SLUG, semFonte()) as {
+      knowledge: { sourcePolicy: string }
+    }
+    expect(final.knowledge.sourcePolicy).toBe('answer_only_from_knowledge')
+  })
+
+  it('candidata que OMITE o campo é válida', () => {
+    expect(
+      motivo(
+        { ...artefatosBons(), candidateConfigJson: JSON.stringify(semFonte()) },
+        'candidateConfigJson',
+      ),
+    ).toBeUndefined()
+  })
+
+  it('o valor canônico vindo da candidata é aceito', () => {
+    // Redundante, não suspeito: é o mesmo valor que o servidor forçaria.
+    expect(motivo(artefatosBons(), 'candidateConfigJson')).toBeUndefined()
+  })
+
+  it('o OUTRO valor legítimo é recusado como sinal', () => {
+    // `allow_general_smalltalk` é valor válido do tipo — o parser aceitaria. Recusar aqui
+    // é o mesmo raciocínio de `tools`: a substituição já protege o motor, mas candidata
+    // pedindo para a IA conversar fora da base é sinal de prompt desalinhado ou injeção.
+    expect(
+      motivo(
+        {
+          ...artefatosBons(),
+          candidateConfigJson: JSON.stringify({
+            ...configBoa(),
+            knowledge: { sourcePolicy: 'allow_general_smalltalk' },
+          }),
+        },
+        'candidateConfigJson',
+      ),
+    ).toContain('answer_only_from_knowledge')
   })
 })
 
