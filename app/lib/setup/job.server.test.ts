@@ -555,6 +555,41 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     expect(versao.candidateConfigJson).toBeNull()
   })
 
+  it('a versão passou a pertencer a OUTRO setup: nada é escrito', async () => {
+    // A outra metade da conferência. Aqui tenant, geração, estado e `reviewVersionId`
+    // continuam todos favoráveis — só o `setupId` da versão mudou. Sem essa guarda, o job
+    // gravaria a candidata numa versão que já é de outra configuração.
+    const job = await criarJob()
+    const pego = await reivindicar()
+
+    const outro = await db.tenant.create({
+      data: { slug: `setup-${crypto.randomUUID().slice(0, 8)}`, name: 'Outro' },
+    })
+    const outroSetup = await db.aiSetup.create({ data: { tenantId: outro.id } })
+    await db.aiSetupVersion.update({
+      where: { id: versionId },
+      data: { setupId: outroSetup.id },
+    })
+
+    const resultado = await finalizarJobComSucesso({
+      jobId: job.id,
+      claimToken: pego.claimToken,
+      artefatos: ARTEFATOS,
+      proximoEstado: null,
+    })
+
+    expect(resultado).toEqual({ ok: false, motivo: 'versao_mudou' })
+
+    const versao = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })
+    expect(versao.candidateConfigJson).toBeNull()
+    expect(versao.summaryJson).toBeNull()
+
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.status).not.toBe('completed')
+
+    expect(await db.aiSetupEvent.count({ where: { versionId, kind: 'job_completed' } })).toBe(0)
+  })
+
   it('depois de finalizar, o token não vale mais', async () => {
     const job = await criarJob()
     const pego = await reivindicar()
@@ -814,30 +849,29 @@ describe('o log não é depósito de dado de cliente', () => {
     return espiao.mock.calls.map((c) => c.join(' ')).join('\n')
   }
 
-  it('SEM a variável de opt-in, o detalhe não aparece', async () => {
-    // O gatilho NÃO pode ser `NODE_ENV !== production`: os comandos assistidos rodam sem
-    // `NODE_ENV` definido, e a regra por ambiente despejaria o detalhe no log de produção
-    // exatamente no caminho em que ele é usado.
-    delete process.env.SETUP_LOG_DETALHE
-    delete process.env.NODE_ENV
+  /** As duas condições precisam valer; qualquer combinação incompleta não mostra. */
+  const combinacoes: Array<[string, string | undefined, string | undefined, boolean]> = [
+    // rótulo,                          NODE_ENV,        flag,        mostra?
+    ['sem NODE_ENV e sem flag', undefined, undefined, false],
+    // O caso que a regra por ambiente deixava passar: os comandos assistidos rodam sem
+    // `NODE_ENV`, e `!== 'production'` era verdade ali.
+    ['sem NODE_ENV, com flag', undefined, '1', false],
+    // O caso que a regra só por flag deixava passar: um `.env` que foi para produção com
+    // a variável ligada vazaria para sempre, em silêncio.
+    ['production com flag', 'production', '1', false],
+    ['development sem flag', 'development', undefined, false],
+    ['development com flag', 'development', '1', true],
+  ]
+
+  it.each(combinacoes)('%s', async (_rotulo, nodeEnv, flag, mostra) => {
+    repor('NODE_ENV', nodeEnv)
+    repor('SETUP_LOG_DETALHE', flag)
 
     const log = await falharCapturandoLog()
 
+    // O código SEMPRE sai: é ele que diz o que houve sem expor ninguém.
     expect(log).toContain('saida_invalida')
-    expect(log).not.toContain('Maria da Silva')
-  })
-
-  it('em NODE_ENV=development também não aparece sem opt-in', async () => {
-    delete process.env.SETUP_LOG_DETALHE
-    process.env.NODE_ENV = 'development'
-
-    expect(await falharCapturandoLog()).not.toContain('Maria da Silva')
-  })
-
-  it('com o opt-in explícito, aparece — é onde se depura', async () => {
-    process.env.SETUP_LOG_DETALHE = '1'
-
-    expect(await falharCapturandoLog()).toContain('Maria da Silva')
+    expect(log.includes('Maria da Silva')).toBe(mostra)
   })
 })
 

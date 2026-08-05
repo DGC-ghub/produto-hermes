@@ -558,15 +558,16 @@ export type ResultadoDaFalha = {
  * quem processa pode ter perdido o lease sem saber, e decidir "esgotou" com um número
  * velho marcaria como definitivo um job que ainda tinha chance.
  *
- * O que vai para o banco é o CÓDIGO; o detalhe do erro só aparece no log, e só fora de
- * produção. Devolve `null` quando o lease já não é nosso — nada foi escrito.
+ * O que vai para o banco é o CÓDIGO. O detalhe do erro só aparece no log, e só com
+ * `NODE_ENV=development` E `SETUP_LOG_DETALHE=1` — ver `podeMostrarDetalhe`. Devolve
+ * `null` quando o lease já não é nosso: nada foi escrito.
  */
 export async function failSetupJob(input: {
   jobId: string
   claimToken: string
   kind: FailureKind
   codigo: CodigoErro
-  /** Só para o log local, fora de produção. Nunca chega ao banco. */
+  /** Só para o log local, e só em desenvolvimento com opt-in. Nunca chega ao banco. */
   detalhe?: unknown
   agora?: Date
 }): Promise<ResultadoDaFalha | null> {
@@ -646,20 +647,34 @@ export async function failSetupJob(input: {
   }
 }
 
+const OPT_IN_DETALHE = 'SETUP_LOG_DETALHE'
+
+/**
+ * O detalhe do erro pode ir para o log?
+ *
+ * Só com as DUAS condições: ambiente de desenvolvimento declarado E a variável ligada na
+ * mão. Nenhuma das duas sozinha basta, e cada uma cobre um buraco do outro desenho:
+ *
+ *  - só a variável não bastaria porque ela pode acabar ligada num `.env` que foi para
+ *    produção, e aí o vazamento fica permanente e silencioso;
+ *  - só o ambiente não bastaria porque os comandos assistidos rodam SEM `NODE_ENV`
+ *    definido — `!== 'production'` é verdade ali, e o detalhe sairia justamente no
+ *    caminho em que ele é usado.
+ *
+ * Exigir `=== 'development'` (e não "diferente de produção") fecha o caso do ambiente
+ * ausente: na dúvida sobre onde se está rodando, não mostra.
+ */
+function podeMostrarDetalhe(): boolean {
+  return process.env.NODE_ENV === 'development' && process.env[OPT_IN_DETALHE] === '1'
+}
+
 /**
  * Loga a falha. Por padrão sai SÓ o código.
  *
  * O detalhe é a mensagem do erro de um job de agentes: ela carrega pedaço do prompt e da
  * saída, ou seja, dado de cliente da empresa. O hermes.log fica no disco do Pi e vai junto
  * em qualquer cópia de diagnóstico — não é lugar para isso.
- *
- * O gatilho é OPT-IN explícito, e não `NODE_ENV !== 'production'`: os comandos assistidos
- * rodam sem `NODE_ENV` definido, então a regra por ambiente despejaria o detalhe no log de
- * produção exatamente no caminho em que ele é usado. Quem precisa depurar liga a variável
- * na hora e sabe o que está fazendo.
  */
-const OPT_IN_DETALHE = 'SETUP_LOG_DETALHE'
-
 function logarFalha(
   jobId: string,
   kind: FailureKind,
@@ -668,7 +683,7 @@ function logarFalha(
   detalhe: unknown,
 ): void {
   const base = `[setup-queue] job ${jobId} falhou (${kind}/${codigo}, tentativa ${attempts})`
-  if (process.env[OPT_IN_DETALHE] !== '1' || detalhe === undefined) {
+  if (!podeMostrarDetalhe() || detalhe === undefined) {
     console.error(base)
     return
   }
