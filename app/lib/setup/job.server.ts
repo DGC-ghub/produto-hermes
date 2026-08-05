@@ -8,11 +8,21 @@
 // moram em `job.ts`. Aqui fica só o que depende do banco: as garantias que o
 // compare-and-swap e a transação dão, e nada mais.
 //
+// DUAS REGRAS que valem para o arquivo inteiro:
+//
+//  1. O JOB é a autoridade sobre tenant, versão e geração. Nenhuma função aceita esses
+//     valores do chamador: quem processa pode estar com dado velho na mão, e um evento
+//     gravado contra a versão errada é pior que evento nenhum.
+//  2. Nada de estado mutável fora dos callbacks de transação. O `comRetry` pode rodar o
+//     callback mais de uma vez; uma variável de fora sobreviveria a um rollback e faria a
+//     função reportar sucesso por uma escrita que foi desfeita. O resultado sai por
+//     `return` (ou por erro tipado), sempre da tentativa que confirmou.
+//
 // Referência: spec §6.1 (contrato), §6.3 (padrão da fila), §6.4 (taxonomia), §6.5 (lease).
 import type { Prisma } from '../../../generated/prisma/client.js'
 import { db } from '../../db.server'
 import { reportSetupIncident } from '../alarm.server'
-import { parseAnswers, type SetupAnswers } from './answers'
+import { isReadyToSubmit, parseAnswers, type SetupAnswers } from './answers'
 import {
   type CodigoErro,
   decidirDesfecho,
@@ -28,14 +38,21 @@ import {
 import { comRetry } from './retry'
 import { assertSetupTransition } from './state'
 
+/** Quantos candidatos cada busca traz. */
+const CANDIDATOS_POR_BUSCA = 5
+
 /**
- * Quantos candidatos o claim olha antes de desistir.
+ * Teto de candidatos que um claim descarta antes de desistir.
  *
- * O LOTE de processamento é 1 (o Claude CLI tem concorrência 1), mas olhar um candidato só
- * é diferente: quem perde a corrida pelo primeiro job voltaria de mãos vazias com a fila
- * cheia. Aqui ele tenta o próximo.
+ * Existe porque parar nos cinco primeiros dava FALSO VAZIO: cinco jobs inválidos (ou cinco
+ * CAS perdidos) na frente de um sexto válido faziam o comando anunciar "fila vazia" com a
+ * fila cheia. Agora ele pagina; o teto é só para o laço não ficar eterno se algo estiver
+ * produzindo candidatos sem parar.
  */
-const CANDIDATOS_POR_CLAIM = 5
+const TETO_DE_CANDIDATOS = 50
+
+/** Todos os eventos da fila entram como `system` — é o processo, não uma pessoa. */
+const ATOR = 'system'
 
 /**
  * O snapshot que o processamento recebe (§6.1). IMUTÁVEL de propósito: é lido UMA vez, no
@@ -74,31 +91,105 @@ export function criarJobDeGeracao(
   })
 }
 
+// ── Claim ───────────────────────────────────────────────────────────────────────
+
+/** Por que um job não pode ser processado. Vira `failureKind` + código. */
+type MotivoNaoProcessavel =
+  | 'versao_ausente'
+  | 'setup_divergente'
+  | 'ponteiro_divergente'
+  | 'estado_invalido'
+  | 'respostas_incompletas'
+  | 'geracao_obsoleta'
+
+/** Sinaliza job que não deve ser processado — a transação do claim é revertida. */
+class JobNaoProcessavelError extends Error {
+  constructor(readonly motivo: MotivoNaoProcessavel) {
+    super(`job não processável: ${motivo}`)
+    this.name = 'JobNaoProcessavelError'
+  }
+}
+
 /**
- * Pega o próximo job da fila, se houver, e devolve o snapshot completo.
+ * Geração obsoleta é o sistema funcionando (§4.8): o cliente submeteu de novo e este job
+ * ficou para trás. Não alarma e não é "terminal" — é `superseded`. O resto é estado
+ * corrompido e precisa de gente olhando.
+ */
+function classificar(motivo: MotivoNaoProcessavel): {
+  kind: FailureKind
+  codigo: CodigoErro
+  alarmar: boolean
+} {
+  if (motivo === 'geracao_obsoleta') {
+    return { kind: 'superseded', codigo: 'geracao_obsoleta', alarmar: false }
+  }
+  return { kind: 'terminal', codigo: 'validacao_reprovou', alarmar: true }
+}
+
+/**
+ * Pega o próximo job PROCESSÁVEL da fila.
  *
  * FIFO por `nextAttemptAt`, desempatado por `createdAt` e `id` — sem desempate, dois jobs
- * agendados no mesmo milissegundo (o que acontece: `nextAttemptAt` default é `now()`) sairiam
- * em ordem indefinida, e um deles podia ficar para trás indefinidamente.
- *
- * O claim e o evento `job_started` vão na MESMA transação: um job reivindicado sem registro
- * de início é um buraco na auditoria bem no ponto em que alguém vai perguntar "quem gerou
- * essa configuração e quando".
+ * agendados no mesmo milissegundo (o que acontece: o default é `now()`) sairiam em ordem
+ * indefinida e um deles podia ficar para trás. Pagina enquanto houver candidato, para não
+ * anunciar fila vazia por causa dos primeiros descartes.
  */
 export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindicado | null> {
-  const candidatos = await db.aiSetupJob.findMany({
-    where: {
-      status: 'pending',
-      nextAttemptAt: { lte: agora },
-      attempts: { lt: MAX_ATTEMPTS },
-    },
-    orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
-    take: CANDIDATOS_POR_CLAIM,
-  })
+  const tentados: string[] = []
 
-  for (const candidato of candidatos) {
-    const claimToken = crypto.randomUUID()
-    const snapshot = await comRetry((opcoes) =>
+  while (tentados.length < TETO_DE_CANDIDATOS) {
+    const candidatos = await db.aiSetupJob.findMany({
+      where: {
+        status: 'pending',
+        nextAttemptAt: { lte: agora },
+        attempts: { lt: MAX_ATTEMPTS },
+        ...(tentados.length > 0 ? { id: { notIn: tentados } } : {}),
+      },
+      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      take: CANDIDATOS_POR_BUSCA,
+    })
+    if (candidatos.length === 0) {
+      return null
+    }
+
+    for (const candidato of candidatos) {
+      tentados.push(candidato.id)
+      const snapshot = await tentarReivindicar(candidato, agora)
+      if (snapshot) {
+        return snapshot
+      }
+    }
+  }
+  return null
+}
+
+type CandidatoDeJob = {
+  id: string
+  versionId: string
+  tenantId: string
+  kind: string
+  generation: number
+  attempts: number
+  startedAt: Date | null
+}
+
+/**
+ * Uma tentativa de claim: vira a linha, CONFERE se o job é processável e monta o snapshot
+ * — tudo na mesma transação.
+ *
+ * A conferência é a parte que não pode faltar. `reviewVersionId` é a fonte da verdade do
+ * que está em elaboração; uma versão `submitted` que o setup não aponta mais é resto de um
+ * ciclo anterior, e gerar configuração em cima dela produziria uma candidata que ninguém
+ * pediu — que depois alguém aprovaria achando que é a atual.
+ */
+async function tentarReivindicar(
+  candidato: CandidatoDeJob,
+  agora: Date,
+): Promise<JobReivindicado | null> {
+  const claimToken = crypto.randomUUID()
+
+  try {
+    return await comRetry((opcoes) =>
       db.$transaction(async (tx) => {
         const claimed = await tx.aiSetupJob.updateMany({
           // `status: 'pending'` no `where` é o que torna o claim atômico: outro processo
@@ -107,27 +198,53 @@ export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindi
           data: {
             status: 'processing',
             claimedAt: agora,
-            // `startedAt` guarda o começo do TRABALHO, não da tentativa: uma re-tentativa
-            // não apaga quando a fila pegou o job pela primeira vez.
+            // `startedAt` guarda o começo do TRABALHO, não da tentativa.
             startedAt: candidato.startedAt ?? agora,
             claimToken,
             attempts: { increment: 1 },
           },
         })
         if (claimed.count !== 1) {
-          return null
+          return null // outro processo levou
         }
 
-        // O snapshot é montado AQUI DENTRO, junto do claim: lido depois, ele poderia já
-        // refletir uma edição que aconteceu entre uma coisa e outra.
         const version = await tx.aiSetupVersion.findFirst({
           where: { id: candidato.versionId, tenantId: candidato.tenantId },
-          select: { answersJson: true, tenant: { select: { slug: true } } },
+          select: {
+            id: true,
+            setupId: true,
+            state: true,
+            generation: true,
+            answersJson: true,
+            tenant: { select: { slug: true } },
+          },
         })
         if (!version) {
-          // Job apontando para versão que não é do tenant dele. Não dá para processar e
-          // não adianta re-tentar: sai como terminal, com registro.
-          throw new SnapshotImpossivelError(candidato.id, claimToken)
+          throw new JobNaoProcessavelError('versao_ausente')
+        }
+
+        const setup = await tx.aiSetup.findUnique({
+          where: { tenantId: candidato.tenantId },
+          select: { id: true, reviewVersionId: true },
+        })
+        if (!setup || version.setupId !== setup.id) {
+          throw new JobNaoProcessavelError('setup_divergente')
+        }
+        if (setup.reviewVersionId !== version.id) {
+          throw new JobNaoProcessavelError('ponteiro_divergente')
+        }
+        if (version.generation !== candidato.generation) {
+          throw new JobNaoProcessavelError('geracao_obsoleta')
+        }
+        if (version.state !== 'submitted') {
+          throw new JobNaoProcessavelError('estado_invalido')
+        }
+
+        const answers = parseAnswers(version.answersJson)
+        if (!isReadyToSubmit(answers)) {
+          // O `submitDraft` já barrou isso uma vez; chegar aqui incompleto significa que a
+          // linha mudou por fora. Gerar em cima disso produziria configuração com buraco.
+          throw new JobNaoProcessavelError('respostas_incompletas')
         }
 
         await tx.aiSetupEvent.create({
@@ -135,7 +252,7 @@ export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindi
             tenantId: candidato.tenantId,
             versionId: candidato.versionId,
             kind: 'job_started',
-            actor: 'job',
+            actor: ATOR,
             detail: JSON.stringify({
               jobId: candidato.id,
               generation: candidato.generation,
@@ -151,54 +268,66 @@ export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindi
           tenantSlug: version.tenant.slug,
           kind: candidato.kind,
           generation: candidato.generation,
-          answers: parseAnswers(version.answersJson),
+          answers,
           attempts: candidato.attempts + 1,
           claimToken,
         }
       }, opcoes),
-    ).catch(async (error) => {
-      if (!(error instanceof SnapshotImpossivelError)) {
-        throw error
-      }
-      // A transação foi revertida (o job voltou a `pending`), então o CAS de falha não
-      // casaria. Marca fora dela, direto, e segue para o próximo candidato.
-      await marcarJobInvalido(candidato.id, agora)
-      return null
-    })
-
-    if (snapshot) {
-      return snapshot
+    )
+  } catch (error) {
+    if (!(error instanceof JobNaoProcessavelError)) {
+      throw error
     }
-  }
-  return null
-}
-
-/** Sinaliza job cujo snapshot não pode ser montado — a transação do claim é revertida. */
-class SnapshotImpossivelError extends Error {
-  constructor(
-    readonly jobId: string,
-    readonly claimToken: string,
-  ) {
-    super(`Job ${jobId} aponta para versão que não é do tenant dele`)
-    this.name = 'SnapshotImpossivelError'
+    // A transação foi revertida — o job voltou a `pending` e o token nunca existiu. Marcar
+    // acontece fora, com CAS e evento próprios.
+    await marcarJobNaoProcessavel(candidato, error.motivo, agora)
+    return null
   }
 }
 
-/** Job estruturalmente quebrado: sai da fila como terminal, com alarme. */
-async function marcarJobInvalido(id: string, agora: Date): Promise<void> {
-  await db.aiSetupJob.updateMany({
-    where: { id, status: 'pending' },
-    data: {
-      status: 'failed',
-      failureKind: 'terminal',
-      lastError: 'validacao_reprovou' satisfies CodigoErro,
-      finishedAt: agora,
-      claimToken: null,
-      claimedAt: null,
-    },
-  })
-  void reportSetupIncident('job com versão inconsistente')
+/** Tira da fila um job que não pode ser processado, com registro. */
+async function marcarJobNaoProcessavel(
+  candidato: CandidatoDeJob,
+  motivo: MotivoNaoProcessavel,
+  agora: Date,
+): Promise<void> {
+  const { kind, codigo, alarmar } = classificar(motivo)
+
+  const marcou = await comRetry((opcoes) =>
+    db.$transaction(async (tx) => {
+      const { count } = await tx.aiSetupJob.updateMany({
+        where: { id: candidato.id, status: 'pending' },
+        data: {
+          status: 'failed',
+          failureKind: kind,
+          lastError: codigo,
+          finishedAt: agora,
+          claimToken: null,
+          claimedAt: null,
+        },
+      })
+      if (count !== 1) {
+        return false
+      }
+      await tx.aiSetupEvent.create({
+        data: {
+          tenantId: candidato.tenantId,
+          versionId: candidato.versionId,
+          kind: 'job_failed',
+          actor: ATOR,
+          detail: JSON.stringify({ jobId: candidato.id, failureKind: kind, codigo, motivo }),
+        },
+      })
+      return true
+    }, opcoes),
+  )
+
+  if (marcou && alarmar) {
+    void reportSetupIncident(`job ${candidato.id} não é processável (${motivo})`)
+  }
 }
+
+// ── Lease ───────────────────────────────────────────────────────────────────────
 
 /**
  * Renova o lease. Devolve `false` quando o job já não é nosso — e aí quem está
@@ -212,6 +341,8 @@ export async function heartbeatSetupJob(id: string, claimToken: string): Promise
   return count === 1
 }
 
+// ── Transação final ─────────────────────────────────────────────────────────────
+
 /** O que o job produz (§6.1). Tudo JSON serializado — o formato é assunto do processador. */
 export type ArtefatosDoJob = {
   candidateConfigJson: string
@@ -222,12 +353,23 @@ export type ArtefatosDoJob = {
   validationJson: string
 }
 
-export type ResultadoFinal =
-  | { ok: true }
-  /** O lease já era de outro: outro processo herdou o job. Nada foi escrito. */
-  | { ok: false; motivo: 'lease_perdido' }
-  /** A versão saiu de baixo (nova geração, ou já mudou de estado). Nada foi escrito. */
-  | { ok: false; motivo: 'versao_mudou' }
+export type MotivoDaRecusa =
+  /** O lease já era de outro: outro processo herdou o job. */
+  | 'lease_perdido'
+  /** A versão saiu de baixo: nova geração, ou já mudou de estado. */
+  | 'versao_mudou'
+  /** Publicaram enquanto o job rodava: a candidata nasceu sobre base velha (§4.8). */
+  | 'base_mudou'
+
+export type ResultadoFinal = { ok: true } | { ok: false; motivo: MotivoDaRecusa }
+
+/** Aborta a transação final carregando o MOTIVO — sem variável mutável de fora. */
+class FinalizacaoAbortada extends Error {
+  constructor(readonly motivo: MotivoDaRecusa) {
+    super(`finalização abortada: ${motivo}`)
+    this.name = 'FinalizacaoAbortada'
+  }
+}
 
 /**
  * A transação final: artefatos, estado da versão, conclusão do job e evento — TUDO junto.
@@ -237,17 +379,13 @@ export type ResultadoFinal =
  * lá; concluir sem evento deixaria a auditoria sem o desfecho justamente do passo que
  * produz a configuração que vai atender cliente.
  *
- * Dois compare-and-swap guardam a escrita: o do LEASE (o job ainda é nosso) e o da VERSÃO
- * (mesma geração e mesmo estado). O segundo é o que impede um job obsoleto — o cliente
- * reabriu e submeteu de novo enquanto este rodava — de sobrescrever a candidata nova.
+ * Tenant, versão e geração vêm do JOB, não do chamador (regra 1 do topo). Três guardas:
+ * o LEASE, a VERSÃO (mesma geração e estado) e a BASE — se publicaram enquanto o job
+ * rodava, a candidata foi construída sobre uma configuração que já não é a vigente.
  */
 export async function finalizarJobComSucesso(input: {
   jobId: string
   claimToken: string
-  versionId: string
-  tenantId: string
-  /** A geração que o job carregava. A versão precisa continuar nela (§4.8). */
-  generation: number
   artefatos: ArtefatosDoJob
   /** `needs_changes` quando o agente achou lacunas de negócio (§6.4); senão null. */
   proximoEstado: 'needs_changes' | null
@@ -255,78 +393,105 @@ export async function finalizarJobComSucesso(input: {
 }): Promise<ResultadoFinal> {
   const agora = input.agora ?? new Date()
   if (input.proximoEstado) {
-    // A regra de transição é conferida ANTES de abrir a transação: se for inválida, isto
-    // é bug de chamada e tem que estourar, não virar rollback silencioso.
-    assertSetupTransition('submitted', input.proximoEstado, 'job')
+    // A regra de transição é conferida ANTES de abrir a transação: se for inválida, isto é
+    // bug de chamada e tem que estourar, não virar rollback silencioso.
+    assertSetupTransition('submitted', input.proximoEstado, ATOR)
   }
 
-  let motivo: 'lease_perdido' | 'versao_mudou' | null = null
+  try {
+    await comRetry((opcoes) =>
+      db.$transaction(async (tx) => {
+        const job = await tx.aiSetupJob.findFirst({
+          where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
+          select: { versionId: true, tenantId: true, generation: true },
+        })
+        if (!job) {
+          throw new FinalizacaoAbortada('lease_perdido')
+        }
 
-  await comRetry((opcoes) =>
-    db.$transaction(async (tx) => {
-      const versao = await tx.aiSetupVersion.updateMany({
-        where: {
-          id: input.versionId,
-          tenantId: input.tenantId,
-          generation: input.generation,
-          state: 'submitted',
-        },
-        data: {
-          ...input.artefatos,
-          ...(input.proximoEstado ? { state: input.proximoEstado } : {}),
-        },
-      })
-      if (versao.count !== 1) {
-        motivo = 'versao_mudou'
-        throw new AbortarFinalizacao()
-      }
+        const versao = await tx.aiSetupVersion.findFirst({
+          where: {
+            id: job.versionId,
+            tenantId: job.tenantId,
+            generation: job.generation,
+            state: 'submitted',
+          },
+          select: { basePublishedVersionId: true },
+        })
+        if (!versao) {
+          throw new FinalizacaoAbortada('versao_mudou')
+        }
 
-      const job = await tx.aiSetupJob.updateMany({
-        where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
-        data: {
-          status: 'completed',
-          finishedAt: agora,
-          failureKind: null,
-          lastError: null,
-          claimToken: null,
-          claimedAt: null,
-        },
-      })
-      if (job.count !== 1) {
-        motivo = 'lease_perdido'
-        throw new AbortarFinalizacao()
-      }
+        const setup = await tx.aiSetup.findUnique({
+          where: { tenantId: job.tenantId },
+          select: { publishedVersionId: true },
+        })
+        if ((setup?.publishedVersionId ?? null) !== versao.basePublishedVersionId) {
+          // A base congelada no envio já não é a que está no ar: a candidata foi pensada
+          // contra outra configuração e não pode ser gravada como se fosse atual.
+          throw new FinalizacaoAbortada('base_mudou')
+        }
 
-      await tx.aiSetupEvent.create({
-        data: {
-          tenantId: input.tenantId,
-          versionId: input.versionId,
-          kind: 'job_completed',
-          actor: 'job',
-          detail: JSON.stringify({
-            jobId: input.jobId,
-            generation: input.generation,
-            proximoEstado: input.proximoEstado,
-          }),
-        },
-      })
-    }, opcoes),
-  ).catch((error) => {
-    if (!(error instanceof AbortarFinalizacao)) {
-      throw error
+        const escritaDaVersao = await tx.aiSetupVersion.updateMany({
+          where: {
+            id: job.versionId,
+            tenantId: job.tenantId,
+            generation: job.generation,
+            state: 'submitted',
+          },
+          data: {
+            ...input.artefatos,
+            ...(input.proximoEstado ? { state: input.proximoEstado } : {}),
+          },
+        })
+        if (escritaDaVersao.count !== 1) {
+          throw new FinalizacaoAbortada('versao_mudou')
+        }
+
+        const escritaDoJob = await tx.aiSetupJob.updateMany({
+          where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
+          data: {
+            status: 'completed',
+            finishedAt: agora,
+            failureKind: null,
+            lastError: null,
+            claimToken: null,
+            claimedAt: null,
+          },
+        })
+        if (escritaDoJob.count !== 1) {
+          throw new FinalizacaoAbortada('lease_perdido')
+        }
+
+        await tx.aiSetupEvent.create({
+          data: {
+            tenantId: job.tenantId,
+            versionId: job.versionId,
+            kind: 'job_completed',
+            actor: ATOR,
+            detail: JSON.stringify({
+              jobId: input.jobId,
+              generation: job.generation,
+              proximoEstado: input.proximoEstado,
+            }),
+          },
+        })
+      }, opcoes),
+    )
+    return { ok: true }
+  } catch (error) {
+    if (error instanceof FinalizacaoAbortada) {
+      return { ok: false, motivo: error.motivo }
     }
-  })
-
-  return motivo ? { ok: false, motivo } : { ok: true }
-}
-
-/** Desfaz a transação final sem virar erro para o chamador — o motivo vem à parte. */
-class AbortarFinalizacao extends Error {
-  constructor() {
-    super('finalização abortada')
-    this.name = 'AbortarFinalizacao'
+    // Esgotou a contenção com o trabalho PRONTO na mão: os artefatos não foram gravados e
+    // o job volta à fila para gerar tudo de novo. É caro e é sinal de banco em sofrimento
+    // — precisa de gente olhando.
+    void reportSetupIncident(`não consegui gravar o resultado do job ${input.jobId}`)
+    throw error
   }
 }
+
+// ── Falha ───────────────────────────────────────────────────────────────────────
 
 export type ResultadoDaFalha = {
   status: 'retry_wait' | 'failed'
@@ -338,44 +503,39 @@ export type ResultadoDaFalha = {
 /**
  * Registra a falha e decide o destino do job.
  *
- * As tentativas vêm do BANCO, não do chamador: quem está processando pode ter perdido o
- * lease sem saber, e decidir "esgotou" com um número errado marcaria como definitivo um
- * job que ainda tinha chance.
+ * Tenant, versão e tentativas vêm do JOB (regra 1 do topo). As tentativas em especial:
+ * quem processa pode ter perdido o lease sem saber, e decidir "esgotou" com um número
+ * velho marcaria como definitivo um job que ainda tinha chance.
  *
- * O que vai para o banco é o CÓDIGO; o detalhe do erro vai para o log do processo. A
- * atualização e o evento `job_failed` vão juntos, pelo mesmo motivo da finalização.
- *
- * Devolve `null` quando o lease já não é nosso — nesse caso nada foi escrito.
+ * O que vai para o banco é o CÓDIGO; o detalhe do erro só aparece no log, e só fora de
+ * produção. Devolve `null` quando o lease já não é nosso — nada foi escrito.
  */
 export async function failSetupJob(input: {
   jobId: string
   claimToken: string
-  tenantId: string
-  versionId: string
   kind: FailureKind
   codigo: CodigoErro
-  /** Só para o log local. Nunca chega ao banco. */
+  /** Só para o log local, fora de produção. Nunca chega ao banco. */
   detalhe?: unknown
   agora?: Date
 }): Promise<ResultadoDaFalha | null> {
   const agora = input.agora ?? new Date()
   const codigo = ehCodigoConhecido(input.codigo) ? input.codigo : 'erro_desconhecido'
 
-  const atual = await db.aiSetupJob.findFirst({
-    where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
-    select: { attempts: true },
-  })
-  if (!atual) {
-    return null
-  }
-
-  const desfecho = decidirDesfecho(input.kind, atual.attempts)
-  const proxima =
-    desfecho.status === 'retry_wait' ? proximaTentativaEm(atual.attempts, agora) : null
-
-  let escreveu = false
-  await comRetry((opcoes) =>
+  const resultado = await comRetry((opcoes) =>
     db.$transaction(async (tx) => {
+      const job = await tx.aiSetupJob.findFirst({
+        where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
+        select: { attempts: true, versionId: true, tenantId: true },
+      })
+      if (!job) {
+        return null
+      }
+
+      const desfecho = decidirDesfecho(input.kind, job.attempts)
+      const proxima =
+        desfecho.status === 'retry_wait' ? proximaTentativaEm(job.attempts, agora) : null
+
       const { count } = await tx.aiSetupJob.updateMany({
         where: { id: input.jobId, status: 'processing', claimToken: input.claimToken },
         data: {
@@ -390,46 +550,75 @@ export async function failSetupJob(input: {
         },
       })
       if (count !== 1) {
-        throw new AbortarFinalizacao()
+        return null
       }
+
       await tx.aiSetupEvent.create({
         data: {
-          tenantId: input.tenantId,
-          versionId: input.versionId,
+          tenantId: job.tenantId,
+          versionId: job.versionId,
           kind: 'job_failed',
-          actor: 'job',
+          actor: ATOR,
           detail: JSON.stringify({
             jobId: input.jobId,
             failureKind: input.kind,
             codigo,
-            attempt: atual.attempts,
+            attempt: job.attempts,
             status: desfecho.status,
           }),
         },
       })
-      escreveu = true
-    }, opcoes),
-  ).catch((error) => {
-    if (!(error instanceof AbortarFinalizacao)) {
-      throw error
-    }
-  })
 
-  if (!escreveu) {
+      // O resultado sai daqui de dentro (regra 2 do topo): uma variável de fora
+      // sobreviveria a um rollback e reportaria sucesso por escrita desfeita.
+      return {
+        status: desfecho.status,
+        alarmar: desfecho.alarmar,
+        proximaTentativaEm: proxima,
+        attempts: job.attempts,
+      }
+    }, opcoes),
+  )
+
+  if (!resultado) {
     return null
   }
 
-  // O detalhe fica no log do processo — é onde se depura sem expor resposta de empresa
-  // na auditoria nem no banco de fila.
-  const detalhe = input.detalhe === undefined ? '' : `: ${sanitizarErro(input.detalhe)}`
-  console.error(
-    `[setup-queue] job ${input.jobId} falhou (${input.kind}/${codigo}, tentativa ${atual.attempts})${detalhe}`,
-  )
-  if (desfecho.alarmar) {
+  logarFalha(input.jobId, input.kind, codigo, resultado.attempts, input.detalhe)
+  if (resultado.alarmar) {
     void reportSetupIncident(`job ${input.jobId} falhou (${codigo})`)
   }
-  return { status: desfecho.status, alarmou: desfecho.alarmar, proximaTentativaEm: proxima }
+  return {
+    status: resultado.status,
+    alarmou: resultado.alarmar,
+    proximaTentativaEm: resultado.proximaTentativaEm,
+  }
 }
+
+/**
+ * Loga a falha. Em PRODUÇÃO sai só o código.
+ *
+ * O detalhe é a mensagem do erro de um job de agentes: ela carrega pedaço do prompt e da
+ * saída, ou seja, dado de cliente da empresa. O hermes.log fica no disco do Pi e vai junto
+ * em qualquer cópia de diagnóstico — não é lugar para isso. Em dev o detalhe aparece,
+ * porque é ali que se depura.
+ */
+function logarFalha(
+  jobId: string,
+  kind: FailureKind,
+  codigo: CodigoErro,
+  attempts: number,
+  detalhe: unknown,
+): void {
+  const base = `[setup-queue] job ${jobId} falhou (${kind}/${codigo}, tentativa ${attempts})`
+  if (process.env.NODE_ENV === 'production' || detalhe === undefined) {
+    console.error(base)
+    return
+  }
+  console.error(`${base}: ${sanitizarErro(detalhe)}`)
+}
+
+// ── Faxinas ─────────────────────────────────────────────────────────────────────
 
 export type ResultadoDaVarredura = {
   /** `processing` sem heartbeat há muito tempo, devolvidos à fila. */
@@ -462,20 +651,72 @@ export async function varrerJobs(agora = new Date()): Promise<ResultadoDaVarredu
   // 3. Zumbi: `pending` sem tentativa sobrando. Acontece quando o processo morre DENTRO da
   //    última tentativa — o `failSetupJob` nunca rodou, então ninguém marcou como falho e
   //    o job ficava invisível para o filtro do claim, sem nunca ser alarmado.
-  const esgotados = await db.aiSetupJob.updateMany({
+  const esgotados = await encerrarEsgotados(agora)
+
+  return { orfaos: orfaos.count, liberados: liberados.count, esgotados }
+}
+
+/**
+ * Encerra os jobs sem tentativa sobrando, cada um com o seu evento.
+ *
+ * Um `updateMany` sozinho seria mais curto e deixaria a auditoria cega justamente no
+ * desfecho que ninguém viu acontecer — é o único caminho em que o job morre sem nenhum
+ * processo tendo olhado para ele.
+ */
+async function encerrarEsgotados(agora: Date): Promise<number> {
+  const zumbis = await db.aiSetupJob.findMany({
     where: { status: 'pending', attempts: { gte: MAX_ATTEMPTS } },
-    data: {
-      status: 'failed',
-      failureKind: 'transient',
-      lastError: 'erro_desconhecido' satisfies CodigoErro,
-      finishedAt: agora,
-    },
+    select: { id: true, tenantId: true, versionId: true, failureKind: true },
   })
-  if (esgotados.count > 0) {
-    void reportSetupIncident(`${esgotados.count} job(s) esgotaram as tentativas`)
+  if (zumbis.length === 0) {
+    return 0
   }
 
-  return { orfaos: orfaos.count, liberados: liberados.count, esgotados: esgotados.count }
+  let encerrados = 0
+  for (const zumbi of zumbis) {
+    // O último `failureKind` visto é o que descreve a morte (§6.4); sem nenhum, foi um
+    // crash antes de qualquer desfecho registrado.
+    const kind = zumbi.failureKind ?? 'transient'
+    const marcou = await comRetry((opcoes) =>
+      db.$transaction(async (tx) => {
+        const { count } = await tx.aiSetupJob.updateMany({
+          where: { id: zumbi.id, status: 'pending' },
+          data: {
+            status: 'failed',
+            failureKind: kind,
+            lastError: 'erro_desconhecido' satisfies CodigoErro,
+            finishedAt: agora,
+          },
+        })
+        if (count !== 1) {
+          return false
+        }
+        await tx.aiSetupEvent.create({
+          data: {
+            tenantId: zumbi.tenantId,
+            versionId: zumbi.versionId,
+            kind: 'job_failed',
+            actor: ATOR,
+            detail: JSON.stringify({
+              jobId: zumbi.id,
+              failureKind: kind,
+              codigo: 'erro_desconhecido',
+              motivo: 'tentativas_esgotadas',
+            }),
+          },
+        })
+        return true
+      }, opcoes),
+    )
+    if (marcou) {
+      encerrados += 1
+    }
+  }
+
+  if (encerrados > 0) {
+    void reportSetupIncident(`${encerrados} job(s) esgotaram as tentativas`)
+  }
+  return encerrados
 }
 
 /** Quantos jobs esperam atenção agora — o que o comando assistido mostra antes de agir. */

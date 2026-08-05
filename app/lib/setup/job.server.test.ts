@@ -63,6 +63,19 @@ async function reivindicar() {
   return pego
 }
 
+/** Respostas completas: sem isso o claim recusa o job (versão não submissível). */
+async function respostasCompletas(): Promise<Record<string, string | string[]>> {
+  const { SETUP_FIELDS } = await import('./answers')
+  const answers: Record<string, string | string[]> = {}
+  for (const field of SETUP_FIELDS) {
+    answers[field.key] =
+      field.kind === 'list' ? ['um item bem descritivo'] : 'resposta com folga acima do mínimo'
+  }
+  return answers
+}
+
+let answersDoTenant: Record<string, string | string[]>
+
 beforeEach(async () => {
   // A fila é GLOBAL — `claimNextSetupJob` não filtra por tenant, e é assim que tem que
   // ser: existe uma fila só. Sem limpar, um teste reivindicava o job do teste anterior.
@@ -72,6 +85,7 @@ beforeEach(async () => {
   const tenant = await db.tenant.create({ data: { slug: tenantSlug, name: 'Tenant de teste' } })
   tenantId = tenant.id
   setupId = (await db.aiSetup.create({ data: { tenantId } })).id
+  answersDoTenant = await respostasCompletas()
   versionId = (
     await db.aiSetupVersion.create({
       data: {
@@ -79,10 +93,12 @@ beforeEach(async () => {
         tenantId,
         state: 'submitted',
         generation: 1,
-        answersJson: JSON.stringify({ nome: 'Clínica Bem Estar', horario: '9h às 18h' }),
+        answersJson: JSON.stringify(answersDoTenant),
       },
     })
   ).id
+  // `reviewVersionId` é a fonte da verdade do que está em elaboração: o claim confere.
+  await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: versionId } })
 })
 
 describe('claim: snapshot imutável (spec §6.1)', () => {
@@ -96,7 +112,7 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
 
     expect(pego.id).toBe(job.id)
     expect(pego.tenantSlug).toBe(tenantSlug)
-    expect(pego.answers).toEqual({ nome: 'Clínica Bem Estar', horario: '9h às 18h' })
+    expect(pego.answers).toEqual(answersDoTenant)
     expect(pego.generation).toBe(1)
     expect(pego.attempts).toBe(1)
     expect(pego.claimToken).toBeTruthy()
@@ -112,7 +128,7 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
     })
 
     // O snapshot é um valor, não uma vista do banco.
-    expect(pego.answers.nome).toBe('Clínica Bem Estar')
+    expect(pego.answers.nome).toBe(answersDoTenant.nome)
   })
 
   it('registra job_started na MESMA transação do claim', async () => {
@@ -122,7 +138,7 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
     const evento = await db.aiSetupEvent.findFirst({
       where: { tenantId, versionId, kind: 'job_started' },
     })
-    expect(evento?.actor).toBe('job')
+    expect(evento?.actor).toBe('system')
     expect(evento?.detail).toContain(job.id)
     expect(pego.attempts).toBe(1)
   })
@@ -174,6 +190,87 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
     const bom = await criarJob({ nextAttemptAt: new Date(Date.now() - 60_000) })
 
     expect((await claimNextSetupJob())?.id).toBe(bom.id)
+  })
+})
+
+describe('claim: o que NÃO pode ser processado', () => {
+  // Cada um destes tira o job da fila com registro, em vez de gerar configuração em cima
+  // de estado que não fecha.
+
+  /** Roda o claim e devolve como o job ficou. */
+  async function claimarEInspecionar(jobId: string) {
+    expect(await claimNextSetupJob()).toBeNull()
+    return db.aiSetupJob.findUniqueOrThrow({ where: { id: jobId } })
+  }
+
+  it('versão que o setup NÃO aponta mais em reviewVersionId', async () => {
+    // `reviewVersionId` é a fonte da verdade. Uma `submitted` largada é resto de ciclo
+    // anterior: gerar em cima dela produziria candidata que ninguém pediu, e que alguém
+    // aprovaria depois achando que é a atual.
+    const job = await criarJob()
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
+
+    const depois = await claimarEInspecionar(job.id)
+    expect(depois.status).toBe('failed')
+    expect(depois.failureKind).toBe('terminal')
+  })
+
+  it('ponteiro apontando OUTRA versão do mesmo tenant', async () => {
+    const job = await criarJob()
+    const outra = await db.aiSetupVersion.create({
+      data: { setupId, tenantId, state: 'submitted', generation: 1, answersJson: '{}' },
+    })
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: outra.id } })
+
+    expect((await claimarEInspecionar(job.id)).status).toBe('failed')
+  })
+
+  it('geração do job diferente da versão → obsoleto, e NÃO alarma', async () => {
+    // O cliente submeteu de novo: o sistema funcionando, não incidente.
+    const job = await criarJob({ generation: 1 })
+    await db.aiSetupVersion.update({ where: { id: versionId }, data: { generation: 2 } })
+
+    const depois = await claimarEInspecionar(job.id)
+    expect(depois.failureKind).toBe('superseded')
+    expect(depois.lastError).toBe('geracao_obsoleta')
+  })
+
+  it('versão que já saiu de submitted', async () => {
+    const job = await criarJob()
+    await db.aiSetupVersion.update({ where: { id: versionId }, data: { state: 'needs_changes' } })
+
+    expect((await claimarEInspecionar(job.id)).status).toBe('failed')
+  })
+
+  it('respostas incompletas — gerar em cima disso daria configuração com buraco', async () => {
+    const job = await criarJob()
+    await db.aiSetupVersion.update({
+      where: { id: versionId },
+      data: { answersJson: JSON.stringify({ nome: 'só o nome' }) },
+    })
+
+    expect((await claimarEInspecionar(job.id)).status).toBe('failed')
+  })
+
+  it('cada recusa deixa um evento job_failed', async () => {
+    // Sem evento, o job some da fila e ninguém sabe por quê.
+    const job = await criarJob()
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
+
+    await claimarEInspecionar(job.id)
+
+    const evento = await db.aiSetupEvent.findFirst({ where: { versionId, kind: 'job_failed' } })
+    expect(evento?.actor).toBe('system')
+    expect(evento?.detail).toContain('ponteiro_divergente')
+  })
+
+  it('recusa NÃO deixa evento job_started — o claim foi revertido', async () => {
+    const job = await criarJob()
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
+
+    await claimarEInspecionar(job.id)
+
+    expect(await db.aiSetupEvent.count({ where: { versionId, kind: 'job_started' } })).toBe(0)
   })
 })
 
@@ -255,8 +352,6 @@ describe('claim atômico', () => {
     await failSetupJob({
       jobId: job.id,
       claimToken: primeiro.claimToken,
-      tenantId,
-      versionId,
       kind: 'transient',
       codigo: 'provider_timeout',
     })
@@ -300,8 +395,6 @@ describe('lease: sem o token não se escreve', () => {
     const resultado = await failSetupJob({
       jobId: job.id,
       claimToken: 'token-de-outro',
-      tenantId,
-      versionId,
       kind: 'terminal',
       codigo: 'validacao_reprovou',
     })
@@ -321,9 +414,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     const resultado = await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: pego.claimToken,
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: ARTEFATOS,
       proximoEstado: null,
     })
@@ -340,7 +430,7 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     expect(depois.claimToken).toBeNull()
 
     const evento = await db.aiSetupEvent.findFirst({ where: { versionId, kind: 'job_completed' } })
-    expect(evento?.actor).toBe('job')
+    expect(evento?.actor).toBe('system')
   })
 
   it('lacunas de negócio levam a versão para needs_changes (§6.4)', async () => {
@@ -351,9 +441,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: pego.claimToken,
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: { ...ARTEFATOS, gapsJson: '[{"campo":"horario"}]' },
       proximoEstado: 'needs_changes',
     })
@@ -374,9 +461,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     const resultado = await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: 'token-de-outro',
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: ARTEFATOS,
       proximoEstado: null,
     })
@@ -397,9 +481,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     const resultado = await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: pego.claimToken,
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: ARTEFATOS,
       proximoEstado: null,
     })
@@ -421,9 +502,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     const resultado = await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: pego.claimToken,
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: ARTEFATOS,
       proximoEstado: null,
     })
@@ -437,9 +515,6 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     await finalizarJobComSucesso({
       jobId: job.id,
       claimToken: pego.claimToken,
-      versionId,
-      tenantId,
-      generation: 1,
       artefatos: ARTEFATOS,
       proximoEstado: null,
     })
@@ -456,8 +531,6 @@ describe('falha: destino, código e evento', () => {
     const resultado = await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'transient',
       codigo: 'provider_indisponivel',
       detalhe: new Error('spawn claude ENOENT'),
@@ -480,8 +553,6 @@ describe('falha: destino, código e evento', () => {
     await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'invalid_output',
       codigo: 'saida_invalida',
       detalhe: new Error('JSON inválido: {"empresa":"Clínica X","cliente":"João"}'),
@@ -500,15 +571,13 @@ describe('falha: destino, código e evento', () => {
     await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'terminal',
       codigo: 'validacao_reprovou',
       detalhe: new Error('a Clínica X reprovou'),
     })
 
     const evento = await db.aiSetupEvent.findFirst({ where: { versionId, kind: 'job_failed' } })
-    expect(evento?.actor).toBe('job')
+    expect(evento?.actor).toBe('system')
     expect(evento?.detail).toContain('validacao_reprovou')
     // O detalhe do evento também não pode virar depósito de texto livre.
     expect(evento?.detail).not.toContain('Clínica')
@@ -521,8 +590,6 @@ describe('falha: destino, código e evento', () => {
     const resultado = await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'terminal',
       codigo: 'validacao_reprovou',
     })
@@ -540,8 +607,6 @@ describe('falha: destino, código e evento', () => {
     const resultado = await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'transient',
       codigo: 'provider_timeout',
     })
@@ -557,8 +622,6 @@ describe('falha: destino, código e evento', () => {
     await failSetupJob({
       jobId: job.id,
       claimToken: pego.claimToken,
-      tenantId,
-      versionId,
       kind: 'transient',
       // Simula dado atravessando a fronteira do tipo (o TS não protege o que vem de fora).
       codigo: 'inventado' as never,
