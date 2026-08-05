@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { parseTenantConfig, type ToolConfig } from '../attendant/tenant-config'
 import {
   CAMPOS_DE_ARTEFATO,
   type CampoDeArtefato,
@@ -6,6 +7,7 @@ import {
   PERGUNTAS_ESPERADAS,
   validarArtefatos,
 } from './artefatos'
+import { politicaDeFerramentas } from './ferramentas'
 
 // "Válido" tem que significar "o produto conseguiria usar isto".
 //
@@ -280,6 +282,68 @@ describe('montarConfigFinal (§6.7): o servidor força o estrutural', () => {
     // A candidata sem `sourceDir` (que é o normal) precisa PASSAR: exigi-la dela pediria
     // ao agente justamente o campo que ele não deve gerar.
     expect(motivo(artefatosBons(), 'candidateConfigJson')).toBeUndefined()
+  })
+})
+
+describe('tools e limits: a política do servidor SUBSTITUI a da candidata (§6.7)', () => {
+  /** Uma candidata que pede ferramenta e ainda afrouxa o limite dela. */
+  function candidataAtrevida() {
+    return {
+      ...configBoa(),
+      tools: [
+        {
+          name: 'abrir_chamado',
+          enabled: true,
+          limits: { requireConfirmation: false, allowedCategories: ['qualquer'] },
+        },
+      ],
+    }
+  }
+
+  it('a config final traz exatamente o que a política decide', () => {
+    const final = montarConfigFinal(SLUG, candidataAtrevida()) as { tools: ToolConfig[] }
+    expect(final.tools).toEqual(politicaDeFerramentas())
+  })
+
+  it('ferramenta pedida SEM enfeite nenhum também não sobrevive', () => {
+    // Sem esta, a única candidata adversarial vinha decorada com `requireConfirmation:
+    // false` — e uma implementação que só filtrasse limites suspeitos passaria por válida.
+    const final = montarConfigFinal(SLUG, {
+      ...configBoa(),
+      tools: [{ name: 'abrir_chamado', enabled: true }],
+    }) as { tools: ToolConfig[] }
+
+    expect(final.tools).toEqual([])
+  })
+
+  it('nenhum limite vindo da candidata sobrevive na config final', () => {
+    // Escrito para continuar valendo QUANDO a política passar a habilitar alguma
+    // ferramenta: o que não pode existir é limite escolhido pela IA, não ferramenta.
+    // Uma mesclagem (`{...politica, ...candidata}`) derrubaria este teste.
+    const final = montarConfigFinal(SLUG, candidataAtrevida()) as { tools: ToolConfig[] }
+
+    expect(final.tools.some((t) => t.limits?.requireConfirmation === false)).toBe(false)
+    expect(final.tools.some((t) => t.limits?.allowedCategories?.includes('qualquer'))).toBe(false)
+  })
+
+  it('candidata que OMITE tools é válida — o campo é do servidor', () => {
+    // Este é o formato que o agente deve produzir: conteúdo de negócio, sem o estrutural.
+    // Exigir `tools` dele seria pedir justamente o campo que ele não decide.
+    const { tools: _doServidor, ...somenteNegocio } = configBoa()
+    expect(
+      motivo(
+        { ...artefatosBons(), candidateConfigJson: JSON.stringify(somenteNegocio) },
+        'candidateConfigJson',
+      ),
+    ).toBeUndefined()
+  })
+
+  it('esquecer de montar a config final NÃO libera ferramenta: o parser recusa', () => {
+    // Vale registrar por que a candidata guardada não tem `tools`: quem usar o snapshot
+    // cru sem passar por `montarConfigFinal` recebe uma exceção do parser do motor, em
+    // vez de uma config que silenciosamente executa ações.
+    const { tools: _doServidor, ...somenteNegocio } = configBoa()
+    expect(() => parseTenantConfig(SLUG, somenteNegocio)).toThrow(/tools/)
   })
 })
 

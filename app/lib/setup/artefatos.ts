@@ -9,6 +9,7 @@
 // importa: "o produto conseguiria usar isto?". Conferir só se o JSON parseia responde
 // "existe um texto aqui", que é outra pergunta.
 import { parseTenantConfig, TENANT_OBJECTIVES } from '../attendant/tenant-config'
+import { politicaDeFerramentas } from './ferramentas'
 
 /** Quantas perguntas de validação o job precisa produzir (spec §6.6). */
 export const PERGUNTAS_ESPERADAS = 5
@@ -99,9 +100,25 @@ function conferir(
  * Por isso a validação NÃO passa a candidata crua pelo parser: ela exigiria justamente os
  * campos que o agente não deve gerar. Valida-se o que o servidor vai montar.
  *
- * ⚠️ A §6.7 também manda o servidor forçar o conjunto de `tools` e seus `limits`. Isso
- * entra na etapa 6, junto do gerador, e tem que passar por AQUI — senão volta a haver duas
- * interpretações de "config final".
+ * Campos forçados hoje: `slug`, `knowledge.sourceDir` e o conjunto de `tools` com seus
+ * `limits` (via `politicaDeFerramentas`, sempre por SUBSTITUIÇÃO). Os outros itens que a
+ * §6.7 cita — campos de provider e limites técnicos — **não existem no `TenantConfig`**
+ * (conferido no tipo): não há o que forçar, e inventá-los aqui criaria campo que o motor
+ * ignora. `knowledge.sourcePolicy` continua vindo da candidata: ele muda o que a IA faz
+ * (responder só pela base ou conversar livremente), e trocar isso é decisão do dono.
+ *
+ * ⚠️ DÍVIDA PARA QUEM ESCREVER A PUBLICAÇÃO E O ROLLBACK (§4.1, §4.6, §7.4)
+ *
+ * 1. Publicar `candidateConfigJson` **cru** publica config que o motor não carrega: a
+ *    candidata guardada não tem `slug`, `sourceDir` nem `tools` — todos vêm daqui. Quem
+ *    publicar tem que publicar `montarConfigFinal(slug, candidata)`.
+ * 2. No rollback, `validarArtefatos` vem ANTES desta função. A §4.6 exige recusar um
+ *    snapshot antigo dizendo qual campo não passa mais; se ele for montado primeiro, um
+ *    snapshot com ferramenta que hoje não é permitida sai daqui **silenciosamente
+ *    esvaziado** — publicado sem erro, com menos poder do que tinha, e ninguém avisado.
+ * 3. `knowledge.sourceDir` é forçado mas **não** tem a rede de SINAL que `tools` tem: uma
+ *    candidata apontando para `knowledge/outro-tenant` é corrigida em silêncio. Vale a
+ *    mesma simetria (recusar quando presente) quando a publicação existir.
  */
 export function montarConfigFinal(tenantSlug: string, candidata: unknown): unknown {
   if (typeof candidata !== 'object' || candidata === null || Array.isArray(candidata)) {
@@ -116,6 +133,10 @@ export function montarConfigFinal(tenantSlug: string, candidata: unknown): unkno
     ...raiz,
     slug: tenantSlug,
     knowledge: { ...conhecimento, sourceDir: `knowledge/${tenantSlug}` },
+    // DEPOIS do spread, e substituindo: o que a candidata trouxe em `tools` não participa.
+    // Mesclar aqui (`[...raiz.tools, ...politica]` ou um merge de `limits`) devolveria à IA
+    // a palavra final sobre o campo que executa ação — bastaria `requireConfirmation: false`.
+    tools: politicaDeFerramentas(),
   }
 }
 
@@ -160,16 +181,16 @@ function conferirWhitelist(valor: unknown): string | null {
 
   // FERRAMENTA DECLARADA PELO AGENTE NÃO É AUTORIDADE — nenhuma, nem as que existem.
   //
-  // A §6.7 manda o servidor CONSTRUIR o conjunto de `tools` e seus `limits`. Essa política
-  // determinística é da etapa 6 e ainda não existe. Até ela existir, aceitar
-  // `[{"name":"abrir_chamado"}]` seria deixar a IA decidir que a empresa abre chamado, e
-  // com quais limites — que é justamente o que a whitelist existe para impedir.
+  // `montarConfigFinal` já substitui `tools` pela política do servidor, então nada que a
+  // candidata escreva aqui chega ao motor. Esta recusa serve a outra coisa: SINAL. Se o
+  // agente pediu ferramenta, ou o prompt está desalinhado ou alguém injetou texto no
+  // questionário — e as duas coisas merecem um humano olhando, não um descarte silencioso.
   //
-  // Recusar tudo é o fail-closed correto: a config candidata vem com `tools: []` e o
-  // servidor preenche depois, em `montarConfigFinal`.
-  const ferramentas = raiz.tools
-  if (Array.isArray(ferramentas) && ferramentas.length > 0) {
-    return 'as `tools` ainda não são montadas pela política determinística do servidor (§6.7) — a candidata precisa vir com `tools: []`'
+  // Presente e diferente de `[]` é recusado — inclusive valor que não é array. A substituição
+  // tornaria um `tools: "qualquer coisa"` inofensivo para o motor, e sem esta linha ele
+  // passaria calado.
+  if (raiz.tools !== undefined && !(Array.isArray(raiz.tools) && raiz.tools.length === 0)) {
+    return '`tools` é decidida pela política determinística do servidor (§6.7) — a candidata deve omitir o campo ou mandar `[]`'
   }
   return null
 }
