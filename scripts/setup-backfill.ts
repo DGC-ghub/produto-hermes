@@ -1,12 +1,17 @@
 // Backfill do setup de IA para os tenants que já existiam (spec §8.1).
 //
-// DRY-RUN POR PADRÃO: sem `--sim` nada é escrito, só o plano é impresso. É de propósito —
+// DRY-RUN POR PADRÃO: sem `--aplicar` nada é escrito, só o plano é impresso. É de propósito —
 // este comando decide quais números de WhatsApp continuam no ar quando o gate ligar, e a
 // conferência tenant a tenant tem de acontecer ANTES de qualquer escrita.
 //
 // Uso:
-//   npm run setup:backfill              # imprime o plano (não escreve nada)
-//   npm run setup:backfill -- --sim     # aplica
+//   npm run setup:backfill                  # imprime o plano (não escreve nada)
+//   npm run setup:backfill -- --aplicar     # aplica
+//
+// `--sim` FOI REMOVIDO e agora aborta com erro (nunca aplica). Aqui ele significava "sim,
+// aplique"; nos comandos da fila (`setup:processar`) significa "simular". Mesmo prefixo,
+// efeitos opostos: quem aprendesse o sentido da fila escreveria em produção achando que
+// estava simulando. O flag de aplicação é sempre explícito — `--aplicar`.
 //
 // O banco usado é o do DATABASE_URL — impresso no cabeçalho, porque no Pi o dev.db é o
 // banco do serviço em produção.
@@ -21,7 +26,22 @@ try {
   // sem .env — segue com o ambiente do shell
 }
 
-const aplicar = process.argv.includes('--sim')
+const argv = process.argv.slice(2)
+
+// `--sim` aborta em vez de virar dry-run silencioso: silêncio viraria "rodei e não fez nada",
+// e o operador repetiria às cegas até achar o flag que escreve. O erro diz qual é.
+if (argv.includes('--sim')) {
+  console.error(
+    '\n`--sim` não existe mais no setup:backfill.\n' +
+      '  Aqui ele significava "sim, aplique"; em setup:processar significa "simular".\n' +
+      '  Para APLICAR (escreve no banco):  npm run setup:backfill -- --aplicar\n' +
+      '  Para só ver o plano (dry-run):    npm run setup:backfill\n' +
+      '\nNada foi lido nem escrito.\n',
+  )
+  process.exit(1)
+}
+
+const aplicar = argv.includes('--aplicar')
 
 // Imports dinâmicos DEPOIS do loadEnvFile: o client do banco lê DATABASE_URL no import.
 const { db } = await import('../app/db.server')
@@ -35,7 +55,7 @@ const { listKnowledgeDocs } = await import('../app/lib/knowledge-db.server')
 
 const dbPath = (process.env.DATABASE_URL ?? '(não definido)').replace('file:', '')
 console.log(`\nBanco:  ${dbPath}`)
-console.log(`Modo:   ${aplicar ? '⚠️  APLICAR (--sim)' : 'dry-run (nada será escrito)'}\n`)
+console.log(`Modo:   ${aplicar ? '⚠️  APLICAR (--aplicar)' : 'dry-run (nada será escrito)'}\n`)
 
 const tenants = await db.tenant.findMany({ orderBy: { createdAt: 'asc' } })
 if (tenants.length === 0) {
@@ -116,7 +136,9 @@ if (atencao.length > 0) {
 }
 
 if (!aplicar) {
-  console.log('\nDry-run: nada foi escrito. Confira tenant a tenant e rode com --sim para aplicar.')
+  console.log(
+    '\nDry-run: nada foi escrito. Confira tenant a tenant e rode com --aplicar para aplicar.',
+  )
   await db.$disconnect()
   process.exit(0)
 }

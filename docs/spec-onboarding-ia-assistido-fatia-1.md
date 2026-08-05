@@ -922,10 +922,13 @@ Não aparece na revisão de tenant já ativo.
 | `setup:corrigir -- <slug> --reviewer <nome> --nota "..."` | `→ needs_changes`; nota obrigatória |
 | `setup:rejob -- <slug>` | só se `failed`; nova `idempotencyKey` |
 | `setup:historico -- <slug>` | eventos + versões + **duração de cada ciclo** |
-| `setup:backfill [-- --sim]` | dry-run por padrão |
+| `setup:backfill [-- --aplicar]` | dry-run por padrão; `--sim` foi removido e aborta com erro |
 | `setup:rollback -- <slug> --para <versionId>` | **clona e publica** (§4.6), com confirmação |
 
-Nenhum comando age sem imprimir slug, nome, versão, geração, estado e reviewer, e sem `--sim`.
+Nenhum comando age sem imprimir slug, nome, versão, geração, estado e reviewer, e sem um flag de
+aplicação explícito — no `setup:backfill`, `--aplicar`. **`--sim` não confirma nada em comando
+nenhum**: nos comandos da fila ele significa *simular* (não reivindica job nem escreve), e por
+isso foi removido do `setup:backfill`, onde significava o oposto.
 
 ### 11.1 `setup:revisar` — claim atômico, por ciclo, e só com artefatos prontos
 
