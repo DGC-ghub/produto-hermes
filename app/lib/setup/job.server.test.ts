@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db.server'
 import { LEASE_ORFAO_MS, MAX_ATTEMPTS } from './job'
 import {
@@ -56,11 +56,11 @@ async function criarJob(
 
 /** Reivindica e devolve o snapshot, falhando alto se não vier nada. */
 async function reivindicar() {
-  const pego = await claimNextSetupJob()
-  if (!pego) {
-    throw new Error('esperava um job na fila')
+  const resultado = await claimNextSetupJob()
+  if (resultado.tipo !== 'claimed') {
+    throw new Error(`esperava um job na fila, veio ${resultado.tipo}`)
   }
-  return pego
+  return resultado.job
 }
 
 /** Respostas completas: sem isso o claim recusa o job (versão não submissível). */
@@ -162,7 +162,7 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
       },
     })
 
-    expect(await claimNextSetupJob()).toBeNull()
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
 
     const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: quebrado.id } })
     expect(depois.status).toBe('failed')
@@ -189,7 +189,7 @@ describe('claim: snapshot imutável (spec §6.1)', () => {
     })
     const bom = await criarJob({ nextAttemptAt: new Date(Date.now() - 60_000) })
 
-    expect((await claimNextSetupJob())?.id).toBe(bom.id)
+    expect((await reivindicar()).id).toBe(bom.id)
   })
 })
 
@@ -199,7 +199,7 @@ describe('claim: o que NÃO pode ser processado', () => {
 
   /** Roda o claim e devolve como o job ficou. */
   async function claimarEInspecionar(jobId: string) {
-    expect(await claimNextSetupJob()).toBeNull()
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
     return db.aiSetupJob.findUniqueOrThrow({ where: { id: jobId } })
   }
 
@@ -282,7 +282,7 @@ describe('claim atômico', () => {
 
     const [a, b] = await Promise.all([claimNextSetupJob(), claimNextSetupJob()])
 
-    expect([a, b].filter(Boolean)).toHaveLength(1)
+    expect([a, b].filter((r) => r.tipo === 'claimed')).toHaveLength(1)
   })
 
   it('com DOIS jobs na fila, dois claims concorrentes levam UM CADA', async () => {
@@ -292,18 +292,19 @@ describe('claim atômico', () => {
 
     const [a, b] = await Promise.all([claimNextSetupJob(), claimNextSetupJob()])
 
-    expect([a, b].filter(Boolean)).toHaveLength(2)
-    expect(a?.id).not.toBe(b?.id)
+    const pegos = [a, b].filter((r) => r.tipo === 'claimed')
+    expect(pegos).toHaveLength(2)
+    expect(pegos[0].job.id).not.toBe(pegos[1].job.id)
   })
 
   it('não pega job que ainda está esperando o backoff', async () => {
     await criarJob({ status: 'pending', nextAttemptAt: new Date(Date.now() + 60_000) })
-    expect(await claimNextSetupJob()).toBeNull()
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
   })
 
   it('não pega job sem tentativa sobrando', async () => {
     await criarJob({ attempts: MAX_ATTEMPTS })
-    expect(await claimNextSetupJob()).toBeNull()
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
   })
 
   it.each([
@@ -313,14 +314,14 @@ describe('claim atômico', () => {
     ['completed'],
   ])('não pega job em %s', async (status) => {
     await criarJob({ status })
-    expect(await claimNextSetupJob()).toBeNull()
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
   })
 
   it('FIFO: o mais antigo elegível vem primeiro', async () => {
     const antigo = await criarJob({ nextAttemptAt: new Date(Date.now() - 120_000) })
     await criarJob({ nextAttemptAt: new Date(Date.now() - 60_000) })
 
-    expect((await claimNextSetupJob())?.id).toBe(antigo.id)
+    expect((await reivindicar()).id).toBe(antigo.id)
   })
 
   it('empate no relógio é desempatado, não sorteado', async () => {
@@ -509,6 +510,51 @@ describe('transação final: artefatos, versão, job e evento juntos', () => {
     expect(resultado).toEqual({ ok: false, motivo: 'versao_mudou' })
   })
 
+  it('publicaram enquanto o job rodava: base_mudou, nada é escrito', async () => {
+    // A candidata foi pensada contra outra configuração; gravá-la como atual seria
+    // publicar um raciocínio feito sobre base velha (§4.8).
+    const job = await criarJob()
+    const pego = await reivindicar()
+
+    const publicada = await db.aiSetupVersion.create({
+      data: { setupId, tenantId, state: 'active', answersJson: '{}', publishedAt: new Date() },
+    })
+    await db.aiSetup.update({
+      where: { id: setupId },
+      data: { publishedVersionId: publicada.id },
+    })
+
+    const resultado = await finalizarJobComSucesso({
+      jobId: job.id,
+      claimToken: pego.claimToken,
+      artefatos: ARTEFATOS,
+      proximoEstado: null,
+    })
+
+    expect(resultado).toEqual({ ok: false, motivo: 'base_mudou' })
+    const versao = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })
+    expect(versao.candidateConfigJson).toBeNull()
+  })
+
+  it('a versão deixou de ser a apontada: nada é escrito', async () => {
+    // Entre reivindicar e concluir passam MINUTOS. Gravar artefato numa versão largada
+    // produz candidata que ninguém vai revisar.
+    const job = await criarJob()
+    const pego = await reivindicar()
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
+
+    const resultado = await finalizarJobComSucesso({
+      jobId: job.id,
+      claimToken: pego.claimToken,
+      artefatos: ARTEFATOS,
+      proximoEstado: null,
+    })
+
+    expect(resultado).toEqual({ ok: false, motivo: 'versao_mudou' })
+    const versao = await db.aiSetupVersion.findUniqueOrThrow({ where: { id: versionId } })
+    expect(versao.candidateConfigJson).toBeNull()
+  })
+
   it('depois de finalizar, o token não vale mais', async () => {
     const job = await criarJob()
     const pego = await reivindicar()
@@ -630,6 +676,168 @@ describe('falha: destino, código e evento', () => {
     expect((await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })).lastError).toBe(
       'erro_desconhecido',
     )
+  })
+})
+
+describe('bordas que o tipo do resultado tem que separar', () => {
+  it('teto de candidatos devolve limit_reached, NUNCA empty', async () => {
+    // Cinquenta e um jobs inválidos: os 50 primeiros são descartados e o 51º nunca é
+    // olhado. Dizer "fila vazia" aqui manda a pessoa embora com trabalho na fila.
+    await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
+    for (let i = 0; i < 51; i += 1) {
+      await criarJob()
+    }
+
+    const resultado = await claimNextSetupJob()
+
+    expect(resultado.tipo).toBe('limit_reached')
+    if (resultado.tipo === 'limit_reached') {
+      expect(resultado.inspecionados).toBe(50)
+    }
+  })
+
+  it('consulta realmente vazia devolve empty', async () => {
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
+  })
+})
+
+describe('recusas de borda', () => {
+  it('kind desconhecido é recusado — a fila só sabe gerar', async () => {
+    // Sem isto ele seria reivindicado, processado como se fosse geração e produziria
+    // artefato errado em silêncio.
+    const job = await db.aiSetupJob.create({
+      data: {
+        versionId,
+        tenantId,
+        kind: 'inventado',
+        generation: 1,
+        idempotencyKey: `k:${crypto.randomUUID()}`,
+      },
+    })
+
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
+
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.status).toBe('failed')
+    expect(depois.failureKind).toBe('terminal')
+  })
+
+  it('geração MENOR que a da versão → superseded, sem alarme', async () => {
+    const job = await criarJob({ generation: 1 })
+    await db.aiSetupVersion.update({ where: { id: versionId }, data: { generation: 3 } })
+
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
+
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.failureKind).toBe('superseded')
+    expect(depois.lastError).toBe('geracao_obsoleta')
+  })
+
+  it('geração MAIOR que a da versão → terminal: é corrupção, não atraso', async () => {
+    // O job diz ter nascido de uma geração que a versão nunca alcançou. Tratar como
+    // obsoleto esconderia justamente o caso grave.
+    const job = await criarJob({ generation: 5 })
+
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
+
+    const depois = await db.aiSetupJob.findUniqueOrThrow({ where: { id: job.id } })
+    expect(depois.failureKind).toBe('terminal')
+  })
+
+  it('versão de OUTRO tenant: o evento não cita a versão alheia', async () => {
+    // Citar o id amarraria, na auditoria desta empresa, a versão de outra.
+    const outro = await db.tenant.create({
+      data: { slug: `alheio-${crypto.randomUUID().slice(0, 8)}`, name: 'Outro' },
+    })
+    const outroSetup = await db.aiSetup.create({ data: { tenantId: outro.id } })
+    const alheia = await db.aiSetupVersion.create({
+      data: { setupId: outroSetup.id, tenantId: outro.id, state: 'submitted', answersJson: '{}' },
+    })
+    const job = await db.aiSetupJob.create({
+      data: {
+        versionId: alheia.id,
+        tenantId,
+        kind: 'generate',
+        generation: 1,
+        idempotencyKey: `x:${crypto.randomUUID()}`,
+      },
+    })
+
+    expect((await claimNextSetupJob()).tipo).toBe('empty')
+
+    const evento = await db.aiSetupEvent.findFirst({
+      where: { tenantId, kind: 'job_failed' },
+      orderBy: { createdAt: 'desc' },
+    })
+    expect(evento?.versionId).toBeNull()
+    expect(evento?.detail).toContain(job.id)
+    // E não sobra vestígio da versão alheia no registro desta empresa.
+    expect(evento?.detail).not.toContain(alheia.id)
+  })
+})
+
+describe('o log não é depósito de dado de cliente', () => {
+  const originais = {
+    optIn: process.env.SETUP_LOG_DETALHE,
+    nodeEnv: process.env.NODE_ENV,
+  }
+
+  /** Restaura ou apaga, conforme a variável existia antes. */
+  function repor(nome: 'SETUP_LOG_DETALHE' | 'NODE_ENV', valor: string | undefined) {
+    if (valor === undefined) {
+      delete process.env[nome]
+    } else {
+      process.env[nome] = valor
+    }
+  }
+
+  afterEach(() => {
+    // `NODE_ENV` também: apagá-lo e não repor contaminaria os testes seguintes do mesmo
+    // worker (o cookie Secure do auth, por exemplo, decide por ele).
+    repor('SETUP_LOG_DETALHE', originais.optIn)
+    repor('NODE_ENV', originais.nodeEnv)
+    vi.restoreAllMocks()
+  })
+
+  /** Falha um job e devolve tudo o que foi para o console. */
+  async function falharCapturandoLog(): Promise<string> {
+    const espiao = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const job = await criarJob()
+    const pego = await reivindicar()
+    await failSetupJob({
+      jobId: job.id,
+      claimToken: pego.claimToken,
+      kind: 'invalid_output',
+      codigo: 'saida_invalida',
+      detalhe: new Error('a paciente Maria da Silva pediu o resultado do exame'),
+    })
+    return espiao.mock.calls.map((c) => c.join(' ')).join('\n')
+  }
+
+  it('SEM a variável de opt-in, o detalhe não aparece', async () => {
+    // O gatilho NÃO pode ser `NODE_ENV !== production`: os comandos assistidos rodam sem
+    // `NODE_ENV` definido, e a regra por ambiente despejaria o detalhe no log de produção
+    // exatamente no caminho em que ele é usado.
+    delete process.env.SETUP_LOG_DETALHE
+    delete process.env.NODE_ENV
+
+    const log = await falharCapturandoLog()
+
+    expect(log).toContain('saida_invalida')
+    expect(log).not.toContain('Maria da Silva')
+  })
+
+  it('em NODE_ENV=development também não aparece sem opt-in', async () => {
+    delete process.env.SETUP_LOG_DETALHE
+    process.env.NODE_ENV = 'development'
+
+    expect(await falharCapturandoLog()).not.toContain('Maria da Silva')
+  })
+
+  it('com o opt-in explícito, aparece — é onde se depura', async () => {
+    process.env.SETUP_LOG_DETALHE = '1'
+
+    expect(await falharCapturandoLog()).toContain('Maria da Silva')
   })
 })
 

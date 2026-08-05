@@ -98,9 +98,11 @@ type MotivoNaoProcessavel =
   | 'versao_ausente'
   | 'setup_divergente'
   | 'ponteiro_divergente'
+  | 'tipo_desconhecido'
+  | 'geracao_obsoleta'
+  | 'geracao_impossivel'
   | 'estado_invalido'
   | 'respostas_incompletas'
-  | 'geracao_obsoleta'
 
 /** Sinaliza job que não deve ser processado — a transação do claim é revertida. */
 class JobNaoProcessavelError extends Error {
@@ -110,31 +112,62 @@ class JobNaoProcessavelError extends Error {
   }
 }
 
-/**
- * Geração obsoleta é o sistema funcionando (§4.8): o cliente submeteu de novo e este job
- * ficou para trás. Não alarma e não é "terminal" — é `superseded`. O resto é estado
- * corrompido e precisa de gente olhando.
- */
-function classificar(motivo: MotivoNaoProcessavel): {
+type Classificacao = {
   kind: FailureKind
   codigo: CodigoErro
   alarmar: boolean
-} {
-  if (motivo === 'geracao_obsoleta') {
-    return { kind: 'superseded', codigo: 'geracao_obsoleta', alarmar: false }
-  }
-  return { kind: 'terminal', codigo: 'validacao_reprovou', alarmar: true }
+  /**
+   * O evento pode citar a versão?
+   *
+   * Quando o job aponta para versão que NÃO é deste tenant, citar o id amarraria, na
+   * auditoria de uma empresa, a versão de outra. O evento fica com `versionId: null` e o
+   * motivo no `detail` — some o vazamento, não a rastreabilidade.
+   */
+  citarVersao: boolean
 }
+
+/**
+ * Geração obsoleta é o sistema funcionando (§4.8): o cliente submeteu de novo e este job
+ * ficou para trás. Não alarma e não é "terminal" — é `superseded`.
+ *
+ * Geração MAIOR que a da versão é outra coisa: o job diz ter nascido de uma geração que a
+ * versão nunca alcançou. Isso não acontece pelo caminho normal, então é corrupção — sai
+ * terminal e alarma. Tratá-la como obsoleta esconderia justamente o caso grave.
+ */
+function classificar(motivo: MotivoNaoProcessavel): Classificacao {
+  if (motivo === 'geracao_obsoleta') {
+    return { kind: 'superseded', codigo: 'geracao_obsoleta', alarmar: false, citarVersao: true }
+  }
+  const daOutraEmpresa = motivo === 'versao_ausente' || motivo === 'setup_divergente'
+  return {
+    kind: 'terminal',
+    codigo: 'validacao_reprovou',
+    alarmar: true,
+    citarVersao: !daOutraEmpresa,
+  }
+}
+
+/**
+ * O desfecho de uma tentativa de claim.
+ *
+ * `empty` e `limit_reached` são coisas DIFERENTES e o tipo obriga quem chama a tratar as
+ * duas: `empty` é consulta que voltou vazia; `limit_reached` é "inspecionei o teto de
+ * candidatos e todos foram descartados ou perdidos" — pode haver job válido logo atrás.
+ * Anunciar "fila vazia" nesse caso manda a pessoa embora com trabalho na fila.
+ */
+export type ResultadoClaim =
+  | { tipo: 'claimed'; job: JobReivindicado }
+  | { tipo: 'empty' }
+  | { tipo: 'limit_reached'; inspecionados: number }
 
 /**
  * Pega o próximo job PROCESSÁVEL da fila.
  *
  * FIFO por `nextAttemptAt`, desempatado por `createdAt` e `id` — sem desempate, dois jobs
  * agendados no mesmo milissegundo (o que acontece: o default é `now()`) sairiam em ordem
- * indefinida e um deles podia ficar para trás. Pagina enquanto houver candidato, para não
- * anunciar fila vazia por causa dos primeiros descartes.
+ * indefinida e um deles podia ficar para trás. Pagina enquanto houver candidato.
  */
-export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindicado | null> {
+export async function claimNextSetupJob(agora = new Date()): Promise<ResultadoClaim> {
   const tentados: string[] = []
 
   while (tentados.length < TETO_DE_CANDIDATOS) {
@@ -149,18 +182,18 @@ export async function claimNextSetupJob(agora = new Date()): Promise<JobReivindi
       take: CANDIDATOS_POR_BUSCA,
     })
     if (candidatos.length === 0) {
-      return null
+      return { tipo: 'empty' }
     }
 
     for (const candidato of candidatos) {
       tentados.push(candidato.id)
       const snapshot = await tentarReivindicar(candidato, agora)
       if (snapshot) {
-        return snapshot
+        return { tipo: 'claimed', job: snapshot }
       }
     }
   }
-  return null
+  return { tipo: 'limit_reached', inspecionados: tentados.length }
 }
 
 type CandidatoDeJob = {
@@ -233,8 +266,16 @@ async function tentarReivindicar(
         if (setup.reviewVersionId !== version.id) {
           throw new JobNaoProcessavelError('ponteiro_divergente')
         }
-        if (version.generation !== candidato.generation) {
+        if (candidato.kind !== 'generate') {
+          // A fila só sabe gerar. Um `kind` que ninguém implementou seria reivindicado,
+          // processado como se fosse geração e produziria artefato errado em silêncio.
+          throw new JobNaoProcessavelError('tipo_desconhecido')
+        }
+        if (candidato.generation < version.generation) {
           throw new JobNaoProcessavelError('geracao_obsoleta')
+        }
+        if (candidato.generation > version.generation) {
+          throw new JobNaoProcessavelError('geracao_impossivel')
         }
         if (version.state !== 'submitted') {
           throw new JobNaoProcessavelError('estado_invalido')
@@ -291,7 +332,7 @@ async function marcarJobNaoProcessavel(
   motivo: MotivoNaoProcessavel,
   agora: Date,
 ): Promise<void> {
-  const { kind, codigo, alarmar } = classificar(motivo)
+  const { kind, codigo, alarmar, citarVersao } = classificar(motivo)
 
   const marcou = await comRetry((opcoes) =>
     db.$transaction(async (tx) => {
@@ -312,7 +353,8 @@ async function marcarJobNaoProcessavel(
       await tx.aiSetupEvent.create({
         data: {
           tenantId: candidato.tenantId,
-          versionId: candidato.versionId,
+          // Versão de outra empresa não entra na auditoria desta — ver `citarVersao`.
+          versionId: citarVersao ? candidato.versionId : null,
           kind: 'job_failed',
           actor: ATOR,
           detail: JSON.stringify({ jobId: candidato.id, failureKind: kind, codigo, motivo }),
@@ -416,7 +458,7 @@ export async function finalizarJobComSucesso(input: {
             generation: job.generation,
             state: 'submitted',
           },
-          select: { basePublishedVersionId: true },
+          select: { setupId: true, basePublishedVersionId: true },
         })
         if (!versao) {
           throw new FinalizacaoAbortada('versao_mudou')
@@ -424,9 +466,18 @@ export async function finalizarJobComSucesso(input: {
 
         const setup = await tx.aiSetup.findUnique({
           where: { tenantId: job.tenantId },
-          select: { publishedVersionId: true },
+          select: { id: true, publishedVersionId: true, reviewVersionId: true },
         })
-        if ((setup?.publishedVersionId ?? null) !== versao.basePublishedVersionId) {
+        // As mesmas conferências do claim, DE NOVO: entre reivindicar e concluir passam
+        // minutos, e nesse intervalo a versão pode ter deixado de ser a que o setup aponta.
+        // Gravar artefato numa versão largada produz candidata que ninguém vai revisar.
+        if (!setup || versao.setupId !== setup.id) {
+          throw new FinalizacaoAbortada('versao_mudou')
+        }
+        if (setup.reviewVersionId !== job.versionId) {
+          throw new FinalizacaoAbortada('versao_mudou')
+        }
+        if ((setup.publishedVersionId ?? null) !== versao.basePublishedVersionId) {
           // A base congelada no envio já não é a que está no ar: a candidata foi pensada
           // contra outra configuração e não pode ser gravada como se fosse atual.
           throw new FinalizacaoAbortada('base_mudou')
@@ -596,13 +647,19 @@ export async function failSetupJob(input: {
 }
 
 /**
- * Loga a falha. Em PRODUÇÃO sai só o código.
+ * Loga a falha. Por padrão sai SÓ o código.
  *
  * O detalhe é a mensagem do erro de um job de agentes: ela carrega pedaço do prompt e da
  * saída, ou seja, dado de cliente da empresa. O hermes.log fica no disco do Pi e vai junto
- * em qualquer cópia de diagnóstico — não é lugar para isso. Em dev o detalhe aparece,
- * porque é ali que se depura.
+ * em qualquer cópia de diagnóstico — não é lugar para isso.
+ *
+ * O gatilho é OPT-IN explícito, e não `NODE_ENV !== 'production'`: os comandos assistidos
+ * rodam sem `NODE_ENV` definido, então a regra por ambiente despejaria o detalhe no log de
+ * produção exatamente no caminho em que ele é usado. Quem precisa depurar liga a variável
+ * na hora e sabe o que está fazendo.
  */
+const OPT_IN_DETALHE = 'SETUP_LOG_DETALHE'
+
 function logarFalha(
   jobId: string,
   kind: FailureKind,
@@ -611,7 +668,7 @@ function logarFalha(
   detalhe: unknown,
 ): void {
   const base = `[setup-queue] job ${jobId} falhou (${kind}/${codigo}, tentativa ${attempts})`
-  if (process.env.NODE_ENV === 'production' || detalhe === undefined) {
+  if (process.env[OPT_IN_DETALHE] !== '1' || detalhe === undefined) {
     console.error(base)
     return
   }
