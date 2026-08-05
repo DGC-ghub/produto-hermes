@@ -144,13 +144,33 @@ describe('validateAttendantOutput', () => {
     ).toBe(true)
   })
 
-  it('tenant SEM a tool abrir_chamado não sofre o guard de registro', () => {
+  // O guard vale SEMPRE, inclusive (e principalmente) para o tenant SEM a tool:
+  // aí nada pode ser registrado, então qualquer "já registrei" é mentira certa.
+  // Antes, o guard era condicionado a ter a tool e estes casos passavam — o cliente
+  // ouvia "registrei seu chamado" com nada no banco (tenants novos nascem `tools: []`).
+  it('recusa reply que AFIRMA registro no tenant SEM a tool (nada pode ser registrado)', () => {
+    const semTool = { tools: [] }
     expect(
       validateAttendantOutput(
-        { ...good, reply: 'Seu e-mail foi registrado na nossa lista.' },
-        { tools: [] },
+        { ...good, reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.' },
+        semTool,
+      ),
+    ).toEqual({ ok: false, reason: 'reply_afirma_registro_sem_action' })
+    // Mesmo COM action proposta: sem a tool ela é descartada, a frase segue mentira.
+    expect(
+      validateAttendantOutput(
+        {
+          ...good,
+          reply: 'Pronto! Já registrei seu chamado.',
+          action: { type: 'abrir_chamado', subject: 'geladeira', description: 'não gela' },
+        },
+        semTool,
       ).ok,
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  it('recusa reply que afirma registro sem action mesmo sem policy alguma', () => {
+    expect(validateAttendantOutput({ ...good, reply: 'Pronto, chamado aberto!' }).ok).toBe(false)
   })
 
   it('exige motivo quando needsHuman é true', () => {

@@ -48,6 +48,7 @@ export async function runScenario(s: Scenario): Promise<ScenarioReport> {
     {
       tenant: { slug: s.tenant, name: config.businessProfile.name },
       companyRules,
+      enabledTools: enabledTools.map((tool) => tool.name),
       knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
       history: s.history ?? [],
       lead: s.lead ?? null,

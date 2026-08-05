@@ -2,6 +2,7 @@
 // O balcão (processIncomingMessage) monta o AttendantInput, chama um provider e
 // recebe um AttendantOutput já validado. Nenhuma parte do produto sabe qual
 // provider está ativo (mock | claude_cli).
+import type { ToolName } from './tenant-config'
 
 export type AttendantHistoryTurn = {
   role: 'user' | 'assistant'
@@ -31,6 +32,15 @@ export type AttendantTicketSummary = {
 export type AttendantInput = {
   tenant: { slug: string; name: string }
   companyRules: string[]
+  // Nomes das tools HABILITADAS para este tenant (mesma lista que o validador honra).
+  // O prompt precisa saber: pedir uma action que o balcão vai descartar só produz
+  // resposta mentirosa ("já registrei") com nada gravado.
+  //
+  // `ToolName`, não `string[]`: o prompt decide o que anunciar comparando com um literal,
+  // e num array de string um `'abrir_chamados'` digitado errado compila, devolve false e
+  // silenciosamente esconde a ferramenta de um tenant que a tem. `readonly` porque a
+  // lista é do balcão — provider recebe para ler, não para alterar.
+  enabledTools: readonly ToolName[]
   knowledge: AttendantKnowledge[]
   history: AttendantHistoryTurn[]
   lead: AttendantLeadSnapshot | null

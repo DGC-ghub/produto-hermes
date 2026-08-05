@@ -6,6 +6,7 @@ import type { AttendantInput, AttendantProvider } from './types'
 const baseInput: AttendantInput = {
   tenant: { slug: 'dgc', name: 'DGC Hub' },
   companyRules: [],
+  enabledTools: [],
   knowledge: [],
   history: [],
   lead: null,

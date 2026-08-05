@@ -6,11 +6,21 @@ const BASE_RULES = [
   'Responda em português, de forma curta e natural, como numa conversa de WhatsApp.',
   'Use apenas as informações da base da empresa; não invente dados, preços ou prazos.',
   'Nunca prometa preço fechado, garantia de conserto ou prazo que não esteja na base.',
-  'Só abra um chamado (o campo action) DEPOIS que o cliente confirmar que quer agendar ou registrar; antes disso, ofereça e pergunte, mantendo action nula.',
-  'Quando o cliente CONFIRMAR ("sim", "pode registrar"), inclua a action abrir_chamado NESSE MESMO turno — detalhe que faltar vai na description como "a confirmar". NUNCA diga que registrou/abriu algo sem a action correspondente: sem ela, nada é registrado de verdade.',
   'Diante de objeção de preço ou atrito leve, contorne com jeito e ofereça o próximo passo (ex.: a visita) — não encaminhe a um humano só por isso.',
   'Encaminhe a um humano apenas em: pedido explícito do cliente, insatisfação forte ou repetida, ou tema sensível (contrato, jurídico, dados pessoais).',
 ]
+
+// Regras de chamado: só entram para quem TEM a ferramenta. Mandar o modelo "incluir
+// a action abrir_chamado" num tenant sem a tool produzia promessa que ninguém cumpre
+// — o balcão descarta a action e o cliente ouvia "já registrei" com nada no banco.
+const TICKET_RULES = [
+  'Só abra um chamado (o campo action) DEPOIS que o cliente confirmar que quer agendar ou registrar; antes disso, ofereça e pergunte, mantendo action nula.',
+  'Quando o cliente CONFIRMAR ("sim", "pode registrar"), inclua a action abrir_chamado NESSE MESMO turno — detalhe que faltar vai na description como "a confirmar". NUNCA diga que registrou/abriu algo sem a action correspondente: sem ela, nada é registrado de verdade.',
+]
+
+// A alternativa honesta de quem não tem a ferramenta: ouvir, e passar para uma pessoa.
+const NO_TICKET_TOOL_RULE =
+  'Este atendimento não registra chamados nem agendamentos. NUNCA diga que registrou, abriu, agendou ou marcou algo — nada disso acontece de verdade aqui. Se o cliente pedir para registrar ou agendar, diga que vai passar para uma pessoa do time cuidar disso e encaminhe (needsHuman).'
 
 // Uma linha de persona derivada do businessProfile: dá ao cérebro a identidade
 // e o tom DAQUELA empresa (antes só chegava o tom genérico das BASE_RULES).
@@ -25,8 +35,14 @@ function personaRule(config: TenantConfig): string {
  * TenantConfig: persona da empresa + regras globais + política de fonte + as
  * regras livres da empresa. Substitui o antigo `companyRulesFor`.
  */
+/** A empresa tem a ferramenta de abrir chamado LIGADA? (mesmo critério do balcão) */
+export function hasTicketTool(config: TenantConfig): boolean {
+  return config.tools.some((tool) => tool.name === 'abrir_chamado' && tool.enabled)
+}
+
 export function buildCompanyRules(config: TenantConfig): string[] {
   const rules = [personaRule(config), ...BASE_RULES]
+  rules.push(...(hasTicketTool(config) ? TICKET_RULES : [NO_TICKET_TOOL_RULE]))
   if (config.knowledge.sourcePolicy === 'answer_only_from_knowledge') {
     rules.push(
       'Responda somente com base nas informações da empresa. Se algo não estiver na base, diga que vai verificar ou encaminhar — não invente.',

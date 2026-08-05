@@ -350,6 +350,7 @@ async function runIncomingMessage(
       {
         tenant: { slug: tenant.slug, name: config.businessProfile.name },
         companyRules,
+        enabledTools: enabledTools.map((tool) => tool.name),
         knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
         history,
         lead: currentLead
