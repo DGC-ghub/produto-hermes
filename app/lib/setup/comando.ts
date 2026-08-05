@@ -65,3 +65,51 @@ export function descreverModo(modo: ModoDoComando): string {
       return `Argumento desconhecido: ${modo.argumento}`
   }
 }
+
+// ── setup:revisar ───────────────────────────────────────────────────────────────
+
+export type ArgumentosDeRevisao =
+  | { tipo: 'revisar'; slug: string; reviewer: string | undefined; simular: boolean }
+  | { tipo: 'argumento_invalido'; argumento: string }
+  | { tipo: 'slug_ausente' }
+  | { tipo: 'slug_repetido'; segundo: string }
+
+/**
+ * Lê `setup:revisar -- <slug> --reviewer <nome> [--sim]`.
+ *
+ * Mesma disciplina do outro comando: argumento desconhecido PARA, em vez de virar
+ * execução por omissão. E o slug é posicional e único — dois slugs na linha significam
+ * que a pessoa não sabe qual empresa está revisando, e adivinhar seria o pior desfecho.
+ */
+export function interpretarArgumentosDeRevisao(argv: readonly string[]): ArgumentosDeRevisao {
+  let slug: string | undefined
+  let reviewer: string | undefined
+  let simular = false
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (FLAGS_DE_SIMULACAO.includes(arg as (typeof FLAGS_DE_SIMULACAO)[number])) {
+      simular = true
+      continue
+    }
+    if (arg === '--reviewer') {
+      // O valor pode faltar; quem valida o nome é `normalizarReviewer`, que devolve o
+      // motivo certo para a mensagem.
+      reviewer = argv[i + 1]
+      i += 1
+      continue
+    }
+    if (arg.startsWith('-')) {
+      return { tipo: 'argumento_invalido', argumento: arg }
+    }
+    if (slug !== undefined) {
+      return { tipo: 'slug_repetido', segundo: arg }
+    }
+    slug = arg
+  }
+
+  if (slug === undefined) {
+    return { tipo: 'slug_ausente' }
+  }
+  return { tipo: 'revisar', slug, reviewer, simular }
+}

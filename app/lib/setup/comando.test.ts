@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { descreverModo, FLAGS_DE_SIMULACAO, interpretarArgumentos } from './comando'
+import {
+  descreverModo,
+  FLAGS_DE_SIMULACAO,
+  interpretarArgumentos,
+  interpretarArgumentosDeRevisao,
+} from './comando'
 
 // O contrato do `--sim` tem teste porque neste repositório o mesmo flag significa coisas
 // opostas em dois comandos do prefixo `setup:` — lá ele APLICA, aqui ele não toca em nada.
@@ -66,5 +71,66 @@ describe('o modo é anunciado', () => {
   it('o falso diz que o artefato é de mentira', () => {
     // Sem isto alguém aprova uma candidata gerada pelo processador falso.
     expect(descreverModo({ tipo: 'executar_falso' })).toContain('FALSO')
+  })
+})
+
+describe('argumentos do setup:revisar', () => {
+  it('slug posicional e reviewer', () => {
+    expect(interpretarArgumentosDeRevisao(['acme', '--reviewer', 'Gabriel'])).toEqual({
+      tipo: 'revisar',
+      slug: 'acme',
+      reviewer: 'Gabriel',
+      simular: false,
+    })
+  })
+
+  it('a ordem entre o slug e a flag não importa', () => {
+    expect(interpretarArgumentosDeRevisao(['--reviewer', 'Ana', 'acme'])).toMatchObject({
+      slug: 'acme',
+      reviewer: 'Ana',
+    })
+  })
+
+  it.each(FLAGS_DE_SIMULACAO.map((f) => [f]))('%s liga a simulação', (flag) => {
+    expect(interpretarArgumentosDeRevisao(['acme', '--reviewer', 'Ana', flag])).toMatchObject({
+      tipo: 'revisar',
+      simular: true,
+    })
+  })
+
+  it('o nome do revisor não é confundido com slug nem com flag', () => {
+    // `--reviewer --sim` pegaria "--sim" como nome se o parser não consumisse o valor.
+    expect(interpretarArgumentosDeRevisao(['acme', '--reviewer', 'Ana Maria'])).toMatchObject({
+      slug: 'acme',
+      reviewer: 'Ana Maria',
+    })
+  })
+
+  it('sem slug, para', () => {
+    expect(interpretarArgumentosDeRevisao(['--reviewer', 'Ana'])).toEqual({ tipo: 'slug_ausente' })
+  })
+
+  it('DOIS slugs param o comando', () => {
+    // Adivinhar qual empresa revisar é o pior desfecho possível aqui.
+    expect(interpretarArgumentosDeRevisao(['acme', 'outra', '--reviewer', 'Ana'])).toEqual({
+      tipo: 'slug_repetido',
+      segundo: 'outra',
+    })
+  })
+
+  it.each([['--falso'], ['--xyz'], ['-r']])('flag desconhecido (%s) para o comando', (arg) => {
+    expect(interpretarArgumentosDeRevisao(['acme', arg])).toEqual({
+      tipo: 'argumento_invalido',
+      argumento: arg,
+    })
+  })
+
+  it('reviewer ausente NÃO é decidido aqui', () => {
+    // Quem valida o nome é `normalizarReviewer`: ele sabe distinguir "faltou" de "curto
+    // demais", e é essa diferença que vira mensagem útil.
+    expect(interpretarArgumentosDeRevisao(['acme'])).toMatchObject({
+      tipo: 'revisar',
+      reviewer: undefined,
+    })
   })
 })
