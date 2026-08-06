@@ -159,7 +159,8 @@ async function processEvent(event: {
     tenantSlug,
     message: event.text,
     contactId: event.contactId,
-    channel: 'whatsapp',
+    // O único modo com efeitos operacionais: aqui há um cliente de verdade do outro lado.
+    mode: 'whatsapp',
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {

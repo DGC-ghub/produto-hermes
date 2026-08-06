@@ -179,11 +179,16 @@ describe('/testar-ia — portão e isolamento', () => {
     expect(OWN_CONTACT).toContain(OPERATOR.accountId)
   })
 
-  it('marca a conversa como simulator e ativa o modo preview sem efeitos operacionais', async () => {
+  it('executa em owner_preview — canal e ausência de efeitos vêm do MODO', async () => {
+    // Antes esta tela mandava `channel: 'simulator'` + `preview: true`, dois campos que
+    // podiam divergir. Agora manda o modo, e canal e efeitos são consequência dele (§7.2).
     await callAction({ message: 'quanto custa?' })
+
     expect(processIncomingMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: 'simulator', preview: true }),
+      expect.objectContaining({ mode: 'owner_preview' }),
     )
+    // Sem snapshot: esta tela testa a config PUBLICADA, não a candidata em revisão.
+    expect(vi.mocked(processIncomingMessage).mock.calls[0][0]).not.toHaveProperty('previewSnapshot')
   })
 
   it('ignora conversationId de outro tenant', async () => {

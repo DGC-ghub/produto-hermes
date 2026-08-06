@@ -76,7 +76,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           ...(conversationId ? { id: conversationId } : {}),
         },
         orderBy: { updatedAt: 'desc' },
-        select: { id: true, status: true },
+        select: { id: true },
       })
     : null
 
@@ -93,7 +93,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       tenantSlug,
       tenants: DEMO_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
       selectedConversationId: selected?.id ?? null,
-      selectedStatus: selected?.status ?? null,
+      // Do parâmetro da última resposta, não do status: ver o comentário na action.
+      needsHuman: url.searchParams.get('humano') === '1',
       messages: messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -189,9 +190,17 @@ export async function action({ request }: Route.ActionArgs) {
       message,
       conversationId: ownConversationId,
       contactId,
+      // Visitante anônimo: nada de lead, chamado, handoff ou alarme (§7.3). Antes o modo era
+      // omitido e o motor caía no default de efeitos LIGADOS — a Central recebia visitante.
+      mode: 'public_demo',
     })
+    // §7.3: o aviso vem do RETORNO do motor, não do status persistido. A demo não escala
+    // conversa (`public_demo` não tem efeitos operacionais — a Central do cliente não recebe
+    // visitante anônimo), então `status` fica `open` e ler dali apagaria o aviso em silêncio.
+    // Vai na URL porque a action redireciona: é o único canal que sobrevive ao redirect.
+    const avisoHumano = result.needsHuman ? '&humano=1' : ''
     return redirect(
-      `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}`,
+      `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}${avisoHumano}`,
       { headers },
     )
   } catch (error) {
@@ -218,10 +227,9 @@ function AiAvatar() {
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
-  const { tenantSlug, tenants, selectedConversationId, selectedStatus, messages } = loaderData
+  const { tenantSlug, tenants, selectedConversationId, needsHuman, messages } = loaderData
   const navigation = useNavigation()
   const actionData = useActionData<typeof action>()
-  const needsHuman = selectedStatus === 'needs_human'
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 

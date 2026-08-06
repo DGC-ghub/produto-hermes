@@ -68,7 +68,7 @@ export const ORIENTACAO: Record<CodigoDeRecusa, string> = {
   // mesma classe do bug "já registrei seu chamado" — afirmar um efeito operacional que não
   // aconteceu. Se um dia houver notificação persistida, a frase volta junto com ela.
   ponteiro_incoerente:
-    'Não conseguimos abrir essa preparação para teste. Volte para a tela de preparação. Se o problema continuar, fale com o suporte.',
+    'Não conseguimos abrir essa preparação para teste. Volte para a tela de preparação. Se o problema continuar, entre em contato com o suporte.',
   nao_e_candidata:
     'Sua IA ainda não está liberada para teste. Nossa equipe está revisando — volte mais tarde para testar.',
   geracao_divergente:
@@ -76,7 +76,7 @@ export const ORIENTACAO: Record<CodigoDeRecusa, string> = {
   base_mudou:
     'A configuração publicada mudou depois desta preparação. É preciso enviar as respostas de novo para gerar sobre a versão atual.',
   artefatos_invalidos:
-    'Houve um problema no material preparado para sua IA. Volte para a tela de preparação e tente novamente mais tarde.',
+    'Houve um problema no material preparado para sua IA. Volte para a tela de preparação e tente novamente mais tarde. Se o problema continuar, entre em contato com o suporte.',
 }
 
 /** Traduz a recusa da resolução no código fixo correspondente. */
@@ -129,8 +129,8 @@ export async function executarPreviewDaCandidata(input: {
   }
 
   // O snapshot segue INTEIRO para o motor, e é a única fonte de config e base dali em diante.
-  // `previewSnapshot` já implica execução sem efeitos operacionais (ver o tipo do motor);
-  // `preview: true` vai junto porque a promessa é do chamador também, não só do motor.
+  // `mode: 'owner_preview'` é o que desliga os efeitos — o motor deriva isso do modo, e o
+  // tipo do modo é o que impede este snapshot de ser passado com `mode: 'whatsapp'`.
   const resultado = await processIncomingMessage({
     tenantSlug: operator.tenantSlug,
     message: input.message,
@@ -139,8 +139,7 @@ export async function executarPreviewDaCandidata(input: {
       fonte.fonte.versionId,
       fonte.fonte.generation,
     ),
-    channel: 'simulator',
-    preview: true,
+    mode: 'owner_preview',
     previewSnapshot: { config: fonte.fonte.config, conhecimento: fonte.fonte.conhecimento },
   })
 

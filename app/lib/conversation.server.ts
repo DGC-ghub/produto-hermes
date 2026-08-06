@@ -16,36 +16,63 @@ import { retrieveRelevantChunks } from './retrieval'
 import { resolveTenant } from './tenants.server'
 import { hasDuplicateOpenTicket } from './ticket'
 
-export type ProcessIncomingMessageInput = {
+/**
+ * Os três modos de execução do motor (spec §7.2). OBRIGATÓRIO: omitir é erro de tipo.
+ *
+ * Antes havia `channel?` e `preview?` independentes, e a combinação errada era possível de
+ * escrever: `channel: 'whatsapp'` com `preview: true` alarmava o operador por uma execução
+ * que não era de cliente nenhum. Com um campo só, canal e efeitos param de ser escolha de
+ * quem chama e passam a ser CONSEQUÊNCIA do modo.
+ */
+export type ExecutionMode = 'public_demo' | 'owner_preview' | 'whatsapp'
+
+/** Config e base resolvidas por quem chamou — a candidata em revisão (§7.4). */
+export type SnapshotDoPreview = {
+  config: TenantConfig
+  conhecimento: KnowledgeDocument[]
+}
+
+type EntradaBase = {
   tenantSlug: string
   message: string
   conversationId?: string
   contactId?: string
-  // Canal REAL da mensagem. Além de corrigir a métrica por canal, decide o alarme:
-  // handoff sensível só alarma vindo do WhatsApp — visitante anônimo da demo
-  // pública não pode disparar push urgente no celular do operador.
-  channel?: 'simulator' | 'whatsapp'
-  // Preview autenticado: executa cérebro/guard/persistência da conversa e métricas,
-  // mas não cria efeitos operacionais (lead, ticket, handoff, status ou alarme).
-  preview?: boolean
-  /**
-   * Execução sobre uma configuração JÁ RESOLVIDA, que não é a publicada (`owner_preview`
-   * da spec §7.2) — hoje, a candidata de um setup em revisão.
-   *
-   * Presente ⇒ **execução sem efeitos operacionais**, independentemente de `preview`. O modo
-   * não é opcional quando a config não é a que está no ar: uma config candidata criando
-   * chamado e lead de verdade seria um teste com consequência real no banco do cliente.
-   *
-   * Config e conhecimento vêm JUNTOS, num campo só, porque o erro que anula o preview é
-   * executar a config nova contra a base que já está no ar — o dono testaria uma coisa e
-   * aprovaria outra. Aqui isso não tem como acontecer: não há campo para um sem o outro.
-   *
-   * Depois deste ponto o motor NÃO relê config nem base de nenhuma fonte.
-   */
-  previewSnapshot?: {
-    config: TenantConfig
-    conhecimento: KnowledgeDocument[]
-  }
+}
+
+/**
+ * União discriminada pelo modo. `previewSnapshot?: never` nos outros dois não é decoração:
+ * é o que faz `mode: 'whatsapp'` com snapshot da candidata não COMPILAR. Uma config em
+ * revisão atendendo cliente real é o pior desfecho possível desta fatia, e a barreira certa
+ * para ele é o compilador, não uma checagem em runtime que alguém pode esquecer.
+ */
+export type ProcessIncomingMessageInput = EntradaBase &
+  (
+    | { mode: 'public_demo'; previewSnapshot?: never }
+    | {
+        mode: 'owner_preview'
+        /**
+         * Opcional: `owner_preview` roda sobre a candidata (com snapshot) OU sobre a
+         * publicada (sem), que é o caso da tela `/testar-ia` de hoje.
+         *
+         * Config e conhecimento vêm JUNTOS, num campo só, porque o erro que anula o preview
+         * é executar a config nova contra a base que já está no ar — o dono testaria uma
+         * coisa e aprovaria outra. Não há campo para um sem o outro.
+         *
+         * Depois deste ponto o motor NÃO relê config nem base de nenhuma fonte.
+         */
+        previewSnapshot?: SnapshotDoPreview
+      }
+    | { mode: 'whatsapp'; previewSnapshot?: never }
+  )
+
+/** O que cada modo IMPLICA. Tabela da §7.2, num lugar só. */
+const PERFIL_DO_MODO: Record<
+  ExecutionMode,
+  { channel: 'simulator' | 'whatsapp'; operationalEffects: boolean }
+> = {
+  public_demo: { channel: 'simulator', operationalEffects: false },
+  owner_preview: { channel: 'simulator', operationalEffects: false },
+  whatsapp: { channel: 'whatsapp', operationalEffects: true },
 }
 
 export type ProcessIncomingMessageSource = {
@@ -115,7 +142,8 @@ export async function processIncomingMessage(
       void recordMessageTrace({
         tenantId: ctx.tenantId,
         conversationId: ctx.conversationId,
-        channel: input.channel ?? 'simulator',
+        // Do modo, igual ao corpo: a métrica por canal não pode discordar do que executou.
+        channel: PERFIL_DO_MODO[input.mode].channel,
         provider:
           ctx.outcome === 'ok' || ctx.outcome === 'fallback' ? activeProviderName() : 'nenhum',
         outcome: ctx.outcome,
@@ -134,9 +162,9 @@ async function runIncomingMessage(
   if (message.length === 0) {
     throw new Error('Message is required')
   }
-  // O snapshot IMPLICA preview: ver `previewSnapshot`. Derivar aqui, e não confiar no
-  // chamador passar as duas coisas, é o que impede config candidata com efeito real.
-  const preview = input.preview === true || input.previewSnapshot !== undefined
+  // Canal e efeitos vêm do MODO, não do chamador. É a única leitura destes dois valores em
+  // todo o motor: qualquer decisão abaixo pergunta a `operationalEffects`, e nunca ao canal.
+  const { channel, operationalEffects } = PERFIL_DO_MODO[input.mode]
 
   // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
   // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
@@ -177,6 +205,22 @@ async function runIncomingMessage(
     input.previewSnapshot?.config ??
     (await timer.step('config', () => loadConfigSafe(input.tenantSlug)))
 
+  // A CONFIG EFETIVA: em modo não operacional, sem ferramenta nenhuma.
+  //
+  // Isto é o que torna "sem efeitos operacionais" verdadeiro no PROMPT, e não só na
+  // persistência. Antes, um preview recebia as tools do tenant, o prompt ensinava a propor
+  // `abrir_chamado`, o cérebro propunha, o validador aceitava — e a camada de efeitos
+  // descartava em silêncio. Resultado: a IA dizia "já registrei" num teste onde nada é
+  // registrado, e a única barreira era a guarda anti-mentira lá no fim.
+  //
+  // Zerando aqui, o prompt nem oferece a ação, `enabledTools` fica vazio e o validador
+  // descarta qualquer action — as três camadas passam a concordar. `whatsapp` mantém as
+  // tools reais, e é o único modo que as tem.
+  //
+  // Tudo abaixo usa `configEfetiva`. Usar `config` para regras, tools ou policy reabriria o
+  // buraco; os campos que não mudam (slug, sourceDir, escalationPolicy) são os mesmos nos dois.
+  const configEfetiva: TenantConfig = operationalEffects ? config : { ...config, tools: [] }
+
   // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE
   // do contato. No WhatsApp a identidade é o número (contactId) e a mensagem chega
   // SEM conversationId — então, se este contato já tem uma conversa ativa, seguimos
@@ -204,7 +248,7 @@ async function runIncomingMessage(
     const created = await db.conversation.create({
       data: {
         tenantId: tenant.id,
-        channel: input.channel ?? 'simulator',
+        channel,
         contactId: contact,
         status: 'open',
       },
@@ -218,7 +262,7 @@ async function runIncomingMessage(
 
   // Se um humano ASSUMIU esta conversa, o Hermes se cala: registra a mensagem do
   // cliente (para o atendente ver) e devolve sem gerar resposta da IA.
-  if (isHumanHandling(conversationStatus) && !preview) {
+  if (isHumanHandling(conversationStatus) && operationalEffects) {
     ctx.outcome = 'human_handling'
     const userMessage = await timer.step('persist_user', async () => {
       const created = await db.message.create({
@@ -257,7 +301,7 @@ async function runIncomingMessage(
       })
       await db.conversation.update({
         where: { id: conversationId },
-        data: preview ? { updatedAt: new Date() } : { status: 'needs_human' },
+        data: operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
       })
       return created
     })
@@ -298,7 +342,7 @@ async function runIncomingMessage(
 
     // Lead determinístico (barato e confiável); o atendente pode enriquecer depois.
     const detPatch = extractLeadPatch(message)
-    if (!preview && Object.keys(detPatch).length > 0) {
+    if (operationalEffects && Object.keys(detPatch).length > 0) {
       await db.lead.upsert({
         where: { conversationId },
         create: { tenantId: tenant.id, conversationId, ...detPatch, stage: 'novo' },
@@ -316,13 +360,15 @@ async function runIncomingMessage(
   // empresa e trazer de lá a base PUBLICADA é exatamente o erro que o campo único evita.
   const docs =
     input.previewSnapshot?.conhecimento ??
-    (await timer.step('knowledge', () => resolveKnowledge(config.slug, config.knowledge.sourceDir)))
+    (await timer.step('knowledge', () =>
+      resolveKnowledge(configEfetiva.slug, configEfetiva.knowledge.sourceDir),
+    ))
   const retrieved = timer.stepSync('retrieval', () => retrieveRelevantChunks(message, docs))
   const guard = timer.stepSync('guard', () =>
     decideHandoff({
       message,
       retrievedCount: retrieved.length,
-      extraSensitiveTriggers: config.escalationPolicy.triggers,
+      extraSensitiveTriggers: configEfetiva.escalationPolicy.triggers,
     }),
   )
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
@@ -330,11 +376,11 @@ async function runIncomingMessage(
     // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma
     // emergência esperando na fila. Push no celular do operador (best-effort) —
     // SÓ do canal real: a demo pública é anônima e viraria botão de spam urgente.
-    if (guard.reason === 'sensitive_topic' && input.channel === 'whatsapp') {
+    if (guard.reason === 'sensitive_topic' && operationalEffects) {
       void reportSensitiveHandoff(input.tenantSlug)
     }
     ctx.outcome = 'guard_handoff'
-    const reply = config.escalationPolicy.humanMessage
+    const reply = configEfetiva.escalationPolicy.humanMessage
     const assistantMessage = await timer.step('persist_reply', async () => {
       const created = await db.message.create({
         data: {
@@ -347,9 +393,9 @@ async function runIncomingMessage(
       })
       await db.conversation.update({
         where: { id: conversationId },
-        data: preview ? { updatedAt: new Date() } : { status: 'needs_human' },
+        data: operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
       })
-      if (!preview) {
+      if (operationalEffects) {
         await db.handoffEvent.create({
           data: { conversationId, reason: guard.reason ?? 'unknown', message },
         })
@@ -371,7 +417,7 @@ async function runIncomingMessage(
 
   const { currentLead, myTickets } = await timer.step('context', async () => {
     // Preview simula um contato novo sem ler nem misturar dados operacionais do tenant.
-    if (preview) {
+    if (!operationalEffects) {
       return { currentLead: null, myTickets: [] }
     }
     const lead = await db.lead.findUnique({ where: { conversationId } })
@@ -390,8 +436,8 @@ async function runIncomingMessage(
   })
 
   // Contexto, regras e tools derivados do TenantConfig.
-  const companyRules = buildCompanyRules(config)
-  const enabledTools = config.tools
+  const companyRules = buildCompanyRules(configEfetiva)
+  const enabledTools = configEfetiva.tools
     .filter((tool) => tool.enabled)
     .map((tool) => ({ name: tool.name, limits: tool.limits }))
 
@@ -400,7 +446,7 @@ async function runIncomingMessage(
   const decision = await timer.step('brain', () =>
     generateAttendantReply(
       {
-        tenant: { slug: tenant.slug, name: config.businessProfile.name },
+        tenant: { slug: tenant.slug, name: configEfetiva.businessProfile.name },
         companyRules,
         enabledTools: enabledTools.map((tool) => tool.name),
         knowledge: retrieved.map((chunk) => ({ title: chunk.title, snippet: chunk.snippet })),
@@ -419,8 +465,8 @@ async function runIncomingMessage(
       },
       {
         policy: {
-          extraForbiddenClaims: config.guardrails.neverPromise,
-          outOfScope: config.guardrails.outOfScope,
+          extraForbiddenClaims: configEfetiva.guardrails.neverPromise,
+          outOfScope: configEfetiva.guardrails.outOfScope,
           tools: enabledTools,
         },
       },
@@ -433,7 +479,7 @@ async function runIncomingMessage(
     decision.handoffReason === 'provider_error' || decision.handoffReason === 'validacao_falhou'
       ? decision.handoffReason
       : null
-  if (razaoDegradacao && !preview) {
+  if (razaoDegradacao && operationalEffects) {
     void reportDegradation(razaoDegradacao)
   }
   // Separar 'fallback' de 'ok' na medição é o que permite ler o p95 do motor SADIO:
@@ -441,7 +487,7 @@ async function runIncomingMessage(
   ctx.outcome = razaoDegradacao ? 'fallback' : 'ok'
 
   await timer.step('effects', async () => {
-    if (preview) {
+    if (!operationalEffects) {
       return
     }
     // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
@@ -510,9 +556,10 @@ async function runIncomingMessage(
     // contato tem mais de uma não-fechada.
     await db.conversation.update({
       where: { id: conversationId },
-      data: needsHuman && !preview ? { status: 'needs_human' } : { updatedAt: new Date() },
+      data:
+        needsHuman && operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
     })
-    if (needsHuman && !preview) {
+    if (needsHuman && operationalEffects) {
       await db.handoffEvent.create({
         data: { conversationId, reason: handoffReason ?? 'unknown', message },
       })

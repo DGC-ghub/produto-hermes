@@ -143,8 +143,9 @@ export async function action({ request }: Route.ActionArgs) {
       message,
       conversationId: ownConversationId,
       contactId,
-      channel: CHANNEL,
-      preview: true,
+      // Sem `previewSnapshot`: esta tela testa a config PUBLICADA. O simulador sobre a
+      // candidata é `executarPreviewDaCandidata` (app/lib/setup/executar.server.ts).
+      mode: 'owner_preview',
     })
     return redirect('/testar-ia')
   } catch (error) {

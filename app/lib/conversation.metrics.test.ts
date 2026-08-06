@@ -47,7 +47,7 @@ describe('telemetria do fluxo de mensagem', () => {
       tenantSlug: SLUG,
       message: 'Quais são os preços dos serviços de vocês?',
       contactId: TEST_CONTACT_ID,
-      channel: 'whatsapp',
+      mode: 'whatsapp',
     })
 
     const trace = await waitForTrace(result.conversationId)
@@ -79,7 +79,7 @@ describe('telemetria do fluxo de mensagem', () => {
       tenantSlug: SLUG,
       message: 'quero falar com um atendente humano por favor',
       contactId: TEST_CONTACT_ID,
-      channel: 'whatsapp',
+      mode: 'whatsapp',
     })
 
     const trace = await waitForTrace(result.conversationId)
@@ -95,6 +95,7 @@ describe('telemetria do fluxo de mensagem', () => {
       tenantSlug: SLUG,
       message: 'vocês atendem no centro?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const trace = await waitForTrace(result.conversationId)

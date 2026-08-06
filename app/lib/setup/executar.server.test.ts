@@ -513,8 +513,7 @@ describe('o snapshot sozinho já desliga os efeitos', () => {
       tenantSlug: cenario.slug,
       message: 'meu telefone é 11999998888',
       contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
-      channel: 'simulator',
-      // preview: true  ← DE PROPÓSITO ausente
+      mode: 'owner_preview',
       previewSnapshot: { config: fonte.fonte.config, conhecimento: fonte.fonte.conhecimento },
     })
 
@@ -546,7 +545,7 @@ describe('o snapshot pertence ao tenant executado', () => {
       tenantSlug: cenario.slug,
       message: 'oi',
       contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
-      channel: 'simulator',
+      mode: 'owner_preview',
       previewSnapshot: par,
     })
   }
@@ -611,7 +610,7 @@ describe('o snapshot pertence ao tenant executado', () => {
       tenantSlug: cenario.slug,
       message: 'oi',
       contactId: 'x',
-      channel: 'simulator',
+      mode: 'owner_preview',
       previewSnapshot: await snapshotDe(outra),
     }).catch((e: unknown) => e)
 
@@ -629,7 +628,7 @@ describe('o snapshot pertence ao tenant executado', () => {
       tenantSlug: cenario.slug,
       message: 'qual o horário?',
       contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
-      channel: 'simulator',
+      mode: 'owner_preview',
       previewSnapshot: await snapshotDe(cenario),
     })
 
@@ -638,16 +637,26 @@ describe('o snapshot pertence ao tenant executado', () => {
   })
 })
 
-describe('preview não executa a action NEM quando o validador a aceita', () => {
-  it('com abrir_chamado habilitada, a action sobrevive e o chamado NÃO é criado', async () => {
-    // O teste 10 não provava isto: com `tools: []` o validador DESCARTA a action antes da
-    // camada de efeitos, então "zero chamados" passaria mesmo se o preview executasse ações.
-    // Aqui a ferramenta é habilitada no snapshot, a action ATRAVESSA o validador de verdade,
-    // e só o preview impede o chamado.
-    //
-    // O discriminador é o reply: a guarda anti-mentira recusa "já registrei" quando não há
-    // action válida. Se o reply chegou inteiro, a action foi aceita — logo o zero no banco é
-    // do preview, não do descarte.
+describe('modo não operacional não tem ferramenta, mesmo se a config trouxer', () => {
+  /** A mentira clássica: afirma registro E propõe a ação. */
+  const MENTIRA_COM_ACTION: AttendantOutput = {
+    reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.',
+    needsHuman: false,
+    handoffReason: null,
+    leadPatch: null,
+    confidence: 0.9,
+    action: {
+      type: 'abrir_chamado',
+      subject: 'agendar consulta',
+      description: 'cliente quer agendar consulta',
+    },
+  }
+
+  it('owner_preview: a ferramenta da config é IGNORADA e a mentira cai no fallback', async () => {
+    // A config do snapshot vem com `abrir_chamado` habilitada — simula o dia em que a
+    // política do servidor liberar a primeira ferramenta. Mesmo assim, em modo não
+    // operacional a config EFETIVA tem `tools: []`: o prompt não oferece a ação, o validador
+    // descarta a que vier, e a guarda anti-mentira derruba o "já registrei".
     const { processIncomingMessage } = await import('../conversation.server')
     const { resolverFonteDoPreview } = await import('./preview.server')
 
@@ -658,61 +667,49 @@ describe('preview não executa a action NEM quando o validador a aceita', () => 
     })
     if (fonte.tipo !== 'ok') throw new Error(`esperava ok, veio ${fonte.tipo}`)
 
-    // Simula o dia em que a política do servidor habilitar a primeira ferramenta.
-    const comFerramenta = {
-      ...fonte.fonte.config,
-      tools: [
-        { name: 'abrir_chamado' as const, enabled: true, limits: { requireConfirmation: true } },
-      ],
-    }
-
-    cerebro.saida = {
-      reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.',
-      needsHuman: false,
-      handoffReason: null,
-      leadPatch: null,
-      confidence: 0.9,
-      action: {
-        type: 'abrir_chamado',
-        subject: 'agendar consulta',
-        description: 'cliente quer agendar consulta',
-      },
-    }
+    cerebro.saida = MENTIRA_COM_ACTION
 
     const r = await processIncomingMessage({
       tenantSlug: cenario.slug,
       message: 'quero agendar, pode registrar',
       contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
-      channel: 'simulator',
-      previewSnapshot: { config: comFerramenta, conhecimento: fonte.fonte.conhecimento },
+      mode: 'owner_preview',
+      previewSnapshot: {
+        config: {
+          ...fonte.fonte.config,
+          tools: [{ name: 'abrir_chamado', enabled: true, limits: { requireConfirmation: true } }],
+        },
+        conhecimento: fonte.fonte.conhecimento,
+      },
     })
 
-    // 1. A action ATRAVESSOU o validador (senão o reply teria caído no fallback honesto).
-    expect(r.reply).toContain('registrei')
-    // 2. E mesmo assim nenhum chamado existe: quem barrou foi o preview.
+    // As três camadas concordam: prompt sem a ação, validador descartando, nada no banco.
+    expect(cerebro.input?.enabledTools).toEqual([])
+    expect(buildPrompt(cerebro.input as AttendantInput)).not.toContain('abrir_chamado')
+    expect(r.reply).not.toContain('registrei')
+    expect(r.needsHuman).toBe(true)
     expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
   })
 
-  it('o contra-fato: sem a ferramenta, o mesmo par cai no fallback', async () => {
-    // Prova que o discriminador do teste acima funciona — com `tools: []` o reply NÃO
-    // sobrevive, então "reply intacto" realmente significa "action aceita".
-    cerebro.saida = {
-      reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.',
-      needsHuman: false,
-      handoffReason: null,
-      leadPatch: null,
-      confidence: 0.9,
-      action: {
-        type: 'abrir_chamado',
-        subject: 'agendar consulta',
-        description: 'cliente quer agendar consulta',
-      },
-    }
+  it('whatsapp: a MESMA ferramenta vale, e o chamado é criado', async () => {
+    // O par que dá sentido ao teste acima. Sem ele, uma implementação que zerasse `tools` em
+    // TODOS os modos ficaria verde — e o produto perderia a única ação que ele executa.
+    // A config publicada deste cenário já traz `abrir_chamado` habilitada.
+    const { processIncomingMessage } = await import('../conversation.server')
 
-    const r = await executar(cenario, { message: 'quero agendar, pode registrar' })
-    if (r.tipo !== 'ok') throw new Error(`esperava ok, veio ${r.codigo}`)
+    cerebro.saida = MENTIRA_COM_ACTION
 
-    expect(r.reply).not.toContain('registrei')
+    const r = await processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'quero agendar, pode registrar',
+      contactId: 'cliente-de-verdade',
+      mode: 'whatsapp',
+    })
+
+    expect(cerebro.input?.enabledTools).toEqual(['abrir_chamado'])
+    // Aqui a frase é VERDADE: o chamado existe.
+    expect(r.reply).toContain('registrei')
+    expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(1)
   })
 })
 

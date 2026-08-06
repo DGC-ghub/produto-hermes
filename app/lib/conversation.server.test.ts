@@ -28,6 +28,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Quais são os preços dos serviços de vocês?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(result.conversationId).toBeTruthy()
@@ -48,6 +49,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Quais são os preços dos serviços?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const second = await processIncomingMessage({
@@ -55,6 +57,7 @@ describe('processIncomingMessage', () => {
       message: 'E o prazo de entrega?',
       conversationId: first.conversationId,
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(second.conversationId).toBe(first.conversationId)
@@ -70,6 +73,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Quais são os preços dos serviços?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(result.needsHuman).toBe(false)
@@ -81,6 +85,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Quero falar com um humano por favor',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(result.needsHuman).toBe(true)
@@ -103,8 +108,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Minha geladeira parou hoje no Jardim América e quero falar com um humano',
       contactId: TEST_CONTACT_ID,
-      channel: 'simulator',
-      preview: true,
+      mode: 'owner_preview',
     })
 
     expect(first.needsHuman).toBe(true)
@@ -119,8 +123,7 @@ describe('processIncomingMessage', () => {
       message: 'Quero abrir um chamado para a geladeira',
       conversationId: first.conversationId,
       contactId: TEST_CONTACT_ID,
-      channel: 'simulator',
-      preview: true,
+      mode: 'owner_preview',
     })
 
     expect(second.reply.length).toBeGreaterThan(0)
@@ -133,6 +136,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'xyzzy plimplom qwerty zzxx',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     // Sem gatilho de segurança, a IA decide — não escala cegamente por falta de match.
@@ -145,6 +149,7 @@ describe('processIncomingMessage', () => {
         tenantSlug: 'dgc',
         message: '   ',
         contactId: TEST_CONTACT_ID,
+        mode: 'whatsapp',
       }),
     ).rejects.toThrow('Message is required')
   })
@@ -155,6 +160,7 @@ describe('processIncomingMessage', () => {
         tenantSlug: 'empresa-inexistente',
         message: 'Olá',
         contactId: TEST_CONTACT_ID,
+        mode: 'whatsapp',
       }),
     ).rejects.toThrow('Unknown tenant')
   })
@@ -164,6 +170,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Minha geladeira parou hoje no Jardim América',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const lead = await db.lead.findUnique({ where: { conversationId: result.conversationId } })
@@ -179,6 +186,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Minha geladeira parou hoje no Jardim América',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     await processIncomingMessage({
@@ -186,6 +194,7 @@ describe('processIncomingMessage', () => {
       message: 'Na verdade é o fogão',
       conversationId: first.conversationId,
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const leads = await db.lead.findMany({ where: { conversationId: first.conversationId } })
@@ -205,6 +214,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Oi, quero saber sobre automações',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     // Retorno: mesmo contato, SEM conversationId (como chegaria do WhatsApp).
@@ -212,6 +222,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Voltei pra continuar nossa conversa',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(back.conversationId).toBe(first.conversationId)
@@ -225,11 +236,13 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Minha geladeira parou no Jardim América',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
     await processIncomingMessage({
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Voltei, alguma novidade?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const tenant = await db.tenant.findUnique({ where: { slug: 'assistencia-tecnica-demo' } })
@@ -252,11 +265,13 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Quero abrir um chamado: geladeira parada',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
     await processIncomingMessage({
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Pode abrir o chamado, minha geladeira parada continua',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const tickets = await db.ticket.findMany({ where: { contactId: TEST_CONTACT_ID } })
@@ -269,11 +284,13 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Quero abrir um chamado: geladeira parada',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
     await processIncomingMessage({
       tenantSlug: 'assistencia-tecnica-demo',
       message: 'Quero abrir um chamado: máquina de lavar vazando',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     const tickets = await db.ticket.findMany({ where: { contactId: TEST_CONTACT_ID } })
@@ -310,6 +327,7 @@ describe('processIncomingMessage', () => {
       message: 'Mensagem ativa na conversa A',
       conversationId: convA.id,
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     // Retorno sem conversationId deve continuar em A (atividade mais recente).
@@ -317,6 +335,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Voltei',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
     expect(back.conversationId).toBe(convA.id)
   })
@@ -328,6 +347,7 @@ describe('processIncomingMessage', () => {
       tenantSlug: 'dgc',
       message: 'Oi, preciso de ajuda',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
     await db.conversation.update({
       where: { id: first.conversationId },
@@ -339,6 +359,7 @@ describe('processIncomingMessage', () => {
       message: 'Alguém aí?',
       conversationId: first.conversationId,
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(result.humanHandling).toBe(true)
