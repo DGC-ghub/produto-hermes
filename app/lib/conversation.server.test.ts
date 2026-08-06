@@ -302,11 +302,14 @@ describe('processIncomingMessage', () => {
   // não simplesmente na criada por último. Cobre o bug do updatedAt congelado.
   it('reuses the conversation with the most recent activity, not just the newest', async () => {
     const tenant = await db.tenant.findUnique({ where: { slug: 'dgc' } })
+    // `channel: 'whatsapp'` porque as chamadas abaixo rodam em `mode: 'whatsapp'`: a conversa
+    // reutilizada tem que ser do canal do modo, e um fixture `simulator` aqui seria a mistura
+    // de teste com atendimento real que o vínculo passou a recusar.
     const convA = await db.conversation.create({
       data: {
         tenantId: tenant?.id ?? '',
         contactId: TEST_CONTACT_ID,
-        channel: 'simulator',
+        channel: 'whatsapp',
         status: 'open',
       },
     })
@@ -316,7 +319,7 @@ describe('processIncomingMessage', () => {
       data: {
         tenantId: tenant?.id ?? '',
         contactId: TEST_CONTACT_ID,
-        channel: 'simulator',
+        channel: 'whatsapp',
         status: 'open',
       },
     })

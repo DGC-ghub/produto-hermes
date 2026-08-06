@@ -75,6 +75,35 @@ const PERFIL_DO_MODO: Record<
   whatsapp: { channel: 'whatsapp', operationalEffects: true },
 }
 
+type PerfilDoModo = (typeof PERFIL_DO_MODO)[ExecutionMode]
+
+/**
+ * Lê o perfil do modo — e RECUSA em runtime o que o tipo já proíbe.
+ *
+ * O tipo é a primeira barreira e some na compilação. Um `as`, um chamador em JavaScript,
+ * dado que veio de JSON ou uma borda futura mais frouxa ainda conseguem montar
+ * `{ mode: 'whatsapp', previewSnapshot }` — e aí a candidata em revisão atenderia cliente
+ * real, com tools operacionais, lead, chamado, handoff e alarme ligados. É o pior desfecho
+ * desta fatia, e uma garantia só de compilação não é garantia suficiente para ele.
+ *
+ * Vale registrar por que esta função existe: a versão anterior do motor tinha a propriedade
+ * runtime "snapshot presente ⇒ sem efeitos", derivada em código. Ao trocar por
+ * `ExecutionMode`, o tipo passou a expressar a mesma regra de forma mais forte no papel — e
+ * a garantia em runtime se perdeu no caminho. Agora são as duas.
+ *
+ * Mensagens FIXAS, sem nada do snapshot: elas vão para log (§14).
+ */
+function perfilDoModo(input: ProcessIncomingMessageInput): PerfilDoModo {
+  const perfil = PERFIL_DO_MODO[input.mode]
+  if (!perfil) {
+    throw new Error('Invalid execution mode')
+  }
+  if (input.previewSnapshot !== undefined && input.mode !== 'owner_preview') {
+    throw new Error('Preview snapshot requires owner preview mode')
+  }
+  return perfil
+}
+
 export type ProcessIncomingMessageSource = {
   fileName: string
   title: string
@@ -131,10 +160,13 @@ type TraceContext = { tenantId?: string; conversationId?: string; outcome: Trace
 export async function processIncomingMessage(
   input: ProcessIncomingMessageInput,
 ): Promise<ProcessIncomingMessageResult> {
+  // ANTES de tudo, inclusive do trace: um modo inválido não deve produzir medição, e indexar
+  // a tabela no `finally` com modo inexistente esconderia o erro real por trás de outro.
+  const perfil = perfilDoModo(input)
   const timer = createTimer()
   const ctx: TraceContext = { outcome: 'erro' }
   try {
-    return await runIncomingMessage(input, timer, ctx)
+    return await runIncomingMessage(input, perfil, timer, ctx)
   } finally {
     // Sem await: a medição não entra no caminho crítico da resposta ao cliente.
     // Sem tenant resolvido não há o que gravar (a FK exige tenant existente).
@@ -142,8 +174,9 @@ export async function processIncomingMessage(
       void recordMessageTrace({
         tenantId: ctx.tenantId,
         conversationId: ctx.conversationId,
-        // Do modo, igual ao corpo: a métrica por canal não pode discordar do que executou.
-        channel: PERFIL_DO_MODO[input.mode].channel,
+        // Do perfil JÁ VALIDADO, igual ao corpo: a métrica por canal não pode discordar do
+        // que executou, e não relê a tabela por conta própria.
+        channel: perfil.channel,
         provider:
           ctx.outcome === 'ok' || ctx.outcome === 'fallback' ? activeProviderName() : 'nenhum',
         outcome: ctx.outcome,
@@ -155,6 +188,7 @@ export async function processIncomingMessage(
 
 async function runIncomingMessage(
   input: ProcessIncomingMessageInput,
+  perfil: PerfilDoModo,
   timer: Timer,
   ctx: TraceContext,
 ): Promise<ProcessIncomingMessageResult> {
@@ -162,9 +196,10 @@ async function runIncomingMessage(
   if (message.length === 0) {
     throw new Error('Message is required')
   }
-  // Canal e efeitos vêm do MODO, não do chamador. É a única leitura destes dois valores em
-  // todo o motor: qualquer decisão abaixo pergunta a `operationalEffects`, e nunca ao canal.
-  const { channel, operationalEffects } = PERFIL_DO_MODO[input.mode]
+  // Canal e efeitos vêm do MODO, já validado por `perfilDoModo`. É a única leitura destes
+  // dois valores em todo o motor: qualquer decisão abaixo pergunta a `operationalEffects`, e
+  // nunca ao canal.
+  const { channel, operationalEffects } = perfil
 
   // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
   // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
@@ -232,14 +267,34 @@ async function runIncomingMessage(
       const existing = await db.conversation.findUnique({
         where: { id: input.conversationId },
       })
-      if (!existing || existing.tenantId !== tenant.id) {
+      // A conversa informada tem que ser DESTE tenant, DESTE canal e DESTE contato.
+      //
+      // Só o tenant não basta: com `owner_preview` e o id de uma conversa real de WhatsApp da
+      // mesma empresa, o motor lia o histórico daquele cliente, o lead e os chamados dele,
+      // mandava tudo isso para o cérebro e gravava as mensagens de teste DENTRO do
+      // atendimento real. Sem enviar nada para fora — e ainda assim misturando teste com
+      // atendimento e mostrando dados de um cliente a quem só queria testar.
+      //
+      // O canal vem do MODO, então é o modo que decide qual conversa pode ser reutilizada.
+      // O contato só é exigido quando quem chama informou um: no WhatsApp ele sempre vem.
+      //
+      // Mensagem inalterada e indistinguível: quem cola um id não descobre se ele existe.
+      if (
+        !existing ||
+        existing.tenantId !== tenant.id ||
+        existing.channel !== channel ||
+        (input.contactId !== undefined && existing.contactId !== input.contactId)
+      ) {
         throw new Error('Conversation not found')
       }
       return { id: existing.id, contactId: existing.contactId, status: existing.status }
     }
     const contact = input.contactId ?? 'demo-user'
+    // `channel` no filtro: a conversa reutilizada tem que ser do mesmo modo. Sem isto, um
+    // teste do dono continuaria a conversa de WhatsApp do próprio número dele, e a resposta
+    // de teste entraria no atendimento real.
     const active = await db.conversation.findFirst({
-      where: { tenantId: tenant.id, contactId: contact, status: { not: 'closed' } },
+      where: { tenantId: tenant.id, contactId: contact, channel, status: { not: 'closed' } },
       orderBy: { updatedAt: 'desc' },
     })
     if (active) {
