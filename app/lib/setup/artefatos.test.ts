@@ -203,7 +203,25 @@ describe('as cinco perguntas (§6.6)', () => {
     perguntas[1] = { ...perguntas[1], id: 'q1' }
     expect(
       motivo({ ...artefatosBons(), validationJson: JSON.stringify(perguntas) }, 'validationJson'),
-    ).toContain('repetido')
+    ).toContain('id repetido')
+  })
+
+  it('id repetido é recusado sem ecoar seu valor', () => {
+    // O `id` vem de `validationJson`, ou seja, da candidata: é texto arbitrário. Dizer QUAL
+    // pergunta e QUAL problema resolve o diagnóstico; repetir o id só levaria dado do
+    // cliente para o log de quem revisa (§14). Mesmo motivo de `objectives` e `sourcePolicy`.
+    const perguntas = perguntasBoas()
+    perguntas[0] = { ...perguntas[0], id: 'CPF 123.456.789-00' }
+    perguntas[1] = { ...perguntas[1], id: 'CPF 123.456.789-00' }
+
+    const recusa = motivo(
+      { ...artefatosBons(), validationJson: JSON.stringify(perguntas) },
+      'validationJson',
+    )
+
+    expect(recusa).toContain('id repetido')
+    expect(recusa).not.toContain('CPF')
+    expect(recusa).not.toContain('123.456.789-00')
   })
 })
 

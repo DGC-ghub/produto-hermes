@@ -238,14 +238,21 @@ function conferirWhitelist(valor: unknown): string | null {
 
 // REGRA DESTE ARQUIVO: nenhuma mensagem de recusa ecoa valor vindo da candidata.
 //
-// Havia aqui um `rotularValorRecusado` que cortava o valor em 60 caracteres. Não serve, e
-// a razão vale ficar registrada para ninguém reintroduzir: limite de TAMANHO não é
-// sanitização de CONTEÚDO. `CPF 123.456.789-00` tem 18 caracteres e passava inteiro. Além
-// disso o corte vinha depois de um `JSON.stringify` do valor completo — uma estrutura
-// grande era serializada por inteiro só para produzir uma mensagem de erro.
+// Vale para TODAS as funções `conferir*` daqui, e foi conferida uma a uma: o que entra em
+// mensagem é posição (`pergunta 3`, `documento 2`), contagem, constante do servidor
+// (`TENANT_OBJECTIVES`, `POLITICA_DE_FONTE`) ou a exceção do `parseTenantConfig` — que só
+// nomeia campo e tipo esperado, nunca o valor recebido.
 //
-// O que a mensagem precisa dizer é o campo, o problema e o conjunto permitido. Nada disso
-// vem da candidata.
+// Duas tentativas erradas ficam registradas para ninguém repetir:
+//
+// 1. Truncar. Havia um `rotularValorRecusado` que cortava em 60 caracteres. Limite de
+//    TAMANHO não é sanitização de CONTEÚDO: `CPF 123.456.789-00` tem 18 caracteres e passava
+//    inteiro. O corte ainda vinha depois de um `JSON.stringify` do valor completo, então uma
+//    estrutura grande era serializada por inteiro só para produzir uma mensagem de erro.
+// 2. Corrigir campo a campo. `objectives` e `knowledge.sourcePolicy` foram limpos primeiro, e
+//    a regra foi declarada aqui enquanto `conferirPerguntas` ainda ecoava o `id` da pergunta
+//    repetida. A lição: ao ampliar de "este campo não ecoa" para "nenhuma recusa ecoa", a
+//    unidade de revisão passa a ser o arquivo, não o diff.
 
 /** Documento de conhecimento: mesmo formato que `knowledge.server.ts` lê do disco. */
 function conferirConhecimento(valor: unknown): string | null {
@@ -289,7 +296,11 @@ function conferirPerguntas(valor: unknown): string | null {
     }
     if (ids.has(p.id as string)) {
       // Id repetido faria duas marcações apontarem para a mesma linha na etapa 7.
-      return `id "${p.id}" repetido`
+      //
+      // A POSIÇÃO, não o id: `id` é texto arbitrário vindo da candidata. Dizer qual pergunta
+      // e qual problema resolve o diagnóstico — quem for investigar tem o artefato na mão e
+      // lê o id lá, sem que ele passe pelo log de quem revisa (§14).
+      return `pergunta ${i + 1} com id repetido`
     }
     ids.add(p.id as string)
     if (!textoPreenchido(p?.question)) {
