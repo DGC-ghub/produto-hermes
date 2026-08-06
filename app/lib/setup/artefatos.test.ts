@@ -444,21 +444,23 @@ describe('whitelist da §6.7: o parser promete e não aplica', () => {
 
   it('objetivo INVENTADO é reprovado', () => {
     expect(comConfig({ ...configBoa(), objectives: ['objetivo_inventado'] })).toContain(
-      'não existe',
+      'objetivo não permitido',
     )
   })
 
-  it('o eco do objetivo inventado é curto e numa linha só', () => {
-    // Aqui o eco FICA: com cinco objetivos possíveis, saber QUAL foi inventado é o
-    // diagnóstico. Mas o valor é texto de modelo, então entra limitado e sem quebra de
-    // linha — senão uma candidata despeja parágrafo (ou PII) no log de quem revisa.
-    const veneno = `inventado-${'y'.repeat(400)}\nCPF 123.456.789-00`
+  it('a recusa NÃO ecoa o objetivo recebido, nem quando ele é curto', () => {
+    // O teste anterior usava um valor gigante e conferia truncamento. Errado: limite de
+    // TAMANHO não é sanitização de CONTEÚDO. Este veneno tem 18 caracteres e atravessava
+    // qualquer corte inteiro. O diagnóstico não precisa dele — campo, problema e a lista
+    // de permitidos já bastam para consertar prompt ou gerador.
+    const veneno = 'CPF 123.456.789-00'
     const recusa = comConfig({ ...configBoa(), objectives: [veneno] })
 
     expect(recusa).toBeTruthy()
-    expect(recusa).not.toContain('\n')
+    expect(recusa).not.toContain('CPF')
     expect(recusa).not.toContain('123.456.789-00')
-    expect((recusa ?? '').length).toBeLessThan(250)
+    expect(recusa).toContain('objetivo não permitido')
+    expect(recusa).toContain('tirar_duvidas')
   })
 
   it('objetivo conhecido passa', () => {
