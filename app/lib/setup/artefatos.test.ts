@@ -388,6 +388,29 @@ describe('sourcePolicy: o servidor força responder somente pela base', () => {
     expect(motivo(artefatosBons(), 'candidateConfigJson')).toBeUndefined()
   })
 
+  it('a recusa NÃO ecoa o valor recebido', () => {
+    // O valor vem da candidata, ou seja, da saída de um modelo influenciado pelo texto do
+    // questionário. Esta mensagem é impressa no terminal e devolvida a rotas: ecoá-la
+    // levaria texto arbitrário do cliente para o log. E não há o que diagnosticar — o campo
+    // tem dois valores, e dizer qual é o esperado já conta a história inteira (§14).
+    const veneno = 'allow_general_smalltalk\nCPF do cliente: 123.456.789-00'
+    const recusa = motivo(
+      {
+        ...artefatosBons(),
+        candidateConfigJson: JSON.stringify({
+          ...configBoa(),
+          knowledge: { sourcePolicy: veneno },
+        }),
+      },
+      'candidateConfigJson',
+    )
+
+    expect(recusa).toBeTruthy()
+    expect(recusa).not.toContain('CPF')
+    expect(recusa).not.toContain('123.456.789-00')
+    expect(recusa).not.toContain('\n')
+  })
+
   it('o OUTRO valor legítimo é recusado como sinal', () => {
     // `allow_general_smalltalk` é valor válido do tipo — o parser aceitaria. Recusar aqui
     // é o mesmo raciocínio de `tools`: a substituição já protege o motor, mas candidata
@@ -423,6 +446,19 @@ describe('whitelist da §6.7: o parser promete e não aplica', () => {
     expect(comConfig({ ...configBoa(), objectives: ['objetivo_inventado'] })).toContain(
       'não existe',
     )
+  })
+
+  it('o eco do objetivo inventado é curto e numa linha só', () => {
+    // Aqui o eco FICA: com cinco objetivos possíveis, saber QUAL foi inventado é o
+    // diagnóstico. Mas o valor é texto de modelo, então entra limitado e sem quebra de
+    // linha — senão uma candidata despeja parágrafo (ou PII) no log de quem revisa.
+    const veneno = `inventado-${'y'.repeat(400)}\nCPF 123.456.789-00`
+    const recusa = comConfig({ ...configBoa(), objectives: [veneno] })
+
+    expect(recusa).toBeTruthy()
+    expect(recusa).not.toContain('\n')
+    expect(recusa).not.toContain('123.456.789-00')
+    expect((recusa ?? '').length).toBeLessThan(250)
   })
 
   it('objetivo conhecido passa', () => {

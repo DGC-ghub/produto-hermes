@@ -198,7 +198,9 @@ function conferirWhitelist(valor: unknown): string | null {
   if (Array.isArray(objetivos)) {
     for (const objetivo of objetivos) {
       if (!(TENANT_OBJECTIVES as readonly unknown[]).includes(objetivo)) {
-        return `objetivo "${String(objetivo)}" não existe (permitidos: ${TENANT_OBJECTIVES.join(', ')})`
+        // Aqui o eco FICA, limitado: com cinco objetivos possíveis, saber QUAL foi
+        // inventado é o diagnóstico. Ver `rotularValorRecusado` para o porquê do limite.
+        return `objetivo "${rotularValorRecusado(objetivo)}" não existe (permitidos: ${TENANT_OBJECTIVES.join(', ')})`
       }
     }
   }
@@ -223,9 +225,31 @@ function conferirWhitelist(valor: unknown): string | null {
   // corrigida em silêncio e ninguém saberia que o questionário pediu isso.
   const fonte = (raiz.knowledge as { sourcePolicy?: unknown } | undefined)?.sourcePolicy
   if (fonte !== undefined && fonte !== POLITICA_DE_FONTE) {
-    return `\`knowledge.sourcePolicy\` é forçada pelo servidor como \`${POLITICA_DE_FONTE}\` — a candidata deve omitir o campo ou trazer esse valor, e veio "${String(fonte)}"`
+    // NÃO ecoa o valor recebido, nem limitado. Diferente de `objectives`, aqui não há o que
+    // diagnosticar: o campo tem dois valores e dizer qual é o esperado conta a história
+    // inteira. Eco que não informa é só superfície para texto de modelo chegar ao log (§14).
+    return `\`knowledge.sourcePolicy\` é forçada pelo servidor como \`${POLITICA_DE_FONTE}\` — a candidata deve omitir o campo ou trazer esse valor`
   }
   return null
+}
+
+/** Limite do valor recusado que entra numa mensagem. Ver `rotularValorRecusado`. */
+const VALOR_RECUSADO_MAX_CHARS = 60
+
+/**
+ * Reduz um valor vindo da candidata ao que pode aparecer numa mensagem de recusa.
+ *
+ * Estas mensagens são impressas no terminal de quem revisa e devolvidas a rotas. O valor
+ * saiu de um modelo influenciado pelo texto do questionário — sem limite, uma candidata
+ * despeja parágrafo, ou dado pessoal do cliente, no log de outra pessoa. Uma linha e um
+ * teto: é o mesmo raciocínio de `sanitizarErro` (§14), aplicado a valor em vez de exceção.
+ */
+function rotularValorRecusado(valor: unknown): string {
+  const bruto = typeof valor === 'string' ? valor : (JSON.stringify(valor) ?? String(valor))
+  const umaLinha = bruto.replace(/\s+/g, ' ').trim()
+  return umaLinha.length > VALOR_RECUSADO_MAX_CHARS
+    ? `${umaLinha.slice(0, VALOR_RECUSADO_MAX_CHARS)}…`
+    : umaLinha
 }
 
 /** Documento de conhecimento: mesmo formato que `knowledge.server.ts` lê do disco. */
