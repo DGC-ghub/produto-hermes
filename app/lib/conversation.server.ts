@@ -146,6 +146,31 @@ async function runIncomingMessage(
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
   ctx.tenantId = tenant.id
+
+  // O SNAPSHOT TEM QUE SER DESTA EMPRESA.
+  //
+  // "Config e base juntas" impede misturar a config candidata com a base publicada, mas não
+  // diz nada sobre de QUEM é o par. Sem esta guarda, um chamador server-side podia executar
+  // a persona e a base da empresa B numa conversa criada sob a empresa A — e a resposta,
+  // formada com o material de B, ficaria gravada na conversa de A.
+  //
+  // Antes de resolver a conversa, de propósito: depois já existiria linha no banco.
+  //
+  // Erro FIXO, sem slug e sem conteúdo: a mensagem vai para o log, e nem o nome da outra
+  // empresa nem trecho de base dela têm por que aparecer lá (§14). Lança em vez de degradar
+  // porque não é entrada de cliente — é chamador interno errado, e silenciar esconderia o bug.
+  if (input.previewSnapshot) {
+    const configDesteTenant = input.previewSnapshot.config.slug === tenant.slug
+    // Vazio passa: a base vazia é barrada antes, por quem resolve o snapshot, e não carrega
+    // dado de outra empresa. O que esta linha guarda é a PROCEDÊNCIA de cada documento.
+    const baseDesteTenant = input.previewSnapshot.conhecimento.every(
+      (doc) => doc.tenantSlug === tenant.slug,
+    )
+    if (!configDesteTenant || !baseDesteTenant) {
+      throw new Error('Preview snapshot tenant mismatch')
+    }
+  }
+
   // Com snapshot, a config JÁ vem resolvida e validada (a resolução é de quem chamou):
   // reler aqui traria a publicada e desfaria o preview.
   const config =

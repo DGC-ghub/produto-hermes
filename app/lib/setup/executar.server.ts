@@ -10,7 +10,7 @@
 //  2. TRADUÇÃO. As recusas internas viram uma orientação em português e um CÓDIGO FIXO. O
 //     cliente nunca lê "ponteiro incoerente" nem por que a linha está estranha: isso conta
 //     sobre a estrutura interna, e para ele não muda o que fazer.
-import { requireOperator } from '../auth.server'
+import { requireOwner } from '../auth.server'
 import { processIncomingMessage } from '../conversation.server'
 import { contactIdDoPreview } from './preview'
 import { type ResultadoDaFonte, resolverFonteDoPreview } from './preview.server'
@@ -59,20 +59,24 @@ export type ResultadoDaExecucao =
  *   internos (setup de outra empresa, versão que não é mais a pendente) e uma orientação só:
  *   contar a diferença descreveria a estrutura do banco para quem não pode agir sobre ela.
  */
-const ORIENTACAO: Record<CodigoDeRecusa, string> = {
+export const ORIENTACAO: Record<CodigoDeRecusa, string> = {
   tenant_desconhecido: 'Não encontramos sua empresa. Entre novamente e tente de novo.',
   versao_desconhecida:
     'Não encontramos essa preparação. Volte para a tela de preparação e comece o teste de lá.',
+  // NÃO diz "nossa equipe já foi avisada". O único efeito hoje é um `console.warn`: não é
+  // notificação durável, não cria tarefa e não prova que alguém verá. Prometer isso é a
+  // mesma classe do bug "já registrei seu chamado" — afirmar um efeito operacional que não
+  // aconteceu. Se um dia houver notificação persistida, a frase volta junto com ela.
   ponteiro_incoerente:
-    'Não conseguimos abrir essa preparação para teste. Nossa equipe já foi avisada — volte para a tela de preparação.',
+    'Não conseguimos abrir essa preparação para teste. Volte para a tela de preparação. Se o problema continuar, fale com o suporte.',
   nao_e_candidata:
-    'Sua IA ainda não está liberada para teste. Assim que nossa equipe terminar a revisão, o teste aparece aqui.',
+    'Sua IA ainda não está liberada para teste. Nossa equipe está revisando — volte mais tarde para testar.',
   geracao_divergente:
     'Sua preparação foi atualizada depois que esta página abriu. Recarregue para testar a versão nova.',
   base_mudou:
     'A configuração publicada mudou depois desta preparação. É preciso enviar as respostas de novo para gerar sobre a versão atual.',
   artefatos_invalidos:
-    'Houve um problema no material preparado para sua IA. Nossa equipe já foi avisada e vai gerar de novo.',
+    'Houve um problema no material preparado para sua IA. Volte para a tela de preparação e tente novamente mais tarde.',
 }
 
 /** Traduz a recusa da resolução no código fixo correspondente. */
@@ -104,8 +108,14 @@ export async function executarPreviewDaCandidata(input: {
   generation: number
   message: string
 }): Promise<ResultadoDaExecucao> {
-  // Única fonte de tenant e de identidade. Lança redirect para /login se não houver sessão.
-  const operator = await requireOperator(input.request)
+  // Única fonte de tenant e de identidade. Lança redirect: /login sem sessão, /atendente
+  // para quem não é dono.
+  //
+  // `requireOwner`, não `requireOperator`: a preparação da IA é owner-only em
+  // `/preparar-ia`, e executar a candidata é a mesma alçada. Um atendente comum veria — e
+  // avaliaria — a configuração que a empresa ainda não aprovou. O modo se chama
+  // `owner_preview` exatamente por isso.
+  const operator = await requireOwner(input.request)
 
   const fonte = await resolverFonteDoPreview({
     tenantSlug: operator.tenantSlug,

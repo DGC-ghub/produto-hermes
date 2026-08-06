@@ -143,12 +143,16 @@ async function criarCenario(estado = 'ready_to_test'): Promise<Cenario> {
 }
 
 /** Request com sessão REAL do cenário, e um `tenantSlug` hostil no corpo. */
-async function pedidoAutenticado(c: Cenario, tenantNoCorpo?: string): Promise<Request> {
+async function pedidoAutenticado(
+  c: Cenario,
+  tenantNoCorpo?: string,
+  role = 'owner',
+): Promise<Request> {
   const res = await createOperatorSession(
     {
       accountId: c.accountId,
       email: `dono@${c.slug}.local`,
-      role: 'owner',
+      role,
       tenantId: c.tenantId,
       tenantSlug: c.slug,
     },
@@ -231,6 +235,74 @@ describe('a candidata é o que chega ao motor', () => {
     expect(conversa.contactId).toBe(contactIdDoPreview(cenario.accountId, cenario.versionId, 2))
     expect(conversa.channel).toBe('simulator')
     expect(conversa.tenantId).toBe(cenario.tenantId)
+  })
+})
+
+describe('autoridade: só o dono testa a candidata', () => {
+  /** `requireOwner` recusa LANÇANDO um redirect. Devolve o destino, ou null se passou. */
+  async function destinoDaRecusa(request: Request): Promise<string | null> {
+    try {
+      await executarPreviewDaCandidata({
+        request,
+        setupVersionId: cenario.versionId,
+        generation: 2,
+        message: 'oi',
+      })
+      return null
+    } catch (erro) {
+      if (erro instanceof Response) {
+        return erro.headers.get('Location')
+      }
+      throw erro
+    }
+  }
+
+  it('owner executa', async () => {
+    expect(await destinoDaRecusa(await pedidoAutenticado(cenario, undefined, 'owner'))).toBeNull()
+    expect(cerebro.chamadas).toBe(1)
+  })
+
+  it('operador comum é recusado ANTES de resolver e antes do cérebro', async () => {
+    // A preparação da IA é owner-only em `/preparar-ia` (requireOwner). Executar a candidata
+    // em revisão é a mesma alçada: um atendente veria a configuração que a empresa ainda
+    // não aprovou, e o modo se chama `owner_preview` justamente por isso.
+    const destino = await destinoDaRecusa(await pedidoAutenticado(cenario, undefined, 'operator'))
+
+    expect(destino).toBe('/atendente')
+    expect(cerebro.chamadas).toBe(0)
+    expect(await db.conversation.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+  })
+
+  it('sem sessão, vai para o login', async () => {
+    const destino = await destinoDaRecusa(
+      new Request('http://localhost/testar-ia', { method: 'POST' }),
+    )
+
+    expect(destino).toContain('/login')
+    expect(cerebro.chamadas).toBe(0)
+  })
+})
+
+describe('nenhuma orientação afirma ação que não aconteceu', () => {
+  it('nenhuma promete que a equipe foi avisada', async () => {
+    // Mesma classe do bug "já registrei seu chamado": afirmar um efeito operacional que não
+    // existe. O único efeito hoje é um `console.warn`, que não é notificação durável, não cria
+    // tarefa e não prova que alguém verá. Enquanto não houver notificação persistida, a
+    // orientação não pode prometê-la.
+    const { ORIENTACAO } = await import('./executar.server')
+
+    for (const [codigo, orientacao] of Object.entries(ORIENTACAO)) {
+      expect(orientacao, codigo).not.toMatch(/avisad|notificad|registrad|chamado criado/i)
+    }
+  })
+
+  it('todas mandam a pessoa a algum lugar', async () => {
+    // O par positivo: tirar a promessa não pode virar mensagem que não diz o que fazer.
+    const { ORIENTACAO } = await import('./executar.server')
+
+    for (const [codigo, orientacao] of Object.entries(ORIENTACAO)) {
+      expect(orientacao, codigo).toMatch(/volte|recarregue|entre novamente|enviar as respostas/i)
+    }
   })
 })
 
@@ -451,6 +523,196 @@ describe('o snapshot sozinho já desliga os efeitos', () => {
     expect(
       (await db.conversation.findUniqueOrThrow({ where: { id: r.conversationId } })).status,
     ).toBe('open')
+  })
+})
+
+describe('o snapshot pertence ao tenant executado', () => {
+  /** Resolve o snapshot de um cenário — o que o executor faria. */
+  async function snapshotDe(c: Cenario) {
+    const { resolverFonteDoPreview } = await import('./preview.server')
+    const fonte = await resolverFonteDoPreview({
+      tenantSlug: c.slug,
+      setupVersionId: c.versionId,
+      generation: 2,
+    })
+    if (fonte.tipo !== 'ok') throw new Error(`esperava ok, veio ${fonte.tipo}`)
+    return { config: fonte.fonte.config, conhecimento: fonte.fonte.conhecimento }
+  }
+
+  /** Executa um par (config, conhecimento) sob o tenant do cenário. */
+  async function executarPar(par: Awaited<ReturnType<typeof snapshotDe>>) {
+    const { processIncomingMessage } = await import('../conversation.server')
+    return processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'oi',
+      contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
+      channel: 'simulator',
+      previewSnapshot: par,
+    })
+  }
+
+  // Os dois casos são SEPARADOS de propósito. Um snapshot inteiro de outra empresa é pego
+  // por qualquer uma das duas comparações — então um teste só deixaria a outra sem prova, e
+  // remover metade da guarda passaria calado. Cada par abaixo exercita uma comparação.
+
+  it('CONFIG de outra empresa (com a base certa) é recusada antes de tudo', async () => {
+    const outra = await criarCenario()
+    const meu = await snapshotDe(cenario)
+    const dela = await snapshotDe(outra)
+
+    await expect(
+      executarPar({ config: dela.config, conhecimento: meu.conhecimento }),
+    ).rejects.toThrow()
+
+    expect(cerebro.chamadas).toBe(0)
+    expect(await db.conversation.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+    expect(await db.lead.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+    expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+  })
+
+  it('BASE de outra empresa (com a config certa) é recusada antes de tudo', async () => {
+    const outra = await criarCenario()
+    const meu = await snapshotDe(cenario)
+    const dela = await snapshotDe(outra)
+
+    await expect(
+      executarPar({ config: meu.config, conhecimento: dela.conhecimento }),
+    ).rejects.toThrow()
+
+    expect(cerebro.chamadas).toBe(0)
+    // Sem conversa deste tenant, não há onde uma mensagem dele ter sido gravada.
+    expect(await db.conversation.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+    expect(
+      await db.message.count({ where: { conversation: { tenantId: cenario.tenantId } } }),
+    ).toBe(0)
+  })
+
+  it('um documento alheio no meio da base própria já é recusado', async () => {
+    // `every`, não "o primeiro": bastaria um doc estranho para a resposta sair contaminada.
+    const outra = await criarCenario()
+    const meu = await snapshotDe(cenario)
+    const dela = await snapshotDe(outra)
+
+    await expect(
+      executarPar({
+        config: meu.config,
+        conhecimento: [...meu.conhecimento, ...dela.conhecimento],
+      }),
+    ).rejects.toThrow()
+
+    expect(cerebro.chamadas).toBe(0)
+  })
+
+  it('o erro NÃO ecoa slug nem conteúdo', async () => {
+    const { processIncomingMessage } = await import('../conversation.server')
+    const outra = await criarCenario()
+
+    const erro = await processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'oi',
+      contactId: 'x',
+      channel: 'simulator',
+      previewSnapshot: await snapshotDe(outra),
+    }).catch((e: unknown) => e)
+
+    const texto = erro instanceof Error ? erro.message : String(erro)
+    expect(texto).not.toContain(outra.slug)
+    expect(texto).not.toContain(cenario.slug)
+    expect(texto).not.toContain('Clínica Bem Estar')
+  })
+
+  it('snapshot da PRÓPRIA empresa executa', async () => {
+    // Par simétrico: a guarda não pode recusar o caminho legítimo.
+    const { processIncomingMessage } = await import('../conversation.server')
+
+    const r = await processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'qual o horário?',
+      contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
+      channel: 'simulator',
+      previewSnapshot: await snapshotDe(cenario),
+    })
+
+    expect(r.reply).toBe(RESPOSTA_BOA.reply)
+    expect(cerebro.chamadas).toBe(1)
+  })
+})
+
+describe('preview não executa a action NEM quando o validador a aceita', () => {
+  it('com abrir_chamado habilitada, a action sobrevive e o chamado NÃO é criado', async () => {
+    // O teste 10 não provava isto: com `tools: []` o validador DESCARTA a action antes da
+    // camada de efeitos, então "zero chamados" passaria mesmo se o preview executasse ações.
+    // Aqui a ferramenta é habilitada no snapshot, a action ATRAVESSA o validador de verdade,
+    // e só o preview impede o chamado.
+    //
+    // O discriminador é o reply: a guarda anti-mentira recusa "já registrei" quando não há
+    // action válida. Se o reply chegou inteiro, a action foi aceita — logo o zero no banco é
+    // do preview, não do descarte.
+    const { processIncomingMessage } = await import('../conversation.server')
+    const { resolverFonteDoPreview } = await import('./preview.server')
+
+    const fonte = await resolverFonteDoPreview({
+      tenantSlug: cenario.slug,
+      setupVersionId: cenario.versionId,
+      generation: 2,
+    })
+    if (fonte.tipo !== 'ok') throw new Error(`esperava ok, veio ${fonte.tipo}`)
+
+    // Simula o dia em que a política do servidor habilitar a primeira ferramenta.
+    const comFerramenta = {
+      ...fonte.fonte.config,
+      tools: [
+        { name: 'abrir_chamado' as const, enabled: true, limits: { requireConfirmation: true } },
+      ],
+    }
+
+    cerebro.saida = {
+      reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.',
+      needsHuman: false,
+      handoffReason: null,
+      leadPatch: null,
+      confidence: 0.9,
+      action: {
+        type: 'abrir_chamado',
+        subject: 'agendar consulta',
+        description: 'cliente quer agendar consulta',
+      },
+    }
+
+    const r = await processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'quero agendar, pode registrar',
+      contactId: contactIdDoPreview(cenario.accountId, cenario.versionId, 2),
+      channel: 'simulator',
+      previewSnapshot: { config: comFerramenta, conhecimento: fonte.fonte.conhecimento },
+    })
+
+    // 1. A action ATRAVESSOU o validador (senão o reply teria caído no fallback honesto).
+    expect(r.reply).toContain('registrei')
+    // 2. E mesmo assim nenhum chamado existe: quem barrou foi o preview.
+    expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+  })
+
+  it('o contra-fato: sem a ferramenta, o mesmo par cai no fallback', async () => {
+    // Prova que o discriminador do teste acima funciona — com `tools: []` o reply NÃO
+    // sobrevive, então "reply intacto" realmente significa "action aceita".
+    cerebro.saida = {
+      reply: 'Pronto! Já registrei seu chamado. Nossa equipe entra em contato.',
+      needsHuman: false,
+      handoffReason: null,
+      leadPatch: null,
+      confidence: 0.9,
+      action: {
+        type: 'abrir_chamado',
+        subject: 'agendar consulta',
+        description: 'cliente quer agendar consulta',
+      },
+    }
+
+    const r = await executar(cenario, { message: 'quero agendar, pode registrar' })
+    if (r.tipo !== 'ok') throw new Error(`esperava ok, veio ${r.codigo}`)
+
+    expect(r.reply).not.toContain('registrei')
   })
 })
 
