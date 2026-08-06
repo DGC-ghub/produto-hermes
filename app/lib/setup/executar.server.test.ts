@@ -614,7 +614,14 @@ describe('o snapshot pertence ao tenant executado', () => {
       previewSnapshot: await snapshotDe(outra),
     }).catch((e: unknown) => e)
 
-    const texto = erro instanceof Error ? erro.message : String(erro)
+    // PRIMEIRO prova que a recusa aconteceu, e qual. Sem isto o teste passava com a guarda
+    // REMOVIDA: a chamada teria sucesso, `erro` viraria o objeto de resultado, e
+    // `String(objeto)` é '[object Object]' — que de fato não contém slug nenhum. Mesmo padrão
+    // falso-verde que já apareceu no teste irmão de `conversation.modo.test.ts`.
+    expect(erro).toBeInstanceOf(Error)
+    const texto = (erro as Error).message
+    expect(texto).toBe('Preview snapshot tenant mismatch')
+
     expect(texto).not.toContain(outra.slug)
     expect(texto).not.toContain(cenario.slug)
     expect(texto).not.toContain('Clínica Bem Estar')

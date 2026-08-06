@@ -176,6 +176,72 @@ async function loadConfigSafe(slug: string): Promise<TenantConfig> {
 }
 
 /**
+ * O PONTO DE LINEARIZAÇÃO com a tomada humana.
+ *
+ * O motor lê o status da conversa uma vez, antes do cérebro — e o cérebro é a chamada mais
+ * lenta do fluxo (dezenas de segundos com provider real). No meio dela o operador pode clicar
+ * "assumir". Uma simples releitura antes de gravar ENCURTA a janela, não a fecha: entre o
+ * `SELECT` e o `INSERT` a tomada ainda cabe.
+ *
+ * Isto é um `updateMany` condicional, ou seja, uma ESCRITA — e é a escrita que estabelece
+ * ordem com a action do operador. Um dos dois vence:
+ *
+ * - motor vence: a resposta pertence ao instante anterior à tomada, e o operador assume
+ *   depois do commit;
+ * - tomada vence: `count === 0`, nada é gravado, e o motor se cala.
+ *
+ * `count === 0` também cobre a conversa apagada no meio do caminho. Vale em TODOS os modos:
+ * em preview não há efeito operacional, mas a mensagem seria gravada dentro da conversa que
+ * o atendente está conduzindo.
+ */
+async function autorizarEscrita(
+  tx: Pick<typeof db, 'conversation'>,
+  conversationId: string,
+): Promise<boolean> {
+  const autorizada = await tx.conversation.updateMany({
+    where: { id: conversationId, status: { not: 'human' } },
+    data: { updatedAt: new Date() },
+  })
+  return autorizada.count === 1
+}
+
+/** O que a transação final decidiu. */
+type Finalizacao = { tipo: 'humano_assumiu' } | { tipo: 'ok'; assistantMessageId: string }
+
+/**
+ * O retorno quando um humano conduz a conversa: a mensagem do cliente foi gravada (o
+ * atendente precisa vê-la) e o Hermes não diz nada.
+ *
+ * Um só lugar porque há três caminhos que chegam aqui — o status já estava `human` na
+ * entrada, ou a tomada venceu a corrida no caminho do guard, ou venceu no caminho do
+ * cérebro. Três formatos diferentes de "silêncio" seriam três comportamentos de tela.
+ */
+function silencioDoHumano(
+  conversationId: string,
+  tenantSlug: string,
+  userMessageId: string,
+): ProcessIncomingMessageResult {
+  return {
+    conversationId,
+    tenantSlug,
+    userMessageId,
+    assistantMessageId: '',
+    reply: '',
+    needsHuman: true,
+    handoffReason: 'human_handling',
+    confidence: 0,
+    sources: [],
+    humanHandling: true,
+  }
+}
+
+/**
+ * Limites da transação final. O cérebro fica FORA dela — dentro só há operações rápidas de
+ * banco. Em contenção o Prisma lança, e quem chamou (a fila do WhatsApp) reprocessa o evento.
+ */
+const TRANSACAO_FINAL = { maxWait: 5_000, timeout: 15_000 } as const
+
+/**
  * Contexto que a casca de medição precisa e que só é conhecido no meio do
  * caminho (o tenant é resolvido lá dentro). Preenchido pelo corpo à medida que
  * descobre; lido pela casca ao fechar o trace, inclusive quando dá exceção.
@@ -379,18 +445,7 @@ async function runIncomingMessage(
       })
       return created
     })
-    return {
-      conversationId,
-      tenantSlug: input.tenantSlug,
-      userMessageId: userMessage.id,
-      assistantMessageId: '',
-      reply: '',
-      needsHuman: true,
-      handoffReason: 'human_handling',
-      confidence: 0,
-      sources: [],
-      humanHandling: true,
-    }
+    return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
   }
 
   // Gate de cobrança: se a assinatura existe mas não está ativa (E o flag está ligado), o
@@ -484,34 +539,47 @@ async function runIncomingMessage(
     if (guard.reason === 'sensitive_topic' && operationalEffects) {
       void reportSensitiveHandoff(input.tenantSlug)
     }
-    ctx.outcome = 'guard_handoff'
     const reply = configEfetiva.escalationPolicy.humanMessage
-    const assistantMessage = await timer.step('persist_reply', async () => {
-      const created = await db.message.create({
-        data: {
-          conversationId,
-          role: 'assistant',
-          content: reply,
-          confidence: 0,
-          sourcesJson: JSON.stringify([]),
-        },
-      })
-      await db.conversation.update({
-        where: { id: conversationId },
-        data: operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
-      })
-      if (operationalEffects) {
-        await db.handoffEvent.create({
-          data: { conversationId, reason: guard.reason ?? 'unknown', message },
+    // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
+    // o cérebro), mas o invariante é o mesmo — nenhuma mensagem de assistente entra numa
+    // conversa que um humano conduz — e um invariante protegido em um caminho só vira bug no
+    // outro na primeira vez que alguém mexer.
+    const finalizacao = await timer.step('persist_reply', () =>
+      db.$transaction(async (tx): Promise<Finalizacao> => {
+        if (!(await autorizarEscrita(tx, conversationId))) {
+          return { tipo: 'humano_assumiu' }
+        }
+        const created = await tx.message.create({
+          data: {
+            conversationId,
+            role: 'assistant',
+            content: reply,
+            confidence: 0,
+            sourcesJson: JSON.stringify([]),
+          },
         })
-      }
-      return created
-    })
+        if (operationalEffects) {
+          await tx.conversation.update({
+            where: { id: conversationId },
+            data: { status: 'needs_human' },
+          })
+          await tx.handoffEvent.create({
+            data: { conversationId, reason: guard.reason ?? 'unknown', message },
+          })
+        }
+        return { tipo: 'ok', assistantMessageId: created.id }
+      }, TRANSACAO_FINAL),
+    )
+    if (finalizacao.tipo === 'humano_assumiu') {
+      ctx.outcome = 'human_handling'
+      return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+    }
+    ctx.outcome = 'guard_handoff'
     return {
       conversationId,
       tenantSlug: input.tenantSlug,
       userMessageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
+      assistantMessageId: finalizacao.assistantMessageId,
       reply,
       needsHuman: true,
       handoffReason: guard.reason,
@@ -584,52 +652,8 @@ async function runIncomingMessage(
     decision.handoffReason === 'provider_error' || decision.handoffReason === 'validacao_falhou'
       ? decision.handoffReason
       : null
-  if (razaoDegradacao && operationalEffects) {
-    void reportDegradation(razaoDegradacao)
-  }
-  // Separar 'fallback' de 'ok' na medição é o que permite ler o p95 do motor SADIO:
-  // uma queda do provider responde em 200ms e mascararia a lentidão real na média.
-  ctx.outcome = razaoDegradacao ? 'fallback' : 'ok'
-
-  await timer.step('effects', async () => {
-    if (!operationalEffects) {
-      return
-    }
-    // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
-    if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
-      await db.lead.upsert({
-        where: { conversationId },
-        create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
-        update: { ...decision.leadPatch },
-      })
-    }
-
-    // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
-    // validador já garantiu que a ação é de uma tool habilitada para este tenant.
-    // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
-    // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
-    // continuam gerando chamados distintos).
-    if (decision.action?.type === 'abrir_chamado') {
-      // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
-      // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
-      const openTickets = await db.ticket.findMany({
-        where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
-        select: { subject: true },
-      })
-      const openSubjects = openTickets.map((row) => row.subject)
-      if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
-        await db.ticket.create({
-          data: {
-            tenantId: tenant.id,
-            contactId,
-            subject: decision.action.subject,
-            description: decision.action.description,
-            category: decision.action.category ?? null,
-          },
-        })
-      }
-    }
-  })
+  // O alarme e o `outcome` são decididos DEPOIS da transação: alarmar aqui avisaria o
+  // operador de uma "resposta genérica entregue ao cliente" que a tomada humana suprimiu.
 
   // Daqui pra baixo o guard não interfere (o curto-circuito acima já tratou os
   // casos forçados): a decisão de escalar é do cérebro validado.
@@ -643,40 +667,105 @@ async function runIncomingMessage(
     score: chunk.score,
   }))
 
-  const assistantMessage = await timer.step('persist_reply', async () => {
-    const created = await db.message.create({
-      data: {
-        conversationId,
-        role: 'assistant',
-        content: reply,
-        confidence,
-        sourcesJson: JSON.stringify(sources),
-      },
-    })
+  // ── TUDO O QUE A DECISÃO CAUSA, NUMA TRANSAÇÃO ────────────────────────────────
+  //
+  // O primeiro comando é o CAS de `autorizarEscrita`. Perder significa que o operador assumiu
+  // durante o cérebro: nada é gravado, nem chamado, nem lead, nem resposta.
+  //
+  // Chamado e mensagem do assistente na MESMA transação, de propósito: se o chamado falhar, a
+  // transação aborta e a resposta que afirma "registrei" não existe. A ordem antiga (chamado
+  // fora, resposta depois) deixava a frase sobreviver ao chamado que não nasceu.
+  const finalizacao = await timer.step('persist_reply', () =>
+    db.$transaction(async (tx): Promise<Finalizacao> => {
+      if (!(await autorizarEscrita(tx, conversationId))) {
+        return { tipo: 'humano_assumiu' }
+      }
 
-    // Marca atividade na conversa (e o status, quando escala). Sem tocar o updatedAt
-    // aqui, ele só avançaria no handoff — e a resolução de identidade (reusar a
-    // conversa ativa do contato), a ordem da fila do atendente e a "conversa ativa"
-    // do dossiê leriam um timestamp congelado, pegando a conversa errada quando o
-    // contato tem mais de uma não-fechada.
-    await db.conversation.update({
-      where: { id: conversationId },
-      data:
-        needsHuman && operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
-    })
-    if (needsHuman && operationalEffects) {
-      await db.handoffEvent.create({
-        data: { conversationId, reason: handoffReason ?? 'unknown', message },
+      await timer.step('effects', async () => {
+        if (!operationalEffects) {
+          return
+        }
+        // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
+        if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
+          await tx.lead.upsert({
+            where: { conversationId },
+            create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
+            update: { ...decision.leadPatch },
+          })
+        }
+
+        // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
+        // validador já garantiu que a ação é de uma tool habilitada para este tenant.
+        // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
+        // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
+        // continuam gerando chamados distintos).
+        if (decision.action?.type === 'abrir_chamado') {
+          // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
+          // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
+          const openTickets = await tx.ticket.findMany({
+            where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
+            select: { subject: true },
+          })
+          const openSubjects = openTickets.map((row) => row.subject)
+          if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
+            await tx.ticket.create({
+              data: {
+                tenantId: tenant.id,
+                contactId,
+                subject: decision.action.subject,
+                description: decision.action.description,
+                category: decision.action.category ?? null,
+              },
+            })
+          }
+        }
       })
-    }
-    return created
-  })
+
+      const created = await tx.message.create({
+        data: {
+          conversationId,
+          role: 'assistant',
+          content: reply,
+          confidence,
+          sourcesJson: JSON.stringify(sources),
+        },
+      })
+
+      // O `updatedAt` já foi tocado por `autorizarEscrita` — sem ele, a resolução de
+      // identidade, a ordem da fila do atendente e a "conversa ativa" do dossiê leriam um
+      // timestamp congelado. Aqui só o STATUS, quando escala.
+      if (needsHuman && operationalEffects) {
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { status: 'needs_human' },
+        })
+        await tx.handoffEvent.create({
+          data: { conversationId, reason: handoffReason ?? 'unknown', message },
+        })
+      }
+      return { tipo: 'ok', assistantMessageId: created.id }
+    }, TRANSACAO_FINAL),
+  )
+
+  if (finalizacao.tipo === 'humano_assumiu') {
+    ctx.outcome = 'human_handling'
+    return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+  }
+
+  // Alarme só agora: se o cérebro CAIU no fallback, o cliente recebeu a resposta genérica —
+  // e isso só é verdade porque a transação venceu e a resposta foi gravada.
+  if (razaoDegradacao && operationalEffects) {
+    void reportDegradation(razaoDegradacao)
+  }
+  // Separar 'fallback' de 'ok' na medição é o que permite ler o p95 do motor SADIO:
+  // uma queda do provider responde em 200ms e mascararia a lentidão real na média.
+  ctx.outcome = razaoDegradacao ? 'fallback' : 'ok'
 
   return {
     conversationId,
     tenantSlug: input.tenantSlug,
     userMessageId: userMessage.id,
-    assistantMessageId: assistantMessage.id,
+    assistantMessageId: finalizacao.assistantMessageId,
     reply,
     needsHuman,
     handoffReason,

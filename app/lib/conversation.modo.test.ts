@@ -312,6 +312,35 @@ describe('a conversa reutilizada tem que ser do canal do modo', () => {
     await db.conversation.delete({ where: { id: vitima.id } })
   })
 
+  it('conversa de OUTRA EMPRESA, com canal e contato IGUAIS, é recusada', async () => {
+    // Os testes anteriores usavam só o tenant `dgc`, então remover a comparação de tenant
+    // sobrevivia a todos. Aqui canal e contato são idênticos DE PROPÓSITO: o único campo que
+    // discrimina é o tenant, e é isso que torna a prova dele possível.
+    const outra = await db.tenant.upsert({
+      where: { slug: 'assistencia-tecnica-demo' },
+      update: {},
+      create: { slug: 'assistencia-tecnica-demo', name: 'Outra Empresa' },
+    })
+    const alheia = await db.conversation.create({
+      data: { tenantId: outra.id, contactId: CONTATO, channel: 'whatsapp', status: 'open' },
+    })
+
+    await expect(
+      processIncomingMessage({
+        tenantSlug: 'dgc', // ← tenant da chamada
+        message: 'oi',
+        conversationId: alheia.id, // ← conversa da outra empresa
+        contactId: CONTATO, // ← contato IGUAL
+        mode: 'whatsapp', // ← canal IGUAL
+      }),
+    ).rejects.toThrow('Conversation not found')
+
+    // Nada foi lido nem gravado na conversa alheia.
+    expect(await db.message.count({ where: { conversationId: alheia.id } })).toBe(0)
+
+    await db.conversation.delete({ where: { id: alheia.id } })
+  })
+
   it('conversa de OUTRO contato do mesmo canal é recusada', async () => {
     const deOutro = await conversaExistente('whatsapp', `${CONTATO}-outro`)
 
