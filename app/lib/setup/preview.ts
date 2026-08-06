@@ -8,6 +8,32 @@ import type { KnowledgeDocument } from '../knowledge.server'
 export const PREFIXO_DA_CANDIDATA = 'candidata'
 
 /**
+ * Identidade da conversa de teste sobre uma candidata (spec §10.3). Pura.
+ *
+ * `simulator:<conta>:<versão>:<geração>` — os quatro pedaços são todos necessários:
+ *
+ * - `accountId` separa dois sócios da mesma empresa, que testariam em cima um do outro;
+ * - `setupVersionId` separa candidatas diferentes;
+ * - `generation` é o que impede o histórico de um ciclo contaminar o teste do seguinte. Sem
+ *   ele, a conversa da candidata reprovada continuaria viva na corrigida, e a pessoa
+ *   avaliaria a nova resposta lendo o contexto da antiga (§3.5).
+ *
+ * NUNCA vem do cliente: `accountId` sai da sessão, os outros dois da versão resolvida.
+ *
+ * Distinta de `simulatorContactId` (rota `/testar-ia`), que identifica o teste sobre a config
+ * PUBLICADA. São identidades diferentes de propósito — misturá-las juntaria, na mesma
+ * conversa, o que a IA responde hoje e o que ela responderia se a candidata fosse publicada.
+ * As duas convergem na etapa 8, quando o gate passa a escolher a fonte.
+ */
+export function contactIdDoPreview(
+  accountId: string,
+  setupVersionId: string,
+  generation: number,
+): string {
+  return `simulator:${accountId}:${setupVersionId}:${generation}`
+}
+
+/**
  * Converte `candidateKnowledgeJson` para os documentos que o motor lê.
  *
  * O motor espera `KnowledgeDocument`, que tem `fileName` — a candidata não tem arquivo. O

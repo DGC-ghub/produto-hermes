@@ -1,5 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { conhecimentoDaCandidata, PREFIXO_DA_CANDIDATA } from './preview'
+import { conhecimentoDaCandidata, contactIdDoPreview, PREFIXO_DA_CANDIDATA } from './preview'
+
+describe('contactIdDoPreview (§10.3)', () => {
+  it('junta conta, versão e geração', () => {
+    expect(contactIdDoPreview('acc-1', 'ver-9', 2)).toBe('simulator:acc-1:ver-9:2')
+  })
+
+  it('a GERAÇÃO separa os ciclos', () => {
+    // O par que importa: sem a geração no id, o histórico da candidata reprovada seguiria
+    // vivo na corrigida, e a pessoa avaliaria a resposta nova lendo o contexto da antiga.
+    expect(contactIdDoPreview('acc-1', 'ver-9', 1)).not.toBe(
+      contactIdDoPreview('acc-1', 'ver-9', 2),
+    )
+  })
+
+  it('a CONTA separa dois sócios da mesma empresa', () => {
+    expect(contactIdDoPreview('acc-1', 'ver-9', 2)).not.toBe(
+      contactIdDoPreview('acc-2', 'ver-9', 2),
+    )
+  })
+
+  it('a VERSÃO separa candidatas diferentes', () => {
+    expect(contactIdDoPreview('acc-1', 'ver-9', 2)).not.toBe(
+      contactIdDoPreview('acc-1', 'ver-10', 2),
+    )
+  })
+})
 
 describe('conhecimentoDaCandidata', () => {
   const docs = [

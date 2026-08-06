@@ -7,6 +7,7 @@ import { resolveTenantConfig } from './attendant/tenant-config-db.server'
 import { checkBillingGate } from './billing-gate.server'
 import { isHumanHandling } from './conversation-status'
 import { decideHandoff } from './handoff'
+import type { KnowledgeDocument } from './knowledge.server'
 import { resolveKnowledge } from './knowledge-db.server'
 import { extractLeadPatch } from './lead'
 import { createTimer, type Timer } from './metrics'
@@ -27,6 +28,24 @@ export type ProcessIncomingMessageInput = {
   // Preview autenticado: executa cérebro/guard/persistência da conversa e métricas,
   // mas não cria efeitos operacionais (lead, ticket, handoff, status ou alarme).
   preview?: boolean
+  /**
+   * Execução sobre uma configuração JÁ RESOLVIDA, que não é a publicada (`owner_preview`
+   * da spec §7.2) — hoje, a candidata de um setup em revisão.
+   *
+   * Presente ⇒ **execução sem efeitos operacionais**, independentemente de `preview`. O modo
+   * não é opcional quando a config não é a que está no ar: uma config candidata criando
+   * chamado e lead de verdade seria um teste com consequência real no banco do cliente.
+   *
+   * Config e conhecimento vêm JUNTOS, num campo só, porque o erro que anula o preview é
+   * executar a config nova contra a base que já está no ar — o dono testaria uma coisa e
+   * aprovaria outra. Aqui isso não tem como acontecer: não há campo para um sem o outro.
+   *
+   * Depois deste ponto o motor NÃO relê config nem base de nenhuma fonte.
+   */
+  previewSnapshot?: {
+    config: TenantConfig
+    conhecimento: KnowledgeDocument[]
+  }
 }
 
 export type ProcessIncomingMessageSource = {
@@ -115,7 +134,9 @@ async function runIncomingMessage(
   if (message.length === 0) {
     throw new Error('Message is required')
   }
-  const preview = input.preview === true
+  // O snapshot IMPLICA preview: ver `previewSnapshot`. Derivar aqui, e não confiar no
+  // chamador passar as duas coisas, é o que impede config candidata com efeito real.
+  const preview = input.preview === true || input.previewSnapshot !== undefined
 
   // Tenant vem do BANCO (fonte de verdade) — um cliente novo funciona só existindo
   // no banco, sem redeploy. Seeds conhecidos são criados on-demand; slug de fora
@@ -125,7 +146,11 @@ async function runIncomingMessage(
     throw new Error(`Unknown tenant: ${input.tenantSlug}`)
   }
   ctx.tenantId = tenant.id
-  const config = await timer.step('config', () => loadConfigSafe(input.tenantSlug))
+  // Com snapshot, a config JÁ vem resolvida e validada (a resolução é de quem chamou):
+  // reler aqui traria a publicada e desfaria o preview.
+  const config =
+    input.previewSnapshot?.config ??
+    (await timer.step('config', () => loadConfigSafe(input.tenantSlug)))
 
   // Conversa: reutiliza a informada (validando dono) ou resolve pela IDENTIDADE
   // do contato. No WhatsApp a identidade é o número (contactId) e a mensagem chega
@@ -262,9 +287,11 @@ async function runIncomingMessage(
   // explícito de humano e tema sensível já decidem a resposta segura, então não
   // pagamos a latência/custo do LLM nem executamos efeitos (lead/chamado) de uma
   // proposta cuja resposta o cliente nunca veria.
-  const docs = await timer.step('knowledge', () =>
-    resolveKnowledge(config.slug, config.knowledge.sourceDir),
-  )
+  // A base do snapshot, quando há: `config.knowledge.sourceDir` aponta para a pasta da
+  // empresa e trazer de lá a base PUBLICADA é exatamente o erro que o campo único evita.
+  const docs =
+    input.previewSnapshot?.conhecimento ??
+    (await timer.step('knowledge', () => resolveKnowledge(config.slug, config.knowledge.sourceDir)))
   const retrieved = timer.stepSync('retrieval', () => retrieveRelevantChunks(message, docs))
   const guard = timer.stepSync('guard', () =>
     decideHandoff({
