@@ -55,14 +55,32 @@ afterEach(async () => {
 })
 
 describe('o modo é obrigatório e as combinações inválidas não compilam', () => {
+  // CADA FIXTURE VIOLA UMA REGRA SÓ.
+  //
+  // Quando `contactId` passou a ser obrigatório, este arquivo continuou compilando — e por
+  // um motivo ruim: os fixtures omitiam `contactId` TAMBÉM, então cada `@ts-expect-error`
+  // capturava duas violações e deixaria de provar a sua no dia em que a outra saísse. É a
+  // mesma armadilha do `{ config: {} }` de antes.
   it('omitir o modo é erro de tipo', () => {
-    // @ts-expect-error — sem `mode` não compila: era possível chamar o motor sem dizer se
+    // @ts-expect-error — SÓ `mode` está ausente: era possível chamar o motor sem dizer se
     // havia um cliente do outro lado, e o default silencioso ligava os efeitos.
     const semModo: Parameters<typeof processIncomingMessage>[0] = {
       tenantSlug: 'dgc',
+      contactId: CONTATO,
       message: 'oi',
     }
     expect(semModo).toBeTruthy()
+  })
+
+  it('omitir o contato é erro de tipo', () => {
+    // @ts-expect-error — SÓ `contactId` está ausente. Sem ele, a conferência do dono da
+    // conversa era pulada e qualquer conversa do mesmo tenant e canal era aceita.
+    const semContato: Parameters<typeof processIncomingMessage>[0] = {
+      tenantSlug: 'dgc',
+      message: 'oi',
+      mode: 'whatsapp',
+    }
+    expect(semContato).toBeTruthy()
   })
 
   it('whatsapp com snapshot da candidata é erro de tipo', () => {
@@ -75,6 +93,7 @@ describe('o modo é obrigatório e as combinações inválidas não compilam', (
     // forma de propósito: o único erro tem que ser o `never`.
     const invalido: Parameters<typeof processIncomingMessage>[0] = {
       tenantSlug: 'dgc',
+      contactId: CONTATO,
       message: 'oi',
       mode: 'whatsapp',
       previewSnapshot: SNAPSHOT_VALIDO,
@@ -88,6 +107,7 @@ describe('o modo é obrigatório e as combinações inválidas não compilam', (
     // forma: o único erro tem que ser o `never`.
     const invalido: Parameters<typeof processIncomingMessage>[0] = {
       tenantSlug: 'dgc',
+      contactId: CONTATO,
       message: 'oi',
       mode: 'public_demo',
       previewSnapshot: SNAPSHOT_VALIDO,
@@ -98,6 +118,7 @@ describe('o modo é obrigatório e as combinações inválidas não compilam', (
   it('modo inventado é erro de tipo', () => {
     const invalido: Parameters<typeof processIncomingMessage>[0] = {
       tenantSlug: 'dgc',
+      contactId: CONTATO,
       message: 'oi',
       // @ts-expect-error — só os três da §7.2 existem.
       mode: 'qualquer_coisa',
@@ -151,9 +172,63 @@ describe('o runtime também recusa: o tipo não é a única barreira', () => {
     await nadaAconteceu()
   })
 
+  it.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+  ])('recusa a chave HERDADA "%s" como modo', async (mode) => {
+    // A tabela de perfis é um objeto comum: `PERFIL_DO_MODO['constructor']` devolve uma
+    // FUNÇÃO, que é truthy. A checagem antiga (`if (!perfil)`) deixava passar, e a
+    // desestruturação dava `channel: undefined`. O elo que fecha o estrago é o Prisma:
+    // filtro `undefined` é OMITIDO, então a busca da conversa perdia o filtro de canal e
+    // podia reusar a conversa real de WhatsApp de um cliente.
+    //
+    // Sem snapshot no fixture, de propósito: assim o erro só pode ser o do modo.
+    const input = {
+      tenantSlug: 'dgc',
+      contactId: CONTATO,
+      message: 'oi',
+      mode,
+    } as unknown as Parameters<typeof processIncomingMessage>[0]
+
+    await expect(processIncomingMessage(input)).rejects.toThrow('Invalid execution mode')
+    await nadaAconteceu()
+  })
+
+  it('contato ausente é recusado em runtime, antes de ler conversa', async () => {
+    const input = {
+      tenantSlug: 'dgc',
+      message: 'oi',
+      mode: 'whatsapp',
+    } as unknown as Parameters<typeof processIncomingMessage>[0]
+
+    await expect(processIncomingMessage(input)).rejects.toThrow('Contact identity is required')
+    await nadaAconteceu()
+  })
+
+  it.each(['', '   '])('contato vazio ("%s") também é recusado', async (contactId) => {
+    const input = {
+      tenantSlug: 'dgc',
+      contactId,
+      message: 'oi',
+      mode: 'whatsapp',
+    } as unknown as Parameters<typeof processIncomingMessage>[0]
+
+    await expect(processIncomingMessage(input)).rejects.toThrow('Contact identity is required')
+  })
+
   it('a mensagem de recusa NÃO leva nada do snapshot', async () => {
     const erro = await processIncomingMessage(forcar('whatsapp')).catch((e: unknown) => e)
-    const texto = erro instanceof Error ? erro.message : String(erro)
+
+    // PRIMEIRO prova que a recusa aconteceu. Sem esta linha o teste passava com a guarda
+    // REMOVIDA: a chamada tinha sucesso, `erro` virava o objeto de resultado, e
+    // `String(objeto)` é '[object Object]' — que de fato não contém 'dgc'. Um teste de
+    // não-vazamento que não confirma o vazamento estar no caminho não prova nada.
+    expect(erro).toBeInstanceOf(Error)
+    const texto = (erro as Error).message
+    expect(texto).toBe('Preview snapshot requires owner preview mode')
 
     expect(texto).not.toContain('dgc')
     expect(texto).not.toContain('knowledge/')
@@ -217,6 +292,26 @@ describe('a conversa reutilizada tem que ser do canal do modo', () => {
     expect(await db.message.count({ where: { conversationId: teste.id } })).toBe(0)
   })
 
+  it('conversa de outra pessoa com o contato OMITIDO é recusada', async () => {
+    // Era o bypass: sem `contactId`, a conferência do dono era pulada e qualquer conversa do
+    // mesmo tenant e canal passava. O motor leria o histórico, o lead e os chamados da
+    // vítima, mandaria tudo ao cérebro e gravaria a resposta na conversa dela.
+    const vitima = await conversaExistente('whatsapp', `${CONTATO}-vitima`)
+
+    const hostil = {
+      tenantSlug: 'dgc',
+      conversationId: vitima.id,
+      message: 'oi',
+      mode: 'whatsapp',
+      // contactId OMITIDO de propósito
+    } as unknown as Parameters<typeof processIncomingMessage>[0]
+
+    await expect(processIncomingMessage(hostil)).rejects.toThrow('Contact identity is required')
+    expect(await db.message.count({ where: { conversationId: vitima.id } })).toBe(0)
+
+    await db.conversation.delete({ where: { id: vitima.id } })
+  })
+
   it('conversa de OUTRO contato do mesmo canal é recusada', async () => {
     const deOutro = await conversaExistente('whatsapp', `${CONTATO}-outro`)
 
@@ -267,6 +362,57 @@ describe('a conversa reutilizada tem que ser do canal do modo', () => {
     expect(
       (await db.conversation.findUniqueOrThrow({ where: { id: r.conversationId } })).channel,
     ).toBe('simulator')
+  })
+})
+
+describe('"um humano assumiu" vale em TODOS os modos', () => {
+  // O silêncio quando um atendente assume é um ESTADO a ser obedecido, não um efeito a ser
+  // condicionado por `operationalEffects`. Enquanto estava condicionado, em `public_demo` e
+  // `owner_preview` a IA gravava `role: 'assistant'` dentro da conversa que o atendente
+  // estava conduzindo — indistinguível da fala dele na ficha de `/atendente`.
+  //
+  // Alcançável sem cast: a fila do atendente não filtra canal, então uma conversa de demo ou
+  // de simulador pode ser assumida, e a busca por identidade a reutiliza na visita seguinte.
+
+  /** Conversa já assumida por um humano, no canal pedido. */
+  async function assumidaPorHumano(channel: string, contactId: string) {
+    const tenant = await db.tenant.findUniqueOrThrow({ where: { slug: 'dgc' } })
+    return db.conversation.create({
+      data: { tenantId: tenant.id, contactId, channel, status: 'human' },
+    })
+  }
+
+  it.each([
+    ['public_demo', 'simulator'],
+    ['owner_preview', 'simulator'],
+    ['whatsapp', 'whatsapp'],
+  ] as const)('%s se cala e NÃO grava resposta da IA', async (mode, channel) => {
+    const contato = `${CONTATO}-${mode}`
+    const conversa = await assumidaPorHumano(channel, contato)
+
+    const r = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'oi, tem alguém aí?',
+      contactId: contato,
+      mode,
+    })
+
+    expect(r.conversationId).toBe(conversa.id)
+    expect(r.humanHandling).toBe(true)
+    expect(r.reply).toBe('')
+    expect(r.assistantMessageId).toBe('')
+
+    // A prova que importa: só a fala do CLIENTE ficou gravada.
+    const papeis = (
+      await db.message.findMany({
+        where: { conversationId: conversa.id },
+        select: { role: true },
+      })
+    ).map((m) => m.role)
+    expect(papeis).toEqual(['user'])
+
+    await db.message.deleteMany({ where: { conversationId: conversa.id } })
+    await db.conversation.delete({ where: { id: conversa.id } })
   })
 })
 

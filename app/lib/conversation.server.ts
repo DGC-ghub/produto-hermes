@@ -24,7 +24,7 @@ import { hasDuplicateOpenTicket } from './ticket'
  * que não era de cliente nenhum. Com um campo só, canal e efeitos param de ser escolha de
  * quem chama e passam a ser CONSEQUÊNCIA do modo.
  */
-export type ExecutionMode = 'public_demo' | 'owner_preview' | 'whatsapp'
+export type ExecutionMode = (typeof EXECUTION_MODES)[number]
 
 /** Config e base resolvidas por quem chamou — a candidata em revisão (§7.4). */
 export type SnapshotDoPreview = {
@@ -35,8 +35,21 @@ export type SnapshotDoPreview = {
 type EntradaBase = {
   tenantSlug: string
   message: string
+  /**
+   * Identidade do contato. OBRIGATÓRIA.
+   *
+   * Era opcional, com um `?? 'demo-user'` no meio do motor, e a combinação disso com
+   * `conversationId` abria um vazamento: sem contato informado, a conferência do dono da
+   * conversa era PULADA, e qualquer conversa do mesmo tenant e canal era aceita — o motor
+   * lia o histórico, o lead e os chamados de outra pessoa e gravava resposta na conversa
+   * dela.
+   *
+   * Todos os chamadores já têm identidade própria (número do WhatsApp, visitante da demo,
+   * conta no simulador, conta+versão+geração no preview), então o default anônimo não
+   * servia a ninguém — só enfraquecia a fronteira.
+   */
+  contactId: string
   conversationId?: string
-  contactId?: string
 }
 
 /**
@@ -64,6 +77,15 @@ export type ProcessIncomingMessageInput = EntradaBase &
       }
     | { mode: 'whatsapp'; previewSnapshot?: never }
   )
+
+/**
+ * Os modos existentes, em RUNTIME. O tipo é derivado desta lista de propósito: quem valida
+ * precisa conferir contra a lista de verdade, e duas fontes divergiriam na primeira mudança.
+ */
+export const EXECUTION_MODES = ['public_demo', 'owner_preview', 'whatsapp'] as const
+
+/** Conjunto para a checagem de pertencimento. Ver `perfilDoModo`. */
+const MODOS_VALIDOS: ReadonlySet<string> = new Set(EXECUTION_MODES)
 
 /** O que cada modo IMPLICA. Tabela da §7.2, num lugar só. */
 const PERFIL_DO_MODO: Record<
@@ -94,14 +116,25 @@ type PerfilDoModo = (typeof PERFIL_DO_MODO)[ExecutionMode]
  * Mensagens FIXAS, sem nada do snapshot: elas vão para log (§14).
  */
 function perfilDoModo(input: ProcessIncomingMessageInput): PerfilDoModo {
-  const perfil = PERFIL_DO_MODO[input.mode]
-  if (!perfil) {
+  // PERTENCIMENTO, não truthiness da indexação.
+  //
+  // `PERFIL_DO_MODO` é um objeto comum, então `PERFIL_DO_MODO['constructor']` devolve uma
+  // FUNÇÃO — truthy. Um `!perfil` deixava passar `constructor`, `toString` e `valueOf`, e a
+  // desestruturação seguinte dava `channel: undefined`. O elo final é o Prisma: filtro
+  // `undefined` é OMITIDO, então a busca da conversa por identidade perdia o filtro de canal
+  // e podia reusar a conversa real de WhatsApp de um cliente. Medido, não suposto.
+  if (!MODOS_VALIDOS.has(input.mode)) {
     throw new Error('Invalid execution mode')
   }
   if (input.previewSnapshot !== undefined && input.mode !== 'owner_preview') {
     throw new Error('Preview snapshot requires owner preview mode')
   }
-  return perfil
+  // Identidade do contato: o tipo exige, e um `as` ou chamador em JavaScript não. Aqui, antes
+  // de qualquer leitura de conversa, porque é ela que a identidade protege.
+  if (typeof input.contactId !== 'string' || input.contactId.trim().length === 0) {
+    throw new Error('Contact identity is required')
+  }
+  return PERFIL_DO_MODO[input.mode]
 }
 
 export type ProcessIncomingMessageSource = {
@@ -279,17 +312,22 @@ async function runIncomingMessage(
       // O contato só é exigido quando quem chama informou um: no WhatsApp ele sempre vem.
       //
       // Mensagem inalterada e indistinguível: quem cola um id não descobre se ele existe.
+      // A comparação de contato é INCONDICIONAL. Hoje ela é redundante — `perfilDoModo` já
+      // recusou contato ausente ou vazio antes daqui —, e por isso nenhuma mutação dela
+      // derruba teste: escrevê-la como `contactId !== undefined && ...` produz código
+      // equivalente. Fica na forma incondicional porque é a que expressa a regra sem depender
+      // de uma validação que mora em outra função e pode se mover.
       if (
         !existing ||
         existing.tenantId !== tenant.id ||
         existing.channel !== channel ||
-        (input.contactId !== undefined && existing.contactId !== input.contactId)
+        existing.contactId !== input.contactId
       ) {
         throw new Error('Conversation not found')
       }
       return { id: existing.id, contactId: existing.contactId, status: existing.status }
     }
-    const contact = input.contactId ?? 'demo-user'
+    const contact = input.contactId
     // `channel` no filtro: a conversa reutilizada tem que ser do mesmo modo. Sem isto, um
     // teste do dono continuaria a conversa de WhatsApp do próprio número dele, e a resposta
     // de teste entraria no atendimento real.
@@ -317,7 +355,19 @@ async function runIncomingMessage(
 
   // Se um humano ASSUMIU esta conversa, o Hermes se cala: registra a mensagem do
   // cliente (para o atendente ver) e devolve sem gerar resposta da IA.
-  if (isHumanHandling(conversationStatus) && operationalEffects) {
+  //
+  // SEM `operationalEffects` aqui, de propósito. `operationalEffects` responde "esta execução
+  // deve GRAVAR registro operacional?" — e "um humano assumiu" não é um efeito a ser
+  // condicionado, é um ESTADO a ser obedecido. Usar a flag aqui inverteu o sentido dela:
+  // gateava uma restrição em vez de uma escrita, e o resultado era a IA gravando
+  // `role: 'assistant'` dentro de uma conversa que um atendente estava conduzindo —
+  // indistinguível da fala dele na ficha de `/atendente`.
+  //
+  // Alcançável sem cast: a fila do atendente não filtra canal, então uma conversa de demo ou
+  // de simulador pode ser assumida, e a busca por identidade a reutiliza na visita seguinte.
+  // O corpo abaixo é seguro em modo não operacional: grava a mensagem do cliente e toca
+  // `updatedAt`, que é o que o preview já faz de qualquer forma.
+  if (isHumanHandling(conversationStatus)) {
     ctx.outcome = 'human_handling'
     const userMessage = await timer.step('persist_user', async () => {
       const created = await db.message.create({

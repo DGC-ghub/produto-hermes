@@ -691,6 +691,27 @@ describe('modo não operacional não tem ferramenta, mesmo se a config trouxer',
     expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
   })
 
+  it('public_demo: a ferramenta da config publicada também é IGNORADA', async () => {
+    // Faltava este. Com só o par owner_preview × whatsapp, uma implementação que zerasse
+    // `tools` APENAS em `owner_preview` sobrevivia à suíte inteira — medido: 1353 verdes com
+    // a mutação. A demo é vitrine para desconhecido; abrir chamado de verdade ali seria pior
+    // que no preview do dono.
+    const { processIncomingMessage } = await import('../conversation.server')
+
+    cerebro.saida = MENTIRA_COM_ACTION
+
+    const r = await processIncomingMessage({
+      tenantSlug: cenario.slug,
+      message: 'quero agendar, pode registrar',
+      contactId: 'visitante-anonimo',
+      mode: 'public_demo',
+    })
+
+    expect(cerebro.input?.enabledTools).toEqual([])
+    expect(r.reply).not.toContain('registrei')
+    expect(await db.ticket.count({ where: { tenantId: cenario.tenantId } })).toBe(0)
+  })
+
   it('whatsapp: a MESMA ferramenta vale, e o chamado é criado', async () => {
     // O par que dá sentido ao teste acima. Sem ele, uma implementação que zerasse `tools` em
     // TODOS os modos ficaria verde — e o produto perderia a única ação que ele executa.
