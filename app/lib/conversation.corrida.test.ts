@@ -50,13 +50,37 @@ vi.mock('./attendant/providers/mock', () => ({
   },
 }))
 
+// Barreira na base de conhecimento: é o único ponto de espera entre a leitura do status e o
+// caminho do GUARD determinístico, que não chama o cérebro. Fechada só quando um teste pede.
+const base = vi.hoisted(() => ({
+  pausa: null as Promise<void> | null,
+  entrou: null as { esperar: Promise<void>; abrir: () => void } | null,
+}))
+
+vi.mock('./knowledge-db.server', () => ({
+  resolveKnowledge: async () => {
+    base.entrou?.abrir()
+    if (base.pausa) {
+      await base.pausa
+    }
+    return [
+      {
+        tenantSlug: 'dgc',
+        fileName: 'base.md',
+        title: 'Base',
+        content: 'Atendemos das 9h às 18h.',
+      },
+    ]
+  },
+}))
+
 vi.mock('./alarm.server', () => ({
   reportDegradation: vi.fn(),
   reportSensitiveHandoff: vi.fn(),
 }))
 
 const { processIncomingMessage } = await import('./conversation.server')
-const { reportDegradation } = await import('./alarm.server')
+const { reportDegradation, reportSensitiveHandoff } = await import('./alarm.server')
 
 const CONTATO = 'test-corrida-humano'
 
@@ -79,6 +103,8 @@ let conversaId: string
 beforeEach(async () => {
   cerebro.reiniciar()
   cerebro.saida = SAIDA_COM_EFEITOS
+  base.pausa = null
+  base.entrou = null
   vi.clearAllMocks()
 
   const tenant = await db.tenant.upsert({
@@ -165,6 +191,57 @@ describe('operador assume durante o cérebro', () => {
     expect(await db.ticket.count({ where: { contactId: CONTATO } })).toBe(1)
     expect(await db.lead.count({ where: { conversationId: conversaId, name: 'Maria' } })).toBe(1)
     expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
+  })
+
+  it('no caminho do GUARD, a tomada humana suprime a resposta e o ALARME', async () => {
+    // Tema sensível não passa pelo cérebro: o guard decide sozinho. A janela é de
+    // milissegundos, e a barreira aqui é a base de conhecimento — o único await entre a
+    // leitura do status e a autorização de escrita.
+    //
+    // O alarme importa tanto quanto a mensagem: um push dizendo "escalação sensível" para um
+    // operador que JÁ está na conversa avisa de algo que não aconteceu. Era a mesma assimetria
+    // que a revisão apontou no alarme de degradação, e ela tinha ficado neste caminho.
+    base.entrou = cerebro.barreira()
+    const liberar = cerebro.barreira()
+    base.pausa = liberar.esperar
+
+    const processamento = processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'preciso falar sobre o contrato e meus dados pessoais',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    await base.entrou.esperar
+    await db.conversation.update({ where: { id: conversaId }, data: { status: 'human' } })
+    liberar.abrir()
+    const r = await processamento
+
+    expect(r.humanHandling).toBe(true)
+    expect(r.assistantMessageId).toBe('')
+    expect(
+      (
+        await db.message.findMany({ where: { conversationId: conversaId }, select: { role: true } })
+      ).map((m) => m.role),
+    ).toEqual(['user'])
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(0)
+    expect(reportSensitiveHandoff).not.toHaveBeenCalled()
+    // O cérebro nunca foi chamado: o guard curto-circuitou, como deve.
+    expect(cerebro.chamadas).toBe(0)
+  })
+
+  it('sem tomada, o GUARD escala e o alarme dispara — o par positivo', async () => {
+    const r = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'preciso falar sobre o contrato e meus dados pessoais',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    expect(r.needsHuman).toBe(true)
+    expect(r.assistantMessageId).not.toBe('')
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
+    expect(reportSensitiveHandoff).toHaveBeenCalledTimes(1)
   })
 
   it('em owner_preview a tomada humana também suprime a resposta', async () => {

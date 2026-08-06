@@ -533,12 +533,6 @@ async function runIncomingMessage(
   )
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
   if (guardForcesSafe) {
-    // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma
-    // emergência esperando na fila. Push no celular do operador (best-effort) —
-    // SÓ do canal real: a demo pública é anônima e viraria botão de spam urgente.
-    if (guard.reason === 'sensitive_topic' && operationalEffects) {
-      void reportSensitiveHandoff(input.tenantSlug)
-    }
     const reply = configEfetiva.escalationPolicy.humanMessage
     // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
     // o cérebro), mas o invariante é o mesmo — nenhuma mensagem de assistente entra numa
@@ -573,6 +567,16 @@ async function runIncomingMessage(
     if (finalizacao.tipo === 'humano_assumiu') {
       ctx.outcome = 'human_handling'
       return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+    }
+    // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma emergência
+    // esperando na fila. Push no celular do operador (best-effort) — SÓ do canal real: a demo
+    // pública é anônima e viraria botão de spam urgente.
+    //
+    // DEPOIS da transação, pela mesma razão do alarme de degradação: se a tomada humana venceu
+    // a corrida, o operador já está na conversa e o push avisaria de uma escalação que não
+    // aconteceu. Estava antes, e era a mesma assimetria que a revisão apontou no outro alarme.
+    if (guard.reason === 'sensitive_topic' && operationalEffects) {
+      void reportSensitiveHandoff(input.tenantSlug)
     }
     ctx.outcome = 'guard_handoff'
     return {
@@ -681,10 +685,17 @@ async function runIncomingMessage(
         return { tipo: 'humano_assumiu' }
       }
 
-      await timer.step('effects', async () => {
-        if (!operationalEffects) {
-          return
-        }
+      // SEM `timer.step('effects')` aqui.
+      //
+      // `effects` ficava ANINHADO dentro de `persist_reply`, e o timer soma por nome: o mesmo
+      // intervalo entrava duas vezes no trace. Isso mente exatamente na pergunta que o trace
+      // existe para responder ("onde foram os 20 segundos?") e deixa a asserção
+      // "soma das etapas <= total" válida só por sorte — ela passava porque nesta suíte os
+      // efeitos eram quase sempre vazios e arredondavam para zero.
+      //
+      // Os dois passaram a ser UMA operação atômica; medir as partes de uma transação como
+      // etapas independentes é ficção. Fica tudo em `persist_reply`.
+      if (operationalEffects) {
         // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
         if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
           await tx.lead.upsert({
@@ -719,7 +730,7 @@ async function runIncomingMessage(
             })
           }
         }
-      })
+      }
 
       const created = await tx.message.create({
         data: {

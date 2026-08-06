@@ -91,15 +91,24 @@ describe('telemetria do fluxo de mensagem', () => {
   })
 
   it('a soma das etapas não passa do total (o total engloba tudo)', async () => {
+    // A mensagem PRECISA causar efeitos (chamado + lead): é o que dá dentes a esta asserção.
+    // Com uma pergunta simples, a etapa de efeitos era quase vazia e arredondava para zero —
+    // então a soma fechava mesmo com o mesmo intervalo contado duas vezes, e um passo aninhado
+    // dentro de outro passava batido. Contagem dupla mente exatamente na pergunta que o trace
+    // existe para responder: "onde foram os 20 segundos?".
     const result = await processIncomingMessage({
       tenantSlug: SLUG,
-      message: 'vocês atendem no centro?',
+      message: 'quero abrir um chamado: minha geladeira parou no Jardim América',
       contactId: TEST_CONTACT_ID,
       mode: 'whatsapp',
     })
 
     const trace = await waitForTrace(result.conversationId)
-    const soma = Object.values(parseSteps(trace.stepsJson)).reduce((a, b) => a + b, 0)
+    const etapas = parseSteps(trace.stepsJson)
+    const soma = Object.values(etapas).reduce((a, b) => a + b, 0)
+
+    // O efeito aconteceu de verdade — senão o teste voltaria a medir um caminho vazio.
+    expect(await db.ticket.count({ where: { contactId: TEST_CONTACT_ID } })).toBe(1)
     expect(soma).toBeLessThanOrEqual(trace.totalMs + 0.5) // folga do arredondamento
   })
 })
