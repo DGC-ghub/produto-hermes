@@ -43,8 +43,14 @@ export type ResultadoDaFonte =
   | { tipo: 'versao_desconhecida' }
   /** Existe e é sua, mas não é candidata testável. `ready_to_test` é o único estado. */
   | { tipo: 'nao_e_candidata'; estado: string }
-  /** A versão não é mais a pendente do setup: linha incoerente, não se testa. */
-  | { tipo: 'ponteiro_incoerente' }
+  /**
+   * Linha incoerente — não se testa. O `motivo` separa as duas causas porque elas pedem
+   * investigações diferentes: `nao_e_a_pendente` costuma ser corrida com publicação;
+   * `setup_de_outro_tenant` é corrupção de dado e merece alguém olhando o banco.
+   */
+  | { tipo: 'ponteiro_incoerente'; motivo: 'nao_e_a_pendente' | 'setup_de_outro_tenant' }
+  /** Publicaram depois de a candidata ser preparada: ela pensou sobre outra base (§4.8). */
+  | { tipo: 'base_mudou' }
   /** Ciclo virou: o que o cliente tem na tela é de antes da correção (§3.5, §4.8). */
   | { tipo: 'geracao_divergente'; atual: number }
   | { tipo: 'artefatos_invalidos'; problemas: ProblemaDeArtefato[] }
@@ -97,13 +103,14 @@ export async function resolverFonteDoPreview(input: {
       id: true,
       state: true,
       generation: true,
+      basePublishedVersionId: true,
       candidateConfigJson: true,
       candidateKnowledgeJson: true,
       summaryJson: true,
       gapsJson: true,
       risksJson: true,
       validationJson: true,
-      setup: { select: { reviewVersionId: true } },
+      setup: { select: { tenantId: true, reviewVersionId: true, publishedVersionId: true } },
     },
   })
   // `tenantId` está no `where`: uma versão de outra empresa não é encontrada, e o resultado
@@ -111,14 +118,35 @@ export async function resolverFonteDoPreview(input: {
   if (!versao) {
     return { tipo: 'versao_desconhecida' }
   }
+
+  // O `where` valida o `tenantId` DA VERSÃO; nada garante que o `setupId` dela aponte para o
+  // setup desta empresa. Sem esta linha, uma linha incoerente (tenant meu, setup alheio)
+  // faria as checagens seguintes serem decididas pelos ponteiros de OUTRA empresa — e o
+  // caso só era barrado por sorte, quando o ponteiro alheio não coincidia.
+  if (versao.setup.tenantId !== tenant.id) {
+    return { tipo: 'ponteiro_incoerente', motivo: 'setup_de_outro_tenant' }
+  }
   if (versao.setup.reviewVersionId !== versao.id) {
-    return { tipo: 'ponteiro_incoerente' }
+    return { tipo: 'ponteiro_incoerente', motivo: 'nao_e_a_pendente' }
   }
   if (versao.state !== ESTADO_TESTAVEL) {
     return { tipo: 'nao_e_candidata', estado: versao.state }
   }
   if (versao.generation !== input.generation) {
     return { tipo: 'geracao_divergente', atual: versao.generation }
+  }
+
+  // §4.8: publicaram entre a preparação e agora, então a candidata raciocinou sobre uma
+  // configuração que já não é a vigente. Testá-la e aprová-la desfaria uma correção que já
+  // está no ar. O claim de revisão barra o mesmo caso; sem barrar aqui, o dono aprovaria
+  // pelo caminho que não confere.
+  //
+  // Vem ANTES da validação de artefatos, ao contrário de `revisao.server.ts`: base mudada
+  // exige regenerar, o que também resolveria qualquer problema de artefato. Das duas
+  // recusas possíveis, esta é a que diz o que fazer. Nenhuma das ordens é menos segura —
+  // as duas recusam.
+  if ((versao.setup.publishedVersionId ?? null) !== versao.basePublishedVersionId) {
+    return { tipo: 'base_mudou' }
   }
 
   const problemas = validarArtefatos(tenant.slug, versao)

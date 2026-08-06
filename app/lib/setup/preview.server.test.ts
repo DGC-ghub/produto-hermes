@@ -161,7 +161,76 @@ describe('pré-condições', () => {
     // Ponteiro movido: a linha diz `ready_to_test`, mas não é o que está em revisão.
     await db.aiSetup.update({ where: { id: setupId }, data: { reviewVersionId: null } })
 
-    expect(await resolverFonteDoPreview(pedido())).toEqual({ tipo: 'ponteiro_incoerente' })
+    expect(await resolverFonteDoPreview(pedido())).toEqual({
+      tipo: 'ponteiro_incoerente',
+      motivo: 'nao_e_a_pendente',
+    })
+  })
+
+  it('versão cujo SETUP é de outra empresa é recusada', async () => {
+    // Linha incoerente: `tenantId` é meu (então passa o escopo do where), mas `setupId`
+    // aponta para o setup de OUTRA empresa. Sem vincular o setup, a coerência de ponteiro
+    // seria conferida contra o setup alheio — decidindo o meu teste pelos dados dele.
+    const outra = await criarTenant('ready_to_test')
+    const intrusa = await db.aiSetupVersion.create({
+      data: {
+        setupId: outra.setupId, // ← setup da outra empresa
+        tenantId, // ← mas o tenant é o meu
+        state: 'ready_to_test',
+        generation: 2,
+        answersJson: '{}',
+        ...ARTEFATOS,
+      },
+    })
+
+    const r = await resolverFonteDoPreview(pedido({ setupVersionId: intrusa.id }))
+
+    expect(r).toEqual({ tipo: 'ponteiro_incoerente', motivo: 'setup_de_outro_tenant' })
+  })
+
+  it('candidata pensada sobre uma publicação ANTIGA é recusada (§4.8)', async () => {
+    // Publicaram entre a preparação e agora: a candidata raciocinou sobre uma configuração
+    // que já não é a vigente. Testar e aprovar isso desfaria uma correção que está no ar.
+    // O claim de revisão já barra este caso (`base_mudou`); o simulador precisa barrar
+    // também, senão o dono aprova pelo caminho que não confere.
+    const publicada = await db.aiSetupVersion.create({
+      data: {
+        setupId,
+        tenantId,
+        state: 'active',
+        generation: 1,
+        answersJson: '{}',
+        publishedAt: new Date(),
+      },
+    })
+    await db.aiSetup.update({
+      where: { id: setupId },
+      data: { publishedVersionId: publicada.id },
+    })
+
+    expect(await resolverFonteDoPreview(pedido())).toEqual({ tipo: 'base_mudou' })
+  })
+
+  it('base ainda vigente NÃO é recusada', async () => {
+    // O par simétrico: a candidata que aponta para a publicação atual passa. Sem ele, um
+    // guarda que recusasse sempre também ficaria verde.
+    const publicada = await db.aiSetupVersion.create({
+      data: {
+        setupId,
+        tenantId,
+        state: 'active',
+        generation: 1,
+        answersJson: '{}',
+        publishedAt: new Date(),
+      },
+    })
+    await db.aiSetup.update({ where: { id: setupId }, data: { publishedVersionId: publicada.id } })
+    await db.aiSetupVersion.update({
+      where: { id: versionId },
+      data: { basePublishedVersionId: publicada.id },
+    })
+
+    expect((await resolverFonteDoPreview(pedido())).tipo).toBe('ok')
   })
 
   it('geração diferente da que o cliente pensa é recusada, dizendo a atual', async () => {
