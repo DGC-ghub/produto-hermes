@@ -112,6 +112,36 @@ async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise
   return false
 }
 
+/**
+ * Alguém está CONDUZINDO esta conversa agora?
+ *
+ * Pergunta feita pelo ramo de áudio/mídia, que responde uma cortesia sem passar pelo motor —
+ * e portanto sem passar pelo CAS que protege todos os outros caminhos. Sem isto, o único
+ * ponto do produto que fala com o cliente sem perguntar de quem é a conversa.
+ *
+ * Só o canal `whatsapp` importa aqui: é o único que este código atende. E só `human` — a
+ * conversa encerrada não é reutilizada pela resolução por identidade, então um áudio depois
+ * do encerramento inicia atendimento novo e merece a cortesia.
+ *
+ * Erro de leitura NÃO cala o Hermes: o desfecho ruim de falhar aqui é o cliente ficar sem
+ * resposta nenhuma, que é pior que uma cortesia a mais.
+ */
+async function conversaSobConducaoHumana(event: {
+  contactId: string
+  phoneNumberId: string
+  channelSessionId: string | null
+}): Promise<boolean> {
+  try {
+    const conversa = await db.conversation.findFirst({
+      where: { contactId: event.contactId, channel: 'whatsapp', status: 'human' },
+      select: { id: true },
+    })
+    return conversa !== null
+  } catch {
+    return false
+  }
+}
+
 async function processEvent(event: {
   id: string
   phoneNumberId: string
@@ -130,7 +160,19 @@ async function processEvent(event: {
 
   // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
   // o conteúdo real a gente ainda não lê, então não há o que registrar.
+  //
+  // Mas a cortesia É a IA falando com o cliente, e por isso obedece o MESMO invariante do
+  // motor: se um humano conduz a conversa, o Hermes se cala. Este era o único ponto do
+  // produto que falava sem perguntar de quem é a conversa — e o pior tipo de furo, porque
+  // essa fala não vira `Message` e o operador nem descobria o que o cliente ouviu.
+  //
+  // `closed` não entra na regra: a conversa encerrada não é reutilizada (a resolução por
+  // identidade a ignora), então um áudio depois do encerramento é atendimento novo e merece
+  // a cortesia. Aqui a pergunta é só uma: alguém está conduzindo AGORA?
   if (event.kind === 'unsupported') {
+    if (await conversaSobConducaoHumana(event)) {
+      return
+    }
     const sent = await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
     if (!sent) {
       void reportDegradation('envio_whatsapp_falhou')

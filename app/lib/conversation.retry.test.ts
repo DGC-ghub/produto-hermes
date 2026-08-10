@@ -42,6 +42,15 @@ const SAIDA: AttendantOutput = {
   },
 }
 
+// O alarme sensível é mockado aqui só por HIGIENE: o cenário do guard dispara um push de
+// verdade, e o stderr do focal ficava com "🚨 [ALARM] Escalação SENSÍVEL". A prova semântica
+// do alarme (não toca quando o CAS perde, toca uma vez quando o retry vence) mora em
+// `conversation.telemetria.test.ts` — este arquivo mede persistência, não alarme.
+vi.mock('./alarm.server', () => ({
+  reportDegradation: vi.fn(),
+  reportSensitiveHandoff: vi.fn(),
+}))
+
 vi.mock('./attendant/providers/mock', () => ({
   mockProvider: {
     name: 'mock',

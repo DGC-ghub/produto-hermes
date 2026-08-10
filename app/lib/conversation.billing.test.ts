@@ -18,7 +18,7 @@ import { db } from '../db.server'
 const controle = vi.hoisted(() => ({
   conversaId: '',
   /** O estado que a conversa assume ENQUANTO o gate é consultado. */
-  statusDuranteGate: null as null | 'human' | 'closed',
+  statusDuranteGate: null as null | 'human' | 'closed' | 'em_ferias',
   /** A conversa é APAGADA enquanto o gate é consultado. */
   apagarDuranteGate: false,
 }))
@@ -92,10 +92,16 @@ afterEach(async () => {
 })
 
 describe('gate de cobrança e a autoridade da conversa', () => {
+  // Os três motivos produzem RESÍDUO idêntico no banco — mesmo status preservado, mesma fala
+  // do cliente, zero efeitos. Uma versão anterior desta tabela olhava só o resíduo, e por isso
+  // `human` e `closed` eram o mesmo teste escrito duas vezes: trocar a classificação por um
+  // motivo fixo passava batido. O que discrimina é o que o motor DIZ — o desfecho devolvido e
+  // o outcome gravado.
   it.each([
-    'human',
-    'closed',
-  ] as const)('preserva `%s` quando o estado muda durante a consulta ao gate', async (statusFinal) => {
+    ['human', 'human_handling', 'human_took_over', true] as const,
+    ['closed', 'conversation_closed', 'conversation_closed', false] as const,
+    ['em_ferias', 'authority_lost', 'authority_lost_unknown', false] as const,
+  ])('estado `%s` durante o gate: preserva, e o desfecho diz a verdade', async (statusFinal, razaoEsperada, outcomeEsperado, humanoEsperado) => {
     controle.statusDuranteGate = statusFinal
 
     const r = await processIncomingMessage({
@@ -112,6 +118,26 @@ describe('gate de cobrança e a autoridade da conversa', () => {
 
     // A fala do cliente chegou ANTES da mudança vencer, então fica registrada — uma vez só.
     expect(depois.user).toBe(1)
+
+    // O que separa os três casos: só `human` é atendimento em andamento. Marcar os outros
+    // colocaria uma conversa encerrada — ou num estado que ninguém previu — na fila.
+    expect(r.humanHandling).toBe(humanoEsperado)
+    expect(r.needsHuman).toBe(humanoEsperado)
+    expect(r.handoffReason).toBe(razaoEsperada)
+
+    // E o número que o dono vai olhar para decidir se liga o gate não pode contar tomada
+    // humana e encerramento como "bloqueado por cobrança".
+    const trace = await vi.waitFor(
+      async () => {
+        const t = await db.messageTrace.findFirst({
+          where: { conversationId: controle.conversaId },
+        })
+        if (!t) throw new Error('trace ainda não gravado')
+        return t
+      },
+      { timeout: 3000, interval: 25 },
+    )
+    expect(trace.outcome).toBe(outcomeEsperado)
 
     // E nada mais: o gate não responde, não abre chamado, não escala.
     expect(r.reply).toBe('')

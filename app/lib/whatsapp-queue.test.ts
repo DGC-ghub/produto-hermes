@@ -196,3 +196,75 @@ describe('persistBaileysInbound (canal QR)', () => {
     expect(await persistBaileysInbound(event)).toBe(0)
   })
 })
+
+describe('o silêncio da 6C chega até o fio', () => {
+  // O ÚLTIMO METRO. Os cinco desfechos que a 6C criou — humano na entrada, humano assumiu,
+  // conversa encerrada, apagada, status desconhecido — todos devolvem `reply: ''`, e essa
+  // string atravessa exatamente UMA linha antes de virar (ou não) mensagem no WhatsApp do
+  // cliente. Toda a garantia estava provada no BANCO e nenhuma vez no FIO, que é o único
+  // lugar onde ela é visível para quem está do outro lado.
+  //
+  // Não há segunda barreira: nem `sendReply` nem o Baileys recusam texto vazio. No canal da
+  // Meta um `text.body: ""` volta 400, o retry tenta três vezes e alarma `envio_whatsapp_falhou`
+  // a CADA mensagem recebida durante atendimento humano — alarme falso que o operador aprende
+  // a ignorar. No Baileys, uma bolha em branco dentro da conversa que ele está conduzindo.
+
+  async function conversaEmAtendimentoHumano() {
+    const tenant = await db.tenant.findUniqueOrThrow({ where: { slug: 'dgc' } })
+    return db.conversation.create({
+      data: {
+        tenantId: tenant.id,
+        contactId: TEST_CONTACT_ID,
+        channel: 'whatsapp',
+        status: 'human',
+      },
+    })
+  }
+
+  it('com humano conduzindo, NADA é enviado ao cliente', async () => {
+    const conversa = await conversaEmAtendimentoHumano()
+
+    await persistInbound([inbound('wamid-silencio-humano')])
+    await drainPending()
+
+    // O Hermes se cala — e calar significa não mandar nada, não mandar vazio.
+    expect(sendReply).not.toHaveBeenCalled()
+
+    // A fala do cliente foi registrada para o atendente ver, e o evento concluiu: silêncio
+    // não é falha, e reprocessar duplicaria a mensagem dele na tela.
+    const mensagens = await db.message.findMany({
+      where: { conversationId: conversa.id },
+      select: { role: true },
+    })
+    expect(mensagens.map((m) => m.role)).toEqual(['user'])
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid-silencio-humano' },
+    })
+    expect(evento.status).toBe('done')
+  })
+
+  it('áudio durante atendimento humano não recebe nem a cortesia', async () => {
+    // A cortesia é a IA falando com o cliente, e ela não passa pelo motor — logo não passa
+    // pelo CAS. Era o único ponto do produto que falava sem perguntar de quem é a conversa,
+    // e como essa fala não vira `Message`, o operador nem descobria o que o cliente ouviu.
+    await conversaEmAtendimentoHumano()
+
+    await persistInbound([inbound('wamid-audio-humano', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+  })
+
+  it('áudio SEM humano conduzindo recebe a cortesia — o par positivo', async () => {
+    // Sem este, calar sempre no ramo de mídia ficaria verde acima e o cliente que manda áudio
+    // voltaria ao vácuo que esta cortesia existe para eliminar.
+    await persistInbound([inbound('wamid-audio-sozinho', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+    // O destino importa: no Baileys responder aos dígitos reconstruídos em vez do jid original
+    // vai para o vácuo — é para isso que a coluna `remoteJid` existe.
+    expect(vi.mocked(sendReply).mock.calls[0]?.[1]).toBe(TEST_CONTACT_ID)
+    expect(String(vi.mocked(sendReply).mock.calls[0]?.[2])).toContain('áudio')
+  })
+})
