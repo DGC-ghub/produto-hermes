@@ -261,6 +261,51 @@ function silencioDoHumano(
 const TRANSACAO_FINAL = { maxWait: 5_000, timeout: 15_000 } as const
 
 /**
+ * Erros que merecem outra tentativa: CONTENÇÃO do arquivo, não defeito da operação.
+ *
+ * A lista é curta de propósito. "Tenta três vezes qualquer coisa" faz um defeito real
+ * (constraint violada, bug de escrita) demorar três vezes mais para aparecer e enche o log com
+ * três cópias do mesmo erro — atrasa o diagnóstico em troca de nada.
+ */
+function ehContencao(erro: unknown): boolean {
+  const texto = String((erro as { message?: unknown })?.message ?? erro)
+  return /SQLITE_BUSY|database is locked|Transaction .*(timed out|not found)|deadlock/i.test(texto)
+}
+
+/**
+ * Repete SÓ a transação, nunca o fluxo.
+ *
+ * Quando a persistência final falha, `processIncomingMessage` lança, e na fila isso devolve o
+ * evento para `pending`: o próximo dreno reexecuta o motor DO ZERO. Como a fala do cliente é
+ * gravada fora de transação e antes do cérebro, cada reexecução duplica a mensagem do cliente,
+ * paga o cérebro outra vez e reabre a janela de corrida com o operador — três estragos para uma
+ * falha que costuma passar na segunda tentativa, milissegundos depois.
+ *
+ * Repetir a transação é seguro porque ela é atômica: se falhou, nada foi commitado e a nova
+ * tentativa parte do mesmo estado, CAS inclusive. A espera entre tentativas fica AQUI, fora da
+ * transação — dentro dela seria exatamente o `await` que abre a fronteira (ver
+ * `fronteira-transacao.test.ts`).
+ *
+ * Isto NÃO resolve o evento reprocessado depois de um restart: essa é a idempotência durável do
+ * `WebhookEvent`, outro problema, com outra solução.
+ */
+async function comRetryDeContencao<T>(operacao: () => Promise<T>, tentativas = 3): Promise<T> {
+  let ultimoErro: unknown
+  for (let tentativa = 0; tentativa < tentativas; tentativa += 1) {
+    try {
+      return await operacao()
+    } catch (erro) {
+      if (!ehContencao(erro)) throw erro
+      ultimoErro = erro
+      if (tentativa < tentativas - 1) {
+        await new Promise((resolver) => setTimeout(resolver, 25 * 2 ** tentativa))
+      }
+    }
+  }
+  throw ultimoErro
+}
+
+/**
  * Contexto que a casca de medição precisa e que só é conhecido no meio do
  * caminho (o tenant é resolvido lá dentro). Preenchido pelo corpo à medida que
  * descobre; lido pela casca ao fechar o trace, inclusive quando dá exceção.
@@ -485,9 +530,15 @@ async function runIncomingMessage(
       const created = await db.message.create({
         data: { conversationId, role: 'user', content: message },
       })
-      await db.conversation.update({
-        where: { id: conversationId },
-        data: operationalEffects ? { status: 'needs_human' } : { updatedAt: new Date() },
+      // MESMA autoridade dos outros dois caminhos. Aqui era um `update` cego, e ele
+      // atropelava a decisão de quem estava conduzindo: um operador que assumisse durante a
+      // consulta ao gate via a conversa voltar para `needs_human` e sumir da tela dele no meio
+      // do atendimento. `updateMany` com o `where` do CAS transforma isso em no-op quando a
+      // conversa não é mais da IA — inclusive para `closed`.
+      const cas = casDaTomada(conversationId)
+      await db.conversation.updateMany({
+        where: cas.where,
+        data: operationalEffects ? { ...cas.data, status: 'needs_human' } : cas.data,
       })
       return created
     })
@@ -565,32 +616,34 @@ async function runIncomingMessage(
     // conversa que um humano conduz — e um invariante protegido em um caminho só vira bug no
     // outro na primeira vez que alguém mexer.
     const finalizacao = await timer.step('persist_reply', () =>
-      db.$transaction(async (tx): Promise<Finalizacao> => {
-        // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
-        const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
-        if (autorizada.count !== 1) {
-          return { tipo: 'humano_assumiu' }
-        }
-        const created = await tx.message.create({
-          data: {
-            conversationId,
-            role: 'assistant',
-            content: reply,
-            confidence: 0,
-            sourcesJson: JSON.stringify([]),
-          },
-        })
-        if (operationalEffects) {
-          await tx.conversation.update({
-            where: { id: conversationId },
-            data: { status: 'needs_human' },
+      comRetryDeContencao(() =>
+        db.$transaction(async (tx): Promise<Finalizacao> => {
+          // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
+          const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
+          if (autorizada.count !== 1) {
+            return { tipo: 'humano_assumiu' }
+          }
+          const created = await tx.message.create({
+            data: {
+              conversationId,
+              role: 'assistant',
+              content: reply,
+              confidence: 0,
+              sourcesJson: JSON.stringify([]),
+            },
           })
-          await tx.handoffEvent.create({
-            data: { conversationId, reason: guard.reason ?? 'unknown', message },
-          })
-        }
-        return { tipo: 'ok', assistantMessageId: created.id }
-      }, TRANSACAO_FINAL),
+          if (operationalEffects) {
+            await tx.conversation.update({
+              where: { id: conversationId },
+              data: { status: 'needs_human' },
+            })
+            await tx.handoffEvent.create({
+              data: { conversationId, reason: guard.reason ?? 'unknown', message },
+            })
+          }
+          return { tipo: 'ok', assistantMessageId: created.id }
+        }, TRANSACAO_FINAL),
+      ),
     )
     if (finalizacao.tipo === 'humano_assumiu') {
       ctx.outcome = 'human_handling'
@@ -708,84 +761,86 @@ async function runIncomingMessage(
   // transação aborta e a resposta que afirma "registrei" não existe. A ordem antiga (chamado
   // fora, resposta depois) deixava a frase sobreviver ao chamado que não nasceu.
   const finalizacao = await timer.step('persist_reply', () =>
-    db.$transaction(async (tx): Promise<Finalizacao> => {
-      // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
-      const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
-      if (autorizada.count !== 1) {
-        return { tipo: 'humano_assumiu' }
-      }
-
-      // SEM `timer.step('effects')` aqui.
-      //
-      // `effects` ficava ANINHADO dentro de `persist_reply`, e o timer soma por nome: o mesmo
-      // intervalo entrava duas vezes no trace. Isso mente exatamente na pergunta que o trace
-      // existe para responder ("onde foram os 20 segundos?") e deixa a asserção
-      // "soma das etapas <= total" válida só por sorte — ela passava porque nesta suíte os
-      // efeitos eram quase sempre vazios e arredondavam para zero.
-      //
-      // Os dois passaram a ser UMA operação atômica; medir as partes de uma transação como
-      // etapas independentes é ficção. Fica tudo em `persist_reply`.
-      if (operationalEffects) {
-        // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
-        if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
-          await tx.lead.upsert({
-            where: { conversationId },
-            create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
-            update: { ...decision.leadPatch },
-          })
+    comRetryDeContencao(() =>
+      db.$transaction(async (tx): Promise<Finalizacao> => {
+        // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
+        const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
+        if (autorizada.count !== 1) {
+          return { tipo: 'humano_assumiu' }
         }
 
-        // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
-        // validador já garantiu que a ação é de uma tool habilitada para este tenant.
-        // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
-        // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
-        // continuam gerando chamados distintos).
-        if (decision.action?.type === 'abrir_chamado') {
-          // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
-          // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
-          const openTickets = await tx.ticket.findMany({
-            where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
-            select: { subject: true },
-          })
-          const openSubjects = openTickets.map((row) => row.subject)
-          if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
-            await tx.ticket.create({
-              data: {
-                tenantId: tenant.id,
-                contactId,
-                subject: decision.action.subject,
-                description: decision.action.description,
-                category: decision.action.category ?? null,
-              },
+        // SEM `timer.step('effects')` aqui.
+        //
+        // `effects` ficava ANINHADO dentro de `persist_reply`, e o timer soma por nome: o mesmo
+        // intervalo entrava duas vezes no trace. Isso mente exatamente na pergunta que o trace
+        // existe para responder ("onde foram os 20 segundos?") e deixa a asserção
+        // "soma das etapas <= total" válida só por sorte — ela passava porque nesta suíte os
+        // efeitos eram quase sempre vazios e arredondavam para zero.
+        //
+        // Os dois passaram a ser UMA operação atômica; medir as partes de uma transação como
+        // etapas independentes é ficção. Fica tudo em `persist_reply`.
+        if (operationalEffects) {
+          // Enriquecimento de lead sugerido pelo atendente (precedência sobre o determinístico).
+          if (decision.leadPatch && Object.keys(decision.leadPatch).length > 0) {
+            await tx.lead.upsert({
+              where: { conversationId },
+              create: { tenantId: tenant.id, conversationId, ...decision.leadPatch, stage: 'novo' },
+              update: { ...decision.leadPatch },
             })
           }
+
+          // Ação proposta pelo atendente: o balcão executa (a IA não toca o banco). O
+          // validador já garantiu que a ação é de uma tool habilitada para este tenant.
+          // Dedup: não reabre um chamado que já cobre o mesmo problema — evita duplicar
+          // quando o cliente reforça o pedido em mensagens seguidas (problemas distintos
+          // continuam gerando chamados distintos).
+          if (decision.action?.type === 'abrir_chamado') {
+            // Busca TODOS os chamados abertos do contato — não a janela de 10 usada no
+            // contexto do LLM —, senão um chamado antigo ainda em aberto escaparia do dedup.
+            const openTickets = await tx.ticket.findMany({
+              where: { tenantId: tenant.id, contactId, status: { in: ['aberto', 'em_andamento'] } },
+              select: { subject: true },
+            })
+            const openSubjects = openTickets.map((row) => row.subject)
+            if (!hasDuplicateOpenTicket(decision.action.subject, openSubjects)) {
+              await tx.ticket.create({
+                data: {
+                  tenantId: tenant.id,
+                  contactId,
+                  subject: decision.action.subject,
+                  description: decision.action.description,
+                  category: decision.action.category ?? null,
+                },
+              })
+            }
+          }
         }
-      }
 
-      const created = await tx.message.create({
-        data: {
-          conversationId,
-          role: 'assistant',
-          content: reply,
-          confidence,
-          sourcesJson: JSON.stringify(sources),
-        },
-      })
+        const created = await tx.message.create({
+          data: {
+            conversationId,
+            role: 'assistant',
+            content: reply,
+            confidence,
+            sourcesJson: JSON.stringify(sources),
+          },
+        })
 
-      // O `updatedAt` já foi tocado pelo CAS de `casDaTomada` — sem ele, a resolução de
-      // identidade, a ordem da fila do atendente e a "conversa ativa" do dossiê leriam um
-      // timestamp congelado. Aqui só o STATUS, quando escala.
-      if (needsHuman && operationalEffects) {
-        await tx.conversation.update({
-          where: { id: conversationId },
-          data: { status: 'needs_human' },
-        })
-        await tx.handoffEvent.create({
-          data: { conversationId, reason: handoffReason ?? 'unknown', message },
-        })
-      }
-      return { tipo: 'ok', assistantMessageId: created.id }
-    }, TRANSACAO_FINAL),
+        // O `updatedAt` já foi tocado pelo CAS de `casDaTomada` — sem ele, a resolução de
+        // identidade, a ordem da fila do atendente e a "conversa ativa" do dossiê leriam um
+        // timestamp congelado. Aqui só o STATUS, quando escala.
+        if (needsHuman && operationalEffects) {
+          await tx.conversation.update({
+            where: { id: conversationId },
+            data: { status: 'needs_human' },
+          })
+          await tx.handoffEvent.create({
+            data: { conversationId, reason: handoffReason ?? 'unknown', message },
+          })
+        }
+        return { tipo: 'ok', assistantMessageId: created.id }
+      }, TRANSACAO_FINAL),
+    ),
   )
 
   if (finalizacao.tipo === 'humano_assumiu') {
