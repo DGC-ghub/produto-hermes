@@ -231,6 +231,9 @@ describe('o trace distingue os motivos de perder a conversa', () => {
     expect(r.humanHandling).toBe(false)
     expect(r.handoffReason).toBe('conversation_missing')
     expect(r.reply).toBe('')
+    // A conversa sumiu, e as mensagens dela com ela: devolver o id de uma linha apagada é
+    // pior que não devolver nada — quem recebe trata `userMessageId` como handle persistido.
+    expect(r.userMessageId).toBe('')
 
     // `MessageTrace.conversationId` não tem FK para `Conversation`, então a medição sobrevive
     // ao sumiço da conversa — e é justamente aí que ela é mais útil.

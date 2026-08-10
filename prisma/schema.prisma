@@ -291,7 +291,13 @@ model MessageTrace {
   conversationId String? //                     só para cruzar com a conversa ao investigar
   channel        String   @default("simulator") // simulator | whatsapp
   provider       String   @default("nenhum") //   mock | claude_cli | anthropic_api | nenhum
-  outcome        String //                        ok | fallback | guard_handoff | billing_blocked | human_handling | erro | setup_blocked
+  // ok | fallback | guard_handoff | billing_blocked | erro | setup_blocked
+  // human_at_entry        — humano já conduzia quando a mensagem chegou (sem cérebro)
+  // human_took_over       — humano assumiu durante o processamento; a FASE sai de brainMs
+  // conversation_closed   — encerrada durante o processamento
+  // conversation_missing  — apagada durante o processamento
+  // authority_lost_unknown — status desconhecido: silêncio fail-closed
+  outcome        String
   totalMs        Float //                         ponta a ponta
   brainMs        Float? //                        desnormalizado: é o gargalo, merece query barata
   stepsJson      String //                        {"brain":20500,"retrieval":40,...}

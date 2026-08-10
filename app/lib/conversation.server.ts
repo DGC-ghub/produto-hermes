@@ -282,6 +282,11 @@ function silencioPorPerdaDeAutoridade(
   motivo: MotivoDaPerda,
 ): ProcessIncomingMessageResult {
   const humano = motivo === 'human'
+  // Em `missing` a conversa sumiu, e as mensagens dela com ela: devolver o id de uma linha
+  // apagada é pior que não devolver nada — quem recebe trata como handle persistido. O
+  // `conversationId` continua, porque ele é a chave de correlação do processamento (o trace
+  // grava por ele e não tem FK), não uma promessa de que a linha ainda exista.
+  const idDaFala = motivo === 'missing' ? '' : userMessageId
   const razao: Record<MotivoDaPerda, string> = {
     human: 'human_handling',
     closed: 'conversation_closed',
@@ -291,7 +296,7 @@ function silencioPorPerdaDeAutoridade(
   return {
     conversationId,
     tenantSlug,
-    userMessageId,
+    userMessageId: idDaFala,
     assistantMessageId: '',
     reply: '',
     needsHuman: humano,
@@ -586,31 +591,33 @@ async function runIncomingMessage(
     const userMessage = await timer.step('persist_user', () =>
       comRetry((opcoes) =>
         db.$transaction(async (tx) => {
+          // O CAS continua sendo o PRIMEIRO comando — é ele que estabelece a ordem.
           const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
-          const created = await tx.message.create({
-            data: { conversationId, role: 'user', content: message },
-          })
 
-          if (autorizada.count === 1 && operationalEffects) {
-            await tx.conversation.update({
-              where: { id: conversationId },
-              data: { status: 'needs_human' },
-            })
-          }
-
-          // Perdemos o CAS: alguém tem a conversa. Se for um humano CONDUZINDO, a fala nova
-          // precisa reordenar a fila dele — ela acabou de chegar. Se for `closed`, não se
-          // toca em nada: o atendimento terminou e não volta por aqui.
+          // Perdemos o CAS: alguém tem a conversa. O motivo é descoberto ANTES de tentar
+          // gravar, e a ordem não é detalhe: se a conversa foi APAGADA, criar a fala do
+          // cliente bate na chave estrangeira e lança — o motor morria com erro de FK, a fila
+          // devolvia o evento para `pending`, e `conversation_missing` nunca era registrado.
           //
-          // O motivo é lido aqui dentro, pelo mesmo `tx`, para o trace não dizer "humano
-          // assumiu" quando a conversa foi encerrada, apagada, ou está num estado que a
-          // allowlist não conhece.
+          // A leitura é pelo mesmo `tx` e não autoriza nada: quem decide continua sendo o CAS.
           if (autorizada.count === 0) {
             const atual = await tx.conversation.findUnique({
               where: { id: conversationId },
               select: { status: true },
             })
             const motivo = classificarPerda(atual?.status)
+
+            // Sem conversa não há onde gravar. Nada a persistir, e nada a apontar depois.
+            if (motivo === 'missing') {
+              return { mensagem: null, motivo }
+            }
+
+            const created = await tx.message.create({
+              data: { conversationId, role: 'user', content: message },
+            })
+
+            // Humano CONDUZINDO: a fala nova precisa reordenar a fila dele — ela acabou de
+            // chegar. Em `closed` não se toca em nada, e em `unknown` também não: fail-closed.
             if (motivo === 'human') {
               await tx.conversation.updateMany({
                 where: { id: conversationId, status: 'human' },
@@ -618,6 +625,17 @@ async function runIncomingMessage(
               })
             }
             return { mensagem: created, motivo }
+          }
+
+          const created = await tx.message.create({
+            data: { conversationId, role: 'user', content: message },
+          })
+
+          if (operationalEffects) {
+            await tx.conversation.update({
+              where: { id: conversationId },
+              data: { status: 'needs_human' },
+            })
           }
 
           return { mensagem: created, motivo: null }
@@ -631,14 +649,14 @@ async function runIncomingMessage(
       return silencioPorPerdaDeAutoridade(
         conversationId,
         input.tenantSlug,
-        userMessage.mensagem.id,
+        userMessage.mensagem?.id ?? '',
         userMessage.motivo,
       )
     }
     return {
       conversationId,
       tenantSlug: input.tenantSlug,
-      userMessageId: userMessage.mensagem.id,
+      userMessageId: userMessage.mensagem?.id ?? '',
       assistantMessageId: '',
       reply: '',
       needsHuman: true,

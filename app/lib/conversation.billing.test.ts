@@ -19,11 +19,18 @@ const controle = vi.hoisted(() => ({
   conversaId: '',
   /** O estado que a conversa assume ENQUANTO o gate é consultado. */
   statusDuranteGate: null as null | 'human' | 'closed',
+  /** A conversa é APAGADA enquanto o gate é consultado. */
+  apagarDuranteGate: false,
 }))
 
 vi.mock('./billing-gate.server', () => ({
   isBillingGateEnabled: () => true,
   checkBillingGate: async () => {
+    if (controle.apagarDuranteGate) {
+      const { db: banco } = await import('../db.server')
+      await banco.message.deleteMany({ where: { conversationId: controle.conversaId } })
+      await banco.conversation.delete({ where: { id: controle.conversaId } })
+    }
     if (controle.statusDuranteGate) {
       const { db: banco } = await import('../db.server')
       await banco.conversation.update({
@@ -59,6 +66,7 @@ async function estado() {
 
 beforeEach(async () => {
   controle.statusDuranteGate = null
+  controle.apagarDuranteGate = false
   const tenant = await db.tenant.upsert({
     where: { slug: 'dgc' },
     update: {},
@@ -73,6 +81,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  // `MessageTrace.conversationId` não tem FK: apagar a conversa NÃO leva o trace junto, e sem
+  // isto cada repetição da suíte deixa traces órfãos no banco do worker.
+  await db.messageTrace.deleteMany({ where: { conversationId: controle.conversaId } })
   await db.ticket.deleteMany({ where: { contactId: CONTATO } })
   await db.handoffEvent.deleteMany({ where: { conversationId: controle.conversaId } })
   await db.lead.deleteMany({ where: { conversationId: controle.conversaId } })
@@ -176,6 +187,44 @@ describe('gate de cobrança e a autoridade da conversa', () => {
     expect(depois.tickets).toBe(0)
     expect(depois.leads).toBe(0)
     expect(depois.handoffs).toBe(0)
+  })
+
+  it('conversa APAGADA durante o gate: classifica sem tentar gravar contra o vazio', async () => {
+    // A ordem importa. Com o CAS perdido, a fala do cliente era criada ANTES de descobrir o
+    // motivo — e se a conversa não existe mais, essa criação bate na chave estrangeira e
+    // lança. O motor morria com erro de FK, a fila devolvia o evento para `pending`, e
+    // `conversation_missing` nunca chegava a ser registrado.
+    controle.apagarDuranteGate = true
+
+    const r = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'oi, preciso de ajuda',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    expect(r.handoffReason).toBe('conversation_missing')
+    expect(r.humanHandling).toBe(false)
+    expect(r.needsHuman).toBe(false)
+    expect(r.reply).toBe('')
+    // Não há mensagem persistida para apontar: devolver um id apagado é pior que não devolver.
+    expect(r.userMessageId).toBe('')
+
+    expect(await db.message.count({ where: { conversationId: controle.conversaId } })).toBe(0)
+
+    const trace = await vi.waitFor(
+      async () => {
+        const t = await db.messageTrace.findFirst({
+          where: { conversationId: controle.conversaId },
+        })
+        if (!t) throw new Error('trace ainda não gravado')
+        return t
+      },
+      { timeout: 3000, interval: 25 },
+    )
+    expect(trace.outcome).toBe('conversation_missing')
+    expect(trace.provider).toBe('nenhum')
+    expect(trace.brainMs).toBeNull()
   })
 
   it('sem mudança de estado, o gate manda a conversa para a fila humana — o par positivo', async () => {
