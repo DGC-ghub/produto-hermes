@@ -209,7 +209,17 @@ async function loadConfigSafe(slug: string): Promise<TenantConfig> {
  */
 function casDaTomada(conversationId: string) {
   return {
-    where: { id: conversationId, status: { not: 'human' } },
+    // ALLOWLIST, não negação. `not: 'human'` respondia a "quem está proibido?", e a resposta
+    // ficava incompleta: `closed` passava, e o motor gravava resposta dentro de um atendimento
+    // que o operador tinha ENCERRADO — ressuscitando-o para `needs_human` por uma transição
+    // que a máquina de estados nem prevê. Um status novo que alguém adicione amanhã também
+    // passaria, sem ninguém decidir isso.
+    //
+    // A lista responde à pergunta certa: "em quais estados a IA ainda tem autoridade para
+    // escrever?" — e a resposta são estes dois. Qualquer outro (human, closed, e o que vier
+    // depois) perde o CAS e o motor se cala. Fail-closed: o desconhecido reprova por omissão,
+    // em vez de ser autorizado por omissão.
+    where: { id: conversationId, status: { in: ['open', 'needs_human'] } },
     data: { updatedAt: new Date() },
   }
 }
@@ -392,11 +402,18 @@ async function runIncomingMessage(
       // derruba teste: escrevê-la como `contactId !== undefined && ...` produz código
       // equivalente. Fica na forma incondicional porque é a que expressa a regra sem depender
       // de uma validação que mora em outra função e pode se mover.
+      //
+      // O status entra na mesma conferência: `closed` é o encerramento decidido pelo
+      // atendente, e informar o id explicitamente era a ÚNICA porta para escrever ali dentro
+      // — a resolução por identidade já ignora as encerradas, e o CAS protege só a gravação
+      // final, depois de o motor ter lido o histórico e gravado a fala do cliente. Mensagem
+      // depois do encerramento vira conversa NOVA; a antiga fica como está.
       if (
         !existing ||
         existing.tenantId !== tenant.id ||
         existing.channel !== channel ||
-        existing.contactId !== input.contactId
+        existing.contactId !== input.contactId ||
+        existing.status === 'closed'
       ) {
         throw new Error('Conversation not found')
       }

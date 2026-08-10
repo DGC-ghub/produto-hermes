@@ -244,6 +244,50 @@ describe('operador assume durante o cérebro', () => {
     )
   })
 
+  it('o operador ENCERRA durante o cérebro: o motor não ressuscita a conversa', async () => {
+    // `closed` é uma decisão do atendente, igual a `human` — só que mais forte: ali ele não
+    // assumiu a conversa, ele a DEU POR TERMINADA. O CAS precisa obedecer as duas.
+    //
+    // Uma conversa encerrada que volta sozinha para `needs_human`, com uma resposta da IA
+    // dentro, reabre um atendimento que alguém fechou e reaparece na fila do operador como se
+    // fosse novo. E a máquina de estados não tem saída de `closed`: quem ressuscita por aqui
+    // entra por uma porta que não existe no desenho.
+    //
+    // Para o cliente que escrever depois, o desfecho certo não é silêncio nem ressurreição —
+    // é uma conversa NOVA, que a resolução por identidade já cria sozinha, porque ela ignora
+    // as encerradas. Aqui a gente prova só o lado do motor: ele não escreve na que foi fechada.
+    const processamento = processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'preciso de ajuda com uma coisa',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    await cerebro.entrou.esperar
+    await db.conversation.update({ where: { id: conversaId }, data: { status: 'closed' } })
+    cerebro.liberar.abrir()
+    const r = await processamento
+
+    // O motor perdeu o CAS e se calou.
+    expect(r.reply).toBe('')
+    expect(r.assistantMessageId).toBe('')
+
+    // Nada de resposta da IA dentro da conversa encerrada.
+    const papeis = (
+      await db.message.findMany({ where: { conversationId: conversaId }, select: { role: true } })
+    ).map((m) => m.role)
+    expect(papeis).toEqual(['user'])
+
+    // E ela continua encerrada — não virou `needs_human` pelas costas do atendente.
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: conversaId } })).status).toBe(
+      'closed',
+    )
+
+    // Nenhum efeito derivado: chamado e handoff pertenceriam a um atendimento terminado.
+    expect(await db.ticket.count({ where: { contactId: CONTATO } })).toBe(0)
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(0)
+  })
+
   it('no caminho do GUARD, a tomada humana suprime a resposta e o ALARME', async () => {
     // Tema sensível não passa pelo cérebro: o guard decide sozinho. A janela é de
     // milissegundos, e a barreira aqui é a base de conhecimento — o único await entre a

@@ -341,6 +341,43 @@ describe('a conversa reutilizada tem que ser do canal do modo', () => {
     await db.conversation.delete({ where: { id: alheia.id } })
   })
 
+  it('conversa ENCERRADA é recusada, mesmo com tenant, canal e contato certos', async () => {
+    // As outras quatro conferências (existe, tenant, canal, contato) perguntam "esta conversa
+    // é sua?". Faltava perguntar "ela ainda está aberta?".
+    //
+    // Sem isto, quem informa o id explicitamente é a ÚNICA forma de escrever numa conversa
+    // encerrada: a resolução por identidade já ignora as `closed` e abre uma nova, e o CAS de
+    // `casDaTomada` protege a gravação final — mas o motor chegaria até lá tendo lido o
+    // histórico do atendimento terminado e gravado a fala do cliente dentro dele. Dos cinco
+    // chamadores, só `/testar-ia` e `/demo/chat` mandam id; o WhatsApp nunca manda.
+    //
+    // A decisão de produto: mensagem depois do encerramento vira conversa NOVA. A antiga fica
+    // como está, com o histórico daquele atendimento intacto.
+    const encerrada = await conversaExistente('whatsapp')
+    await db.conversation.update({ where: { id: encerrada.id }, data: { status: 'closed' } })
+
+    await expect(
+      processIncomingMessage({
+        tenantSlug: 'dgc',
+        message: 'oi',
+        conversationId: encerrada.id,
+        contactId: CONTATO,
+        mode: 'whatsapp',
+      }),
+    ).rejects.toThrow('Conversation not found')
+
+    // Mensagem INALTERADA de propósito: quem cola um id não descobre se ele existe, se é de
+    // outra empresa ou se está encerrado — as quatro recusas são indistinguíveis de fora.
+
+    // E nada foi gravado: nem a fala do cliente entra num atendimento terminado.
+    expect(await db.message.count({ where: { conversationId: encerrada.id } })).toBe(0)
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: encerrada.id } })).status).toBe(
+      'closed',
+    )
+
+    await db.conversation.delete({ where: { id: encerrada.id } })
+  })
+
   it('conversa de OUTRO contato do mesmo canal é recusada', async () => {
     const deOutro = await conversaExistente('whatsapp', `${CONTATO}-outro`)
 
