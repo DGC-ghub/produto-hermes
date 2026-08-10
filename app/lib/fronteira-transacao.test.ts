@@ -4,9 +4,9 @@
 //
 // O adapter better-sqlite3 usa UMA conexão. Quando `db.$transaction` está aberta, qualquer
 // query emitida pelo cliente raiz `db` cai DENTRO dessa transação — pode ser sobrescrita pelo
-// que a transação gravar depois, e é desfeita se ela der rollback. O mecanismo é real:
-// está em node_modules/@prisma/adapter-better-sqlite3 (`executeIO` devolve `Promise.resolve`
-// sobre chamadas síncronas; o `#mutex` protege só entre transações).
+// que a transação gravar depois, e é desfeita se ela der rollback. O mecanismo é real: está em
+// node_modules/@prisma/adapter-better-sqlite3 (`executeIO` devolve `Promise.resolve` sobre
+// chamadas síncronas; o `#mutex` protege só entre transações, não contra query avulsa).
 //
 // Só que hoje ele é INALCANÇÁVEL, e a razão é delicada: better-sqlite3 é síncrono e o adapter
 // resolve com `Promise.resolve`, então todo `await tx.*` é microtask. A fila de microtasks
@@ -19,12 +19,28 @@
 // sobre o driver. Um teste de corrida contra o código atual nasceria verde e continuaria verde
 // mesmo se a proteção fosse removida: seria um teste que não testa nada.
 //
-// O que de fato quebra a premissa é um `await` que devolva o controle ao event loop DENTRO de
-// uma transação — `await fetch`, `await fs`, `await sleep`, `await` de push/notificação, ou um
-// `await` do cliente raiz `db` em vez do `tx`. É exatamente isso que este teste proíbe.
+// ── A REGRA É ESTRITA, DE PROPÓSITO ──────────────────────────────────────────────────────
 //
-// Se algum dia o adapter deixar de ser síncrono (libsql, node:sqlite async, driver de rede),
-// esta proteção deixa de ser suficiente e a serialização passa a ser obrigatória.
+// Dentro de uma transação, um `await` só passa se estiver ENRAIZADO DIRETAMENTE no `tx`.
+// `await helper(tx)` é RECUSADO mesmo quando o helper é inofensivo.
+//
+// A versão anterior deste teste aceitava `helper(tx)` sem olhar o corpo do helper, e isso
+// deixava exatamente uma porta aberta: bastava esconder a espera lá dentro.
+//
+//     async function helper(tx) {
+//       await new Promise((r) => setTimeout(r, 1))   // ← o defeito, invisível para o scanner
+//       return tx.conversation.count()
+//     }
+//
+// Esse mutante sobrevivia. Seguir o helper exigiria resolver declaração local, analisar
+// recursivamente, recusar import não resolvido e detectar ciclo — mais mecanismo do que o
+// problema merece. A regra estrita custa algumas linhas repetidas dentro das transações e,
+// em troca, deixa a fronteira visível no lugar onde ela decide quem tem autoridade sobre a
+// conversa. Repetição honesta é melhor que abstração que esconde a fronteira.
+//
+// Se o adapter deixar de ser síncrono (libsql, node:sqlite async, driver de rede), esta
+// proteção deixa de bastar e a serialização vira obrigatória. Quem guarda essa outra premissa
+// é `driver-sincrono.test.ts` — os dois protegem lados diferentes do mesmo raciocínio.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -48,62 +64,120 @@ function arquivosDeFonte(dir: string): string[] {
   return saida
 }
 
-type Violacao = { arquivo: string; linha: number; trecho: string }
+type Violacao = { arquivo: string; linha: number; trecho: string; motivo: string }
 
-/** O `await` é aceitável se opera sobre o `tx` da transação — direto ou por um helper que o recebe. */
-function usaTx(no: ts.Node, tx: string): boolean {
-  if (ts.isIdentifier(no) && no.text === tx) return true
-
-  if (ts.isCallExpression(no)) {
-    // `tx.algo.metodo(...)` — a raiz do acesso é o tx.
-    let alvo: ts.Node = no.expression
-    while (ts.isPropertyAccessExpression(alvo)) alvo = alvo.expression
-    if (ts.isIdentifier(alvo) && alvo.text === tx) return true
-
-    // `helper(tx, ...)` — a transação foi passada adiante, então o helper opera dentro dela.
-    return no.arguments.some((arg) => usaTx(arg, tx))
+/** Descasca `tx.a.b.c(...)` / `tx.$queryRaw\`...\`` até a raiz do acesso. */
+function raizDaChamada(no: ts.Node): ts.Node {
+  let alvo = no
+  if (ts.isCallExpression(alvo) || ts.isTaggedTemplateExpression(alvo)) {
+    alvo = ts.isCallExpression(alvo) ? alvo.expression : alvo.tag
   }
+  while (ts.isPropertyAccessExpression(alvo) || ts.isElementAccessExpression(alvo)) {
+    alvo = alvo.expression
+  }
+  return alvo
+}
 
-  return false
+/**
+ * ESTRITO: a expressão aguardada tem que estar enraizada no próprio `tx`.
+ * `helper(tx)` não passa — o corpo do helper não é visível daqui, e foi por essa fresta que
+ * o mutante da espera escondida passou.
+ */
+function enraizadoEmTx(expressao: ts.Node, tx: string): boolean {
+  if (!ts.isCallExpression(expressao) && !ts.isTaggedTemplateExpression(expressao)) return false
+  const raiz = raizDaChamada(expressao)
+  return ts.isIdentifier(raiz) && raiz.text === tx
 }
 
 function violacoesDe(arquivo: string): Violacao[] {
+  const texto = readFileSync(arquivo, 'utf8')
   const fonte = ts.createSourceFile(
     arquivo,
-    readFileSync(arquivo, 'utf8'),
+    texto,
     ts.ScriptTarget.Latest,
     true,
     /\.tsx$/.test(arquivo) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   )
 
   const violacoes: Violacao[] = []
+  const relativo = path.relative(process.cwd(), arquivo)
+
+  function registrar(no: ts.Node, motivo: string) {
+    const { line } = fonte.getLineAndCharacterOfPosition(no.getStart(fonte))
+    violacoes.push({
+      arquivo: relativo,
+      linha: line + 1,
+      trecho: no.getText(fonte).split('\n')[0].slice(0, 100),
+      motivo,
+    })
+  }
 
   function inspecionarCorpo(corpo: ts.Node, tx: string) {
     function caminhar(no: ts.Node) {
-      // Uma transação aninhada tem o próprio `tx`; quem cuida dela é a visita de fora.
-      if (ts.isCallExpression(no) && no.expression.getText(fonte).endsWith('$transaction')) return
-
-      if (ts.isAwaitExpression(no) && !usaTx(no.expression, tx)) {
-        const { line } = fonte.getLineAndCharacterOfPosition(no.getStart(fonte))
-        violacoes.push({
-          arquivo: path.relative(process.cwd(), arquivo),
-          linha: line + 1,
-          trecho: no.getText(fonte).split('\n')[0].slice(0, 100),
-        })
+      // Transação aninhada tem o próprio `tx`; quem cuida dela é a visita externa.
+      if (ehChamadaDeTransacao(no)) return
+      if (ts.isAwaitExpression(no) && !enraizadoEmTx(no.expression, tx)) {
+        registrar(no, 'await não enraizado no tx da transação')
       }
       ts.forEachChild(no, caminhar)
     }
-    ts.forEachChild(corpo, caminhar)
+    // `caminhar(corpo)` e não `forEachChild(corpo, ...)`: quando o callback tem corpo de
+    // EXPRESSÃO (`async (tx) => await helper(tx)`), o próprio corpo já é o `await`. Descer
+    // direto para os filhos pulava exatamente esse nó — e era assim que a espera escondida
+    // num helper continuava passando, mesmo com a regra estrita no lugar.
+    caminhar(corpo)
+  }
+
+  function ehChamadaDeTransacao(no: ts.Node): no is ts.CallExpression {
+    return ts.isCallExpression(no) && no.expression.getText(fonte).endsWith('$transaction')
+  }
+
+  /** Resolve `db.$transaction(finalizar)` até a função declarada no mesmo arquivo. */
+  function resolverCallbackPorReferencia(nome: string): ts.Node | null {
+    let achado: ts.Node | null = null
+    function procurar(no: ts.Node) {
+      if (achado) return
+      if (ts.isFunctionDeclaration(no) && no.name?.text === nome) achado = no
+      if (
+        ts.isVariableDeclaration(no) &&
+        ts.isIdentifier(no.name) &&
+        no.name.text === nome &&
+        no.initializer &&
+        (ts.isArrowFunction(no.initializer) || ts.isFunctionExpression(no.initializer))
+      ) {
+        achado = no.initializer
+      }
+      ts.forEachChild(no, procurar)
+    }
+    procurar(fonte)
+    return achado
   }
 
   function visitar(no: ts.Node) {
-    if (ts.isCallExpression(no) && no.expression.getText(fonte).endsWith('$transaction')) {
-      const callback = no.arguments[0]
-      if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
-        const parametro = callback.parameters[0]
-        if (parametro && callback.body) {
-          inspecionarCorpo(callback.body, parametro.name.getText(fonte))
+    if (ehChamadaDeTransacao(no)) {
+      const argumento = no.arguments[0]
+
+      if (argumento && (ts.isArrowFunction(argumento) || ts.isFunctionExpression(argumento))) {
+        const parametro = argumento.parameters[0]
+        if (parametro && argumento.body) {
+          inspecionarCorpo(argumento.body, parametro.name.getText(fonte))
         }
+      } else if (argumento && ts.isIdentifier(argumento)) {
+        // Callback extraído: `db.$transaction(finalizarResposta)`. Sem seguir a referência,
+        // a transação inteira ficaria fora do alcance do scanner.
+        const declaracao = resolverCallbackPorReferencia(argumento.text)
+        const funcao = declaracao as ts.FunctionLikeDeclaration | null
+        if (funcao?.body && funcao.parameters?.[0]) {
+          inspecionarCorpo(funcao.body, funcao.parameters[0].name.getText(fonte))
+        } else {
+          // Fail-closed: callback que não conseguimos ler é callback que não conseguimos
+          // garantir. Importado de outro módulo, cai aqui de propósito.
+          registrar(no, `callback de transação não resolvido neste arquivo: \`${argumento.text}\``)
+        }
+      } else if (argumento && !ts.isArrayLiteralExpression(argumento)) {
+        // `$transaction([...])` em lote não tem callback e não abre janela; qualquer outra
+        // forma é desconhecida, e desconhecido reprova.
+        registrar(no, 'forma de $transaction não reconhecida pelo scanner')
       }
     }
     ts.forEachChild(no, visitar)
@@ -116,32 +190,34 @@ function violacoesDe(arquivo: string): Violacao[] {
 describe('fronteira da transação', () => {
   const arquivos = arquivosDeFonte(RAIZ_APP)
 
-  it('encontra as transações do projeto (o teste não pode passar por não achar nada)', () => {
+  it('enxerga as transações do projeto (não pode passar por não achar nada)', () => {
     const comTransacao = arquivos.filter((a) => readFileSync(a, 'utf8').includes('$transaction'))
-    // Guarda contra o pior desfecho deste teste: passar em silêncio porque parou de enxergar
-    // o código. Se as transações mudarem de lugar, este número muda e alguém olha.
+    // Guarda contra o pior desfecho: passar em silêncio porque parou de enxergar o código.
     expect(comTransacao.length).toBeGreaterThanOrEqual(5)
   })
 
   it('nenhum await dentro de $transaction escapa do tx', () => {
     const violacoes = arquivos.flatMap(violacoesDe)
+    const relatorio = violacoes
+      .map((v) => `  ${v.arquivo}:${v.linha}  →  ${v.trecho}\n      (${v.motivo})`)
+      .join('\n')
 
     // A mensagem precisa ensinar, não só reprovar: quem esbarrar nisto daqui a seis meses
     // não vai ter o contexto do dia em que a medição foi feita.
-    const relatorio = violacoes.map((v) => `  ${v.arquivo}:${v.linha}  →  ${v.trecho}`).join('\n')
-
     expect(
       violacoes,
       violacoes.length === 0
         ? ''
-        : `\nawait que não opera sobre o \`tx\` dentro de uma transação:\n\n${relatorio}\n\n` +
+        : `\nawait que não opera diretamente sobre o \`tx\`:\n\n${relatorio}\n\n` +
             'Com o adapter better-sqlite3 (conexão única), um await que devolve o controle ao\n' +
             'event loop deixa outra requisição emitir queries DENTRO desta transação: elas podem\n' +
             'ser sobrescritas pelo que vier depois, ou desfeitas pelo rollback. É assim que a\n' +
             'tomada humana ("assumir") vira `needs_human` e o operador perde a conversa.\n\n' +
-            'Saídas: use `tx` em vez de `db`; passe `tx` ao helper; ou tire a espera para fora\n' +
-            'da transação. Se precisar mesmo de I/O aqui dentro, a serialização deixa de ser\n' +
-            'opcional e isto vira uma decisão de arquitetura, não um ajuste local.',
+            'A regra é estrita: `await helper(tx)` também reprova, porque o corpo do helper não é\n' +
+            'visível daqui e a espera pode estar escondida lá dentro. Escreva a chamada `tx.*`\n' +
+            'direto no corpo da transação — repetir três linhas é melhor que esconder a fronteira.\n\n' +
+            'Se precisar mesmo de espera aqui dentro, a serialização deixa de ser opcional e isto\n' +
+            'vira decisão de arquitetura, não ajuste local.',
     ).toEqual([])
   })
 })

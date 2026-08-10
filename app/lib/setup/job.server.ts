@@ -74,12 +74,21 @@ export type JobReivindicado = {
   claimToken: string
 }
 
-/** Cria o job de geração. Vive aqui porque o formato da chave é assunto da fila. */
-export function criarJobDeGeracao(
-  tx: Prisma.TransactionClient,
-  input: { versionId: string; tenantId: string; generation: number },
-) {
-  return tx.aiSetupJob.create({
+/**
+ * Os dados do job de geração. Vive aqui porque o formato da chave é assunto da fila.
+ *
+ * PURA de propósito: não recebe `tx` e não escreve. Quem chama faz o
+ * `tx.aiSetupJob.create(...)` no corpo da própria transação, para que o `await` fique
+ * enraizado no `tx` e visível — ver `fronteira-transacao.test.ts`. Um helper que recebesse
+ * `tx` e desse o await aqui dentro esconderia a fronteira da transação, e é exatamente por
+ * essa fresta que uma espera externa entraria sem ninguém ver.
+ */
+export function dadosDoJobDeGeracao(input: {
+  versionId: string
+  tenantId: string
+  generation: number
+}): Prisma.AiSetupJobCreateArgs {
+  return {
     data: {
       versionId: input.versionId,
       tenantId: input.tenantId,
@@ -88,7 +97,7 @@ export function criarJobDeGeracao(
       // Dois cliques em "enviar" não viram dois jobs.
       idempotencyKey: `${input.versionId}:${input.generation}:generate:1`,
     },
-  })
+  }
 }
 
 // ── Claim ───────────────────────────────────────────────────────────────────────

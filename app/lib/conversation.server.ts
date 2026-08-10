@@ -193,16 +193,25 @@ async function loadConfigSafe(slug: string): Promise<TenantConfig> {
  * `count === 0` também cobre a conversa apagada no meio do caminho. Vale em TODOS os modos:
  * em preview não há efeito operacional, mas a mensagem seria gravada dentro da conversa que
  * o atendente está conduzindo.
+ *
+ * ── POR QUE ISTO É UMA FUNÇÃO PURA, E NÃO UM HELPER QUE ESCREVE ──────────────────────────
+ *
+ * Ela monta os argumentos; quem dá o `await tx.conversation.updateMany(...)` é o corpo da
+ * própria transação. Um helper que recebesse `tx` e escrevesse aqui dentro esconderia a
+ * fronteira da transação de quem lê o caminho quente — e, pior, do scanner que a guarda
+ * (`fronteira-transacao.test.ts`): uma espera externa escondida no corpo do helper passaria
+ * despercebida, que foi o mutante que sobreviveu à primeira versão daquele teste.
+ *
+ * O `where` fica num lugar só de propósito: os dois caminhos (guard e cérebro) precisam
+ * concordar sobre quem tem autoridade para escrever. Duplicar a condição em dois pontos é
+ * como ela diverge — um muda, o outro fica para trás, e o invariante passa a valer só em
+ * metade do motor.
  */
-async function autorizarEscrita(
-  tx: Pick<typeof db, 'conversation'>,
-  conversationId: string,
-): Promise<boolean> {
-  const autorizada = await tx.conversation.updateMany({
+function casDaTomada(conversationId: string) {
+  return {
     where: { id: conversationId, status: { not: 'human' } },
     data: { updatedAt: new Date() },
-  })
-  return autorizada.count === 1
+  }
 }
 
 /** O que a transação final decidiu. */
@@ -540,7 +549,9 @@ async function runIncomingMessage(
     // outro na primeira vez que alguém mexer.
     const finalizacao = await timer.step('persist_reply', () =>
       db.$transaction(async (tx): Promise<Finalizacao> => {
-        if (!(await autorizarEscrita(tx, conversationId))) {
+        // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
+        const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
+        if (autorizada.count !== 1) {
           return { tipo: 'humano_assumiu' }
         }
         const created = await tx.message.create({
@@ -673,7 +684,7 @@ async function runIncomingMessage(
 
   // ── TUDO O QUE A DECISÃO CAUSA, NUMA TRANSAÇÃO ────────────────────────────────
   //
-  // O primeiro comando é o CAS de `autorizarEscrita`. Perder significa que o operador assumiu
+  // O primeiro comando é o CAS de `casDaTomada`. Perder significa que o operador assumiu
   // durante o cérebro: nada é gravado, nem chamado, nem lead, nem resposta.
   //
   // Chamado e mensagem do assistente na MESMA transação, de propósito: se o chamado falhar, a
@@ -681,7 +692,9 @@ async function runIncomingMessage(
   // fora, resposta depois) deixava a frase sobreviver ao chamado que não nasceu.
   const finalizacao = await timer.step('persist_reply', () =>
     db.$transaction(async (tx): Promise<Finalizacao> => {
-      if (!(await autorizarEscrita(tx, conversationId))) {
+      // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
+      const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
+      if (autorizada.count !== 1) {
         return { tipo: 'humano_assumiu' }
       }
 
@@ -742,7 +755,7 @@ async function runIncomingMessage(
         },
       })
 
-      // O `updatedAt` já foi tocado por `autorizarEscrita` — sem ele, a resolução de
+      // O `updatedAt` já foi tocado pelo CAS de `casDaTomada` — sem ele, a resolução de
       // identidade, a ordem da fila do atendente e a "conversa ativa" do dossiê leriam um
       // timestamp congelado. Aqui só o STATUS, quando escala.
       if (needsHuman && operationalEffects) {
