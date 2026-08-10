@@ -24,58 +24,73 @@ import { db } from '../db.server'
 
 describe('caracterização do driver', () => {
   it('a transação vai de ponta a ponta sem devolver o controle ao event loop', async () => {
-    // Uma macrotask agendada ANTES da transação. Ela só executa quando o event loop chega à
-    // fase de check — ou seja, quando alguém devolve o controle.
-    let macrotaskRodou = false
-    setImmediate(() => {
-      macrotaskRodou = true
-    })
-
     const tenant = await db.tenant.create({
       data: { slug: `drv-${Date.now()}-${Math.round(performance.now())}`, name: 'Driver' },
     })
 
-    // A macrotask pode ter rodado durante os awaits acima — o que importa é o de dentro.
+    // UMA macrotask só, agendada DENTRO da transação, prova as duas fases:
+    //   antes do commit → não rodou (a transação não devolveu o controle)
+    //   depois do commit → rodou    (o event loop volta a girar, logo ela existia mesmo)
+    //
+    // Uma versão anterior deste teste media duas macrotasks diferentes: guardava o sinal da
+    // de dentro e conferia a sanidade na de FORA, agendada antes até de criar o tenant. Essa
+    // podia ter rodado durante qualquer `await` do preâmbulo, então a sanidade passava sem
+    // dizer nada sobre a macrotask que realmente importa — se a de dentro jamais fosse
+    // agendada, o teste ficava verde medindo nada.
+    let macrotaskInternaRodou = false
     let rodouAntesDoCommit: boolean | null = null
+    let conversaId = ''
 
-    await db.$transaction(async (tx) => {
-      let dentro = false
-      setImmediate(() => {
-        dentro = true
+    try {
+      await db.$transaction(async (tx) => {
+        setImmediate(() => {
+          macrotaskInternaRodou = true
+        })
+
+        // Várias idas ao banco: se alguma devolvesse o controle, a macrotask teria rodado.
+        const conversa = await tx.conversation.create({
+          data: { tenantId: tenant.id, channel: 'whatsapp', contactId: 'drv', status: 'open' },
+        })
+        await tx.message.create({
+          data: { conversationId: conversa.id, role: 'user', content: 'oi' },
+        })
+        await tx.conversation.updateMany({
+          where: { id: conversa.id, status: { not: 'human' } },
+          data: { updatedAt: new Date() },
+        })
+        await tx.message.create({
+          data: { conversationId: conversa.id, role: 'assistant', content: 'olá' },
+        })
+
+        conversaId = conversa.id
+        rodouAntesDoCommit = macrotaskInternaRodou
       })
 
-      // Várias idas ao banco: se alguma devolvesse o controle, a macrotask acima teria rodado.
-      const conversa = await tx.conversation.create({
-        data: { tenantId: tenant.id, channel: 'whatsapp', contactId: 'drv', status: 'open' },
-      })
-      await tx.message.create({
-        data: { conversationId: conversa.id, role: 'user', content: 'oi' },
-      })
-      await tx.conversation.updateMany({
-        where: { id: conversa.id, status: { not: 'human' } },
-        data: { updatedAt: new Date() },
-      })
-      await tx.message.create({
-        data: { conversationId: conversa.id, role: 'assistant', content: 'olá' },
-      })
+      expect(
+        rodouAntesDoCommit,
+        'Uma macrotask executou DENTRO da transação: o driver deixou de ser síncrono.\n' +
+          'A premissa que torna `fronteira-transacao.test.ts` suficiente caiu — a partir daqui\n' +
+          'uma escrita de outra requisição PODE aterrissar dentro de uma transação aberta,\n' +
+          'ser sobrescrita pelo que vier depois ou ser desfeita pelo rollback.\n' +
+          'Serializar motor e operador deixa de ser opcional. Ver o cabeçalho deste arquivo.',
+      ).toBe(false)
 
-      rodouAntesDoCommit = dentro
-    })
-
-    expect(
-      rodouAntesDoCommit,
-      'Uma macrotask executou DENTRO da transação: o driver deixou de ser síncrono.\n' +
-        'A premissa que torna `fronteira-transacao.test.ts` suficiente caiu — a partir daqui\n' +
-        'uma escrita de outra requisição PODE aterrissar dentro de uma transação aberta,\n' +
-        'ser sobrescrita pelo que vier depois ou ser desfeita pelo rollback.\n' +
-        'Serializar motor e operador deixa de ser opcional. Ver o cabeçalho deste arquivo.',
-    ).toBe(false)
-
-    // Sanidade: fora da transação o event loop volta a girar normalmente. Sem isto, um bug no
-    // próprio teste (macrotask que nunca é agendada) faria a asserção acima passar à toa.
-    await new Promise((resolve) => setImmediate(resolve))
-    expect(macrotaskRodou, 'a macrotask externa nunca rodou — o teste não está medindo nada').toBe(
-      true,
-    )
+      // A MESMA macrotask, agora que o event loop voltou a girar. Sem isto, um teste que nunca
+      // agendasse nada passaria na asserção de cima sem medir coisa alguma.
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(
+        macrotaskInternaRodou,
+        'a macrotask interna nunca rodou — o teste não está medindo a fronteira',
+      ).toBe(true)
+    } finally {
+      // O banco é por worker, mas é COMPARTILHADO pelos testes daquele worker: sem limpar,
+      // este teste vira estado de fundo para quem roda depois (contagem contaminada, e a base
+      // crescendo a cada repetição durante uma sessão de mutação).
+      if (conversaId) {
+        await db.message.deleteMany({ where: { conversationId: conversaId } })
+        await db.conversation.deleteMany({ where: { id: conversaId } })
+      }
+      await db.tenant.deleteMany({ where: { id: tenant.id } })
+    }
   })
 })

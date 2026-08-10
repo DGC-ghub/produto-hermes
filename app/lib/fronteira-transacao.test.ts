@@ -38,6 +38,24 @@
 // em troca, deixa a fronteira visível no lugar onde ela decide quem tem autoridade sobre a
 // conversa. Repetição honesta é melhor que abstração que esconde a fronteira.
 //
+// Pelo mesmo motivo, o CALLBACK também tem que ser inline: `db.$transaction(finalizar)`
+// reprova. A versão anterior resolvia esse nome procurando a primeira declaração homônima no
+// arquivo — o que ignora escopo léxico e podia analisar a função ERRADA:
+//
+//     async function finalizar(tx) { return tx.conversation.count() }   // segura, top-level
+//     export function usar() {
+//       const finalizar = async (tx) => {                               // perigosa, sombreia
+//         await new Promise((r) => setTimeout(r, 1))
+//         return tx.conversation.count()
+//       }
+//       return db.$transaction(finalizar)                               // usa a perigosa
+//     }
+//
+// O scanner encontrava a segura e aprovava. Resolver isso direito exigiria shadowing, blocos,
+// imports, overloads, declarações duplicadas e aliases — resolução lexical do TypeScript
+// inteira. Para uma fronteira que deve ser explícita, o custo não se paga: exigir o corpo
+// escrito dentro do `$transaction` resolve o mesmo problema sem nenhum mecanismo.
+//
 // Se o adapter deixar de ser síncrono (libsql, node:sqlite async, driver de rede), esta
 // proteção deixa de bastar e a serialização vira obrigatória. Quem guarda essa outra premissa
 // é `driver-sincrono.test.ts` — os dois protegem lados diferentes do mesmo raciocínio.
@@ -132,27 +150,6 @@ function violacoesDe(arquivo: string): Violacao[] {
     return ts.isCallExpression(no) && no.expression.getText(fonte).endsWith('$transaction')
   }
 
-  /** Resolve `db.$transaction(finalizar)` até a função declarada no mesmo arquivo. */
-  function resolverCallbackPorReferencia(nome: string): ts.Node | null {
-    let achado: ts.Node | null = null
-    function procurar(no: ts.Node) {
-      if (achado) return
-      if (ts.isFunctionDeclaration(no) && no.name?.text === nome) achado = no
-      if (
-        ts.isVariableDeclaration(no) &&
-        ts.isIdentifier(no.name) &&
-        no.name.text === nome &&
-        no.initializer &&
-        (ts.isArrowFunction(no.initializer) || ts.isFunctionExpression(no.initializer))
-      ) {
-        achado = no.initializer
-      }
-      ts.forEachChild(no, procurar)
-    }
-    procurar(fonte)
-    return achado
-  }
-
   function visitar(no: ts.Node) {
     if (ehChamadaDeTransacao(no)) {
       const argumento = no.arguments[0]
@@ -162,22 +159,13 @@ function violacoesDe(arquivo: string): Violacao[] {
         if (parametro && argumento.body) {
           inspecionarCorpo(argumento.body, parametro.name.getText(fonte))
         }
-      } else if (argumento && ts.isIdentifier(argumento)) {
-        // Callback extraído: `db.$transaction(finalizarResposta)`. Sem seguir a referência,
-        // a transação inteira ficaria fora do alcance do scanner.
-        const declaracao = resolverCallbackPorReferencia(argumento.text)
-        const funcao = declaracao as ts.FunctionLikeDeclaration | null
-        if (funcao?.body && funcao.parameters?.[0]) {
-          inspecionarCorpo(funcao.body, funcao.parameters[0].name.getText(fonte))
-        } else {
-          // Fail-closed: callback que não conseguimos ler é callback que não conseguimos
-          // garantir. Importado de outro módulo, cai aqui de propósito.
-          registrar(no, `callback de transação não resolvido neste arquivo: \`${argumento.text}\``)
-        }
       } else if (argumento && !ts.isArrayLiteralExpression(argumento)) {
-        // `$transaction([...])` em lote não tem callback e não abre janela; qualquer outra
-        // forma é desconhecida, e desconhecido reprova.
-        registrar(no, 'forma de $transaction não reconhecida pelo scanner')
+        // `$transaction([...])` em lote não tem callback e não abre janela. Qualquer outra
+        // forma — callback extraído por nome, importado, devolvido por fábrica — reprova.
+        registrar(
+          no,
+          'callback de transação não é inline — escreva o corpo dentro do `$transaction`',
+        )
       }
     }
     ts.forEachChild(no, visitar)
