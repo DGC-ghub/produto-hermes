@@ -226,32 +226,79 @@ function casDaTomada(conversationId: string) {
 }
 
 /** O que a transação final decidiu. */
-type Finalizacao = { tipo: 'humano_assumiu' } | { tipo: 'ok'; assistantMessageId: string }
+/**
+ * Por que o CAS não passou. Perder o CAS significa "a conversa não é mais da IA" — mas os
+ * motivos são fenômenos diferentes, e tratá-los como um só mente em duas direções: registra
+ * "humano assumiu" quando ninguém assumiu nada (a conversa foi encerrada, ou apagada), e
+ * esconde o caso caro (assumiu DEPOIS do cérebro, com a resposta pronta e jogada fora).
+ */
+type MotivoDaPerda = 'human' | 'closed' | 'missing' | 'unknown'
+
+type Finalizacao =
+  | { tipo: 'autoridade_perdida'; motivo: MotivoDaPerda }
+  | { tipo: 'ok'; assistantMessageId: string }
 
 /**
- * O retorno quando um humano conduz a conversa: a mensagem do cliente foi gravada (o
- * atendente precisa vê-la) e o Hermes não diz nada.
+ * Traduz o estado encontrado depois de perder o CAS.
  *
- * Um só lugar porque há três caminhos que chegam aqui — o status já estava `human` na
- * entrada, ou a tomada venceu a corrida no caminho do guard, ou venceu no caminho do
- * cérebro. Três formatos diferentes de "silêncio" seriam três comportamentos de tela.
+ * PURA de propósito, e a leitura que a alimenta fica inline no corpo da transação: um helper
+ * que recebesse `tx` e lesse aqui dentro é justamente o que `fronteira-transacao.test.ts`
+ * proíbe — o corpo dele não é visível para o scanner, e uma espera escondida ali passaria.
+ *
+ * A leitura NÃO autoriza nada e não substitui o CAS: o CAS é a escrita condicional que
+ * estabelece a ordem, e continua sendo ele quem decide. Isto existe só para o resultado e a
+ * telemetria contarem a verdade.
  */
-function silencioDoHumano(
+function classificarPerda(status: string | null | undefined): MotivoDaPerda {
+  if (status == null) return 'missing'
+  if (status === 'human') return 'human'
+  if (status === 'closed') return 'closed'
+  // Status que a allowlist não conhece. Fail-closed: silêncio, e o trace diz que foi um
+  // estado que ninguém previu — em vez de fingir que um humano assumiu.
+  return 'unknown'
+}
+
+/** O outcome de cada motivo, quando a perda acontece DURANTE o processamento. */
+const OUTCOME_DA_PERDA: Record<MotivoDaPerda, TraceOutcome> = {
+  human: 'human_took_over',
+  closed: 'conversation_closed',
+  missing: 'conversation_missing',
+  unknown: 'authority_lost_unknown',
+}
+
+/**
+ * O retorno quando a IA perde a autoridade sobre a conversa: a mensagem do cliente foi
+ * gravada (o atendente precisa vê-la) e o Hermes não diz nada.
+ *
+ * O silêncio é o mesmo nos quatro motivos; o que muda é o que o resultado DIZ. Só o caso
+ * `human` é atendimento humano em andamento — nos outros três não há ninguém conduzindo, e
+ * marcar `humanHandling` ali colocaria na fila do operador uma conversa encerrada ou
+ * inexistente.
+ */
+function silencioPorPerdaDeAutoridade(
   conversationId: string,
   tenantSlug: string,
   userMessageId: string,
+  motivo: MotivoDaPerda,
 ): ProcessIncomingMessageResult {
+  const humano = motivo === 'human'
+  const razao: Record<MotivoDaPerda, string> = {
+    human: 'human_handling',
+    closed: 'conversation_closed',
+    missing: 'conversation_missing',
+    unknown: 'authority_lost',
+  }
   return {
     conversationId,
     tenantSlug,
     userMessageId,
     assistantMessageId: '',
     reply: '',
-    needsHuman: true,
-    handoffReason: 'human_handling',
+    needsHuman: humano,
+    handoffReason: razao[motivo],
     confidence: 0,
     sources: [],
-    humanHandling: true,
+    humanHandling: humano,
   }
 }
 
@@ -290,7 +337,24 @@ function silencioDoHumano(
  * caminho (o tenant é resolvido lá dentro). Preenchido pelo corpo à medida que
  * descobre; lido pela casca ao fechar o trace, inclusive quando dá exceção.
  */
-type TraceContext = { tenantId?: string; conversationId?: string; outcome: TraceOutcome }
+type TraceContext = {
+  tenantId?: string
+  conversationId?: string
+  outcome: TraceOutcome
+  /**
+   * O provider e se o cérebro chegou a ser CHAMADO — fatos, não inferência.
+   *
+   * O `finally` derivava o provider do outcome (`ok` ou `fallback` → provider real, senão
+   * `nenhum`), e isso apagava o consumo justamente no caso que interessa medir: o cérebro
+   * rodou, custou os segundos e o dinheiro, e o CAS perdeu depois. No trace aparecia
+   * `provider: 'nenhum'`, como se nada tivesse sido gasto.
+   *
+   * `brainStarted` marca ANTES da chamada, de propósito: o custo potencial existe a partir do
+   * momento em que o provider é acionado, mesmo que ele lance no meio.
+   */
+  provider: string
+  brainStarted: boolean
+}
 
 /**
  * Orquestra o "balcão" do Hermes para uma mensagem recebida. O comportamento é
@@ -307,7 +371,7 @@ export async function processIncomingMessage(
   // a tabela no `finally` com modo inexistente esconderia o erro real por trás de outro.
   const perfil = perfilDoModo(input)
   const timer = createTimer()
-  const ctx: TraceContext = { outcome: 'erro' }
+  const ctx: TraceContext = { outcome: 'erro', provider: 'nenhum', brainStarted: false }
   try {
     return await runIncomingMessage(input, perfil, timer, ctx)
   } finally {
@@ -320,8 +384,9 @@ export async function processIncomingMessage(
         // Do perfil JÁ VALIDADO, igual ao corpo: a métrica por canal não pode discordar do
         // que executou, e não relê a tabela por conta própria.
         channel: perfil.channel,
-        provider:
-          ctx.outcome === 'ok' || ctx.outcome === 'fallback' ? activeProviderName() : 'nenhum',
+        // Do que REALMENTE aconteceu, não do desfecho: uma tomada humana depois do cérebro
+        // precisa continuar mostrando o provider que foi consumido.
+        provider: ctx.brainStarted ? ctx.provider : 'nenhum',
         outcome: ctx.outcome,
         trace: timer.finish(),
       })
@@ -485,7 +550,7 @@ async function runIncomingMessage(
   // O corpo abaixo é seguro em modo não operacional: grava a mensagem do cliente e toca
   // `updatedAt`, que é o que o preview já faz de qualquer forma.
   if (isHumanHandling(conversationStatus)) {
-    ctx.outcome = 'human_handling'
+    ctx.outcome = 'human_at_entry'
     const userMessage = await timer.step('persist_user', async () => {
       const created = await db.message.create({
         data: { conversationId, role: 'user', content: message },
@@ -496,7 +561,8 @@ async function runIncomingMessage(
       })
       return created
     })
-    return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+    // `human` por definição: este ramo só é alcançado com a conversa já sob condução humana.
+    return silencioPorPerdaDeAutoridade(conversationId, input.tenantSlug, userMessage.id, 'human')
   }
 
   // Gate de cobrança: se a assinatura existe mas não está ativa (E o flag está ligado), o
@@ -535,21 +601,44 @@ async function runIncomingMessage(
           // Perdemos o CAS: alguém tem a conversa. Se for um humano CONDUZINDO, a fala nova
           // precisa reordenar a fila dele — ela acabou de chegar. Se for `closed`, não se
           // toca em nada: o atendimento terminou e não volta por aqui.
+          //
+          // O motivo é lido aqui dentro, pelo mesmo `tx`, para o trace não dizer "humano
+          // assumiu" quando a conversa foi encerrada, apagada, ou está num estado que a
+          // allowlist não conhece.
           if (autorizada.count === 0) {
-            await tx.conversation.updateMany({
-              where: { id: conversationId, status: 'human' },
-              data: { updatedAt: new Date() },
+            const atual = await tx.conversation.findUnique({
+              where: { id: conversationId },
+              select: { status: true },
             })
+            const motivo = classificarPerda(atual?.status)
+            if (motivo === 'human') {
+              await tx.conversation.updateMany({
+                where: { id: conversationId, status: 'human' },
+                data: { updatedAt: new Date() },
+              })
+            }
+            return { mensagem: created, motivo }
           }
 
-          return created
+          return { mensagem: created, motivo: null }
         }, opcoes),
       ),
     )
+    // A autoridade da conversa manda mais que o gate: se ela mudou de dono durante a
+    // consulta, o desfecho é o silêncio daquele motivo — e não "bloqueado por cobrança".
+    if (userMessage.motivo) {
+      ctx.outcome = OUTCOME_DA_PERDA[userMessage.motivo]
+      return silencioPorPerdaDeAutoridade(
+        conversationId,
+        input.tenantSlug,
+        userMessage.mensagem.id,
+        userMessage.motivo,
+      )
+    }
     return {
       conversationId,
       tenantSlug: input.tenantSlug,
-      userMessageId: userMessage.id,
+      userMessageId: userMessage.mensagem.id,
       assistantMessageId: '',
       reply: '',
       needsHuman: true,
@@ -625,7 +714,11 @@ async function runIncomingMessage(
           // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
           const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
           if (autorizada.count !== 1) {
-            return { tipo: 'humano_assumiu' }
+            const atual = await tx.conversation.findUnique({
+              where: { id: conversationId },
+              select: { status: true },
+            })
+            return { tipo: 'autoridade_perdida', motivo: classificarPerda(atual?.status) }
           }
           const created = await tx.message.create({
             data: {
@@ -649,9 +742,14 @@ async function runIncomingMessage(
         }, opcoes),
       ),
     )
-    if (finalizacao.tipo === 'humano_assumiu') {
-      ctx.outcome = 'human_handling'
-      return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+    if (finalizacao.tipo === 'autoridade_perdida') {
+      ctx.outcome = OUTCOME_DA_PERDA[finalizacao.motivo]
+      return silencioPorPerdaDeAutoridade(
+        conversationId,
+        input.tenantSlug,
+        userMessage.id,
+        finalizacao.motivo,
+      )
     }
     // Tema sensível não escala em silêncio: num tenant de saúde isso pode ser uma emergência
     // esperando na fila. Push no celular do operador (best-effort) — SÓ do canal real: a demo
@@ -705,6 +803,11 @@ async function runIncomingMessage(
 
   // O cérebro: atendente IA plugável. A saída já vem validada (com a policy do
   // tenant) e com fallback seguro se o provider falhar.
+  // ANTES da chamada: o custo potencial existe a partir do momento em que o provider é
+  // acionado, mesmo que ele lance no meio. É isto que faz o trace de uma tomada humana
+  // pós-cérebro continuar dizendo qual provider foi consumido.
+  ctx.provider = activeProviderName()
+  ctx.brainStarted = true
   const decision = await timer.step('brain', () =>
     generateAttendantReply(
       {
@@ -770,7 +873,11 @@ async function runIncomingMessage(
         // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
         const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
         if (autorizada.count !== 1) {
-          return { tipo: 'humano_assumiu' }
+          const atual = await tx.conversation.findUnique({
+            where: { id: conversationId },
+            select: { status: true },
+          })
+          return { tipo: 'autoridade_perdida', motivo: classificarPerda(atual?.status) }
         }
 
         // SEM `timer.step('effects')` aqui.
@@ -847,9 +954,14 @@ async function runIncomingMessage(
     ),
   )
 
-  if (finalizacao.tipo === 'humano_assumiu') {
-    ctx.outcome = 'human_handling'
-    return silencioDoHumano(conversationId, input.tenantSlug, userMessage.id)
+  if (finalizacao.tipo === 'autoridade_perdida') {
+    ctx.outcome = OUTCOME_DA_PERDA[finalizacao.motivo]
+    return silencioPorPerdaDeAutoridade(
+      conversationId,
+      input.tenantSlug,
+      userMessage.id,
+      finalizacao.motivo,
+    )
   }
 
   // Alarme só agora: se o cérebro CAIU no fallback, o cliente recebeu a resposta genérica —

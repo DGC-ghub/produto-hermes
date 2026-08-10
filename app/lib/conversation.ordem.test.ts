@@ -19,7 +19,16 @@ const espioes = vi.hoisted(() => ({
   recordMessageTrace: vi.fn(),
   cerebro: vi.fn(),
   alarme: vi.fn(),
+  createTimer: vi.fn(),
 }))
+
+/**
+ * O timer também é uma borda. `perfilDoModo` já roda antes de `createTimer`, mas nada provava
+ * isso: um refactor que criasse o timer primeiro passaria por todo o resto deste arquivo,
+ * porque entrada inválida continuaria não tocando tenant, conversa nem trace. A medição de
+ * uma execução que foi recusada é ruído — e, pior, indexar a tabela com um modo inexistente
+ * esconderia o erro real atrás de outro.
+ */
 
 vi.mock('./tenants.server', () => ({
   resolveTenant: espioes.resolveTenant,
@@ -49,6 +58,17 @@ vi.mock('./metrics.server', () => ({
   recordMessageTrace: espioes.recordMessageTrace,
 }))
 
+vi.mock('./metrics', async () => {
+  const real = await vi.importActual<typeof import('./metrics')>('./metrics')
+  return {
+    ...real,
+    createTimer: (...args: unknown[]) => {
+      espioes.createTimer()
+      return (real.createTimer as (...a: unknown[]) => unknown)(...args)
+    },
+  }
+})
+
 vi.mock('./attendant', () => ({
   generateAttendantReply: espioes.cerebro,
   activeProviderName: () => 'mock',
@@ -76,6 +96,8 @@ function nadaFoiTocado() {
   expect(espioes.recordMessageTrace).not.toHaveBeenCalled()
   expect(espioes.cerebro).not.toHaveBeenCalled()
   expect(espioes.alarme).not.toHaveBeenCalled()
+  // A medição também não: recusa não é execução.
+  expect(espioes.createTimer).not.toHaveBeenCalled()
 }
 
 const CASOS: Array<[string, Record<string, unknown>, string]> = [
@@ -135,5 +157,25 @@ describe('entrada inválida não resolve tenant, não lê conversa e não tenta 
     ).rejects.toThrow('Unknown tenant')
 
     expect(espioes.resolveTenant).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('o par positivo do timer', () => {
+  it('com modo e contato válidos, a medição começa', async () => {
+    // Sem isto, um `createTimer` que nunca fosse chamado deixaria os testes de recusa verdes
+    // e o produto sem medição nenhuma.
+    espioes.resolveTenant.mockResolvedValue(null)
+
+    await processIncomingMessage({
+      tenantSlug: 'nao-existe',
+      contactId: 'c',
+      message: 'oi',
+      mode: 'whatsapp',
+    }).catch(() => {
+      // Tenant inexistente lança DEPOIS da validação de entrada — o que importa aqui é que a
+      // medição chegou a começar, porque a execução foi de fato aceita.
+    })
+
+    expect(espioes.createTimer).toHaveBeenCalledTimes(1)
   })
 })
