@@ -193,6 +193,57 @@ describe('operador assume durante o cérebro', () => {
     expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
   })
 
+  it('o motor vence o CAS e a tomada POSTERIOR preserva a resposta do instante anterior', async () => {
+    // O OUTRO LADO da linearização. O teste de cima prova "tomada vence"; sem este, um CAS
+    // que suprimisse SEMPRE ficaria verde lá em cima — e o Hermes pararia de responder.
+    //
+    // Por que estas são as duas únicas ordenações que existem: a terceira que se imagina —
+    // o operador entrando DEPOIS do CAS e ANTES do commit — não é alcançável nesta
+    // topologia. Entre o `BEGIN` e o `COMMIT` a transação não devolve o controle ao event
+    // loop, então nenhuma outra requisição executa ali no meio. Quem guarda essa premissa é
+    // `driver-sincrono.test.ts`; quem guarda o código contra reintroduzi-la é
+    // `fronteira-transacao.test.ts`. Aqui a gente prova o comportamento observável.
+    const processamento = processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'preciso de ajuda com uma coisa',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    await cerebro.entrou.esperar
+    cerebro.liberar.abrir()
+    const r = await processamento
+
+    // O motor atravessou o CAS e commitou: a resposta pertence ao instante ANTERIOR à tomada.
+    expect(r.humanHandling).toBeUndefined()
+    expect(r.assistantMessageId).not.toBe('')
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: conversaId } })).status).toBe(
+      'needs_human',
+    )
+
+    // Só AGORA o operador assume — depois do commit, que é quando a tomada de fato cabe.
+    await db.conversation.update({ where: { id: conversaId }, data: { status: 'human' } })
+
+    // A tomada posterior NÃO desfaz o que já era do instante anterior: a resposta continua
+    // gravada, e os efeitos que ela causou continuam de pé. O operador assume a conversa
+    // como ela está, não uma conversa mutilada.
+    const papeis = (
+      await db.message.findMany({
+        where: { conversationId: conversaId },
+        orderBy: { createdAt: 'asc' },
+        select: { role: true },
+      })
+    ).map((m) => m.role)
+    expect(papeis).toEqual(['user', 'assistant'])
+    expect(await db.ticket.count({ where: { contactId: CONTATO } })).toBe(1)
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
+
+    // E a autoridade passou para o humano a partir daqui.
+    expect((await db.conversation.findUniqueOrThrow({ where: { id: conversaId } })).status).toBe(
+      'human',
+    )
+  })
+
   it('no caminho do GUARD, a tomada humana suprime a resposta e o ALARME', async () => {
     // Tema sensível não passa pelo cérebro: o guard decide sozinho. A janela é de
     // milissegundos, e a barreira aqui é a base de conhecimento — o único await entre a
