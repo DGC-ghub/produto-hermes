@@ -21,6 +21,7 @@ export default [
   route('privacidade', 'routes/privacidade.tsx'),
   route('assinar', 'routes/assinar.tsx'),
   route('metrics', 'routes/metrics.tsx'),
+  route('health', 'routes/health.tsx'),
   route('webhook/mercadopago', 'routes/webhook.mercadopago.tsx'),
   route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
 ] satisfies RouteConfig
