@@ -137,6 +137,47 @@ describe('gate de cobrança e a autoridade da conversa', () => {
     expect((await estado()).user).toBe(0)
   })
 
+  it('contenção transitória repete somente a transação do billing', async () => {
+    // O terceiro caminho de persistência. Os testes de retry atravessam o guard e o cérebro;
+    // o gate bloqueado não passa por nenhum dos dois, então remover o `comRetry` daqui — e só
+    // daqui — sobrevivia à suíte inteira.
+    //
+    // A primeira tentativa executa o corpo e reverte (o erro é lançado DENTRO da transação
+    // real, então o rollback acontece antes de a Promise externa rejeitar). Com isso o teste
+    // prova quatro coisas de uma vez: a fala do cliente está dentro da transação, o billing
+    // usa retry, o retry não duplica nada, e o status final continua certo.
+    const real = db.$transaction.bind(db) as (a: unknown, b: unknown) => Promise<unknown>
+    let tentativas = 0
+    vi.spyOn(db, '$transaction').mockImplementation((async (fn: unknown, opcoes: unknown) => {
+      tentativas += 1
+      if (tentativas === 1) {
+        await real(async (tx: unknown) => {
+          await (fn as (t: unknown) => Promise<unknown>)(tx)
+          throw new Error('SQLITE_BUSY: database is locked')
+        }, opcoes)
+      }
+      return real(fn, opcoes)
+    }) as typeof db.$transaction)
+
+    const r = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'oi, preciso de ajuda',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    const depois = await estado()
+
+    expect(tentativas).toBeGreaterThan(1)
+    expect(r.reply).toBe('')
+    expect(depois.status).toBe('needs_human')
+    expect(depois.user).toBe(1)
+    expect(depois.assistant).toBe(0)
+    expect(depois.tickets).toBe(0)
+    expect(depois.leads).toBe(0)
+    expect(depois.handoffs).toBe(0)
+  })
+
   it('sem mudança de estado, o gate manda a conversa para a fila humana — o par positivo', async () => {
     // Sem este, uma correção que simplesmente parasse de escrever ficaria verde acima e o
     // cliente bloqueado por cobrança nunca chegaria a um humano.
