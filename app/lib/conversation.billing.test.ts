@@ -1,32 +1,34 @@
 // O CAMINHO DO GATE DE COBRANÇA também precisa obedecer a autoridade da conversa.
 //
 // Quando a assinatura não permite atender, o motor grava a fala do cliente e manda a conversa
-// para a fila humana. Só que ele fazia isso com um `update` cego — sem passar pelo CAS que os
-// outros dois caminhos (guard e cérebro) usam. Se um operador estivesse conduzindo a conversa,
-// o gate a devolvia para `needs_human` e ele a perdia da tela, no meio do atendimento.
+// para a fila humana. Duas coisas davam errado: um `update` cego atropelava quem estivesse
+// conduzindo, e as duas escritas (fala do cliente, status) não eram atômicas — se a primeira
+// commitasse e a segunda falhasse, o reprocessamento gravava a fala do cliente outra vez.
 //
-// A janela: a guarda de silêncio lê o status ANTES da consulta ao gate. Hoje essa consulta é
-// só uma ida ao banco, mas ela é a fronteira natural para crescer — verificar assinatura contra
-// o provedor de pagamento é exatamente o tipo de coisa que vira chamada de rede. Um caminho de
-// escrita não deve depender de "aqui não dá tempo de nada acontecer" para estar correto.
+// A JANELA. A guarda de silêncio lê o status ANTES da consulta ao gate, e a conversa já está
+// resolvida quando o gate roda. Por isso o cenário aqui muda o status DURANTE a consulta —
+// uma versão anterior deste teste marcava a conversa como `closed` ANTES de chamar o motor, e
+// com isso a resolução por identidade (que ignora encerradas) abria uma conversa NOVA: o gate
+// operava na nova, a antiga seguia intacta por não ser alvo de nada, e o teste passava mesmo
+// com o `update` cego de volta no lugar.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
 
 const controle = vi.hoisted(() => ({
   conversaId: '',
-  /** O operador assume ENQUANTO o gate é consultado. */
-  tomadaDuranteOGate: false,
+  /** O estado que a conversa assume ENQUANTO o gate é consultado. */
+  statusDuranteGate: null as null | 'human' | 'closed',
 }))
 
 vi.mock('./billing-gate.server', () => ({
   isBillingGateEnabled: () => true,
   checkBillingGate: async () => {
-    const { db: banco } = await import('../db.server')
-    if (controle.tomadaDuranteOGate) {
+    if (controle.statusDuranteGate) {
+      const { db: banco } = await import('../db.server')
       await banco.conversation.update({
         where: { id: controle.conversaId },
-        data: { status: 'human' },
+        data: { status: controle.statusDuranteGate },
       })
     }
     return { allowed: false, reason: 'inactive' as const }
@@ -37,8 +39,26 @@ const { processIncomingMessage } = await import('./conversation.server')
 
 const CONTATO = 'test-billing-autoridade'
 
+async function estado() {
+  const conversa = await db.conversation.findUniqueOrThrow({
+    where: { id: controle.conversaId },
+  })
+  const mensagens = await db.message.findMany({
+    where: { conversationId: controle.conversaId },
+    select: { role: true },
+  })
+  return {
+    status: conversa.status,
+    user: mensagens.filter((m) => m.role === 'user').length,
+    assistant: mensagens.filter((m) => m.role === 'assistant').length,
+    tickets: await db.ticket.count({ where: { contactId: CONTATO } }),
+    leads: await db.lead.count({ where: { conversationId: controle.conversaId } }),
+    handoffs: await db.handoffEvent.count({ where: { conversationId: controle.conversaId } }),
+  }
+}
+
 beforeEach(async () => {
-  controle.tomadaDuranteOGate = false
+  controle.statusDuranteGate = null
   const tenant = await db.tenant.upsert({
     where: { slug: 'dgc' },
     update: {},
@@ -52,28 +72,72 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.restoreAllMocks()
+  await db.ticket.deleteMany({ where: { contactId: CONTATO } })
+  await db.handoffEvent.deleteMany({ where: { conversationId: controle.conversaId } })
+  await db.lead.deleteMany({ where: { conversationId: controle.conversaId } })
   await db.message.deleteMany({ where: { conversationId: controle.conversaId } })
   await db.conversation.deleteMany({ where: { id: controle.conversaId } })
 })
 
 describe('gate de cobrança e a autoridade da conversa', () => {
-  it('não tira do operador a conversa que ele assumiu durante a consulta ao gate', async () => {
-    controle.tomadaDuranteOGate = true
+  it.each([
+    'human',
+    'closed',
+  ] as const)('preserva `%s` quando o estado muda durante a consulta ao gate', async (statusFinal) => {
+    controle.statusDuranteGate = statusFinal
 
-    await processIncomingMessage({
+    const r = await processIncomingMessage({
       tenantSlug: 'dgc',
       message: 'oi, preciso de ajuda',
       contactId: CONTATO,
       mode: 'whatsapp',
     })
 
-    // A conversa continua com o humano — o gate não a puxou de volta para a fila.
-    expect(
-      (await db.conversation.findUniqueOrThrow({ where: { id: controle.conversaId } })).status,
-    ).toBe('human')
+    const depois = await estado()
+
+    // A autoridade de quem decidiu fica de pé: o gate não puxa a conversa de volta.
+    expect(depois.status).toBe(statusFinal)
+
+    // A fala do cliente chegou ANTES da mudança vencer, então fica registrada — uma vez só.
+    expect(depois.user).toBe(1)
+
+    // E nada mais: o gate não responde, não abre chamado, não escala.
+    expect(r.reply).toBe('')
+    expect(r.assistantMessageId).toBe('')
+    expect(depois.assistant).toBe(0)
+    expect(depois.tickets).toBe(0)
+    expect(depois.leads).toBe(0)
+    expect(depois.handoffs).toBe(0)
   })
 
-  it('sem tomada, o gate manda a conversa para a fila humana — o par positivo', async () => {
+  it('falha na persistência não deixa a fala do cliente órfã', async () => {
+    // A ATOMICIDADE, e não só a autoridade. Se a fala do cliente commitasse sozinha e o status
+    // falhasse, o motor lançaria, a fila devolveria o evento para `pending` e o
+    // reprocessamento gravaria a fala DE NOVO — o atendente veria a pessoa falando duas vezes.
+    //
+    // Este teste é o que segura a fala do cliente dentro da transação: movê-la para fora passa
+    // pelo scanner de fronteira sem reclamar (não é violação dele), e só cai aqui.
+    const real = db.$transaction.bind(db)
+    vi.spyOn(db, '$transaction').mockImplementation((async () => {
+      // Erro PERMANENTE: não é contenção, então propaga na primeira tentativa.
+      throw new Error('Unique constraint failed on the fields: (`id`)')
+    }) as typeof db.$transaction)
+
+    await expect(
+      processIncomingMessage({
+        tenantSlug: 'dgc',
+        message: 'oi, preciso de ajuda',
+        contactId: CONTATO,
+        mode: 'whatsapp',
+      }),
+    ).rejects.toThrow('Unique constraint')
+
+    vi.mocked(db.$transaction).mockImplementation(real)
+    expect((await estado()).user).toBe(0)
+  })
+
+  it('sem mudança de estado, o gate manda a conversa para a fila humana — o par positivo', async () => {
     // Sem este, uma correção que simplesmente parasse de escrever ficaria verde acima e o
     // cliente bloqueado por cobrança nunca chegaria a um humano.
     await processIncomingMessage({
@@ -83,40 +147,9 @@ describe('gate de cobrança e a autoridade da conversa', () => {
       mode: 'whatsapp',
     })
 
-    expect(
-      (await db.conversation.findUniqueOrThrow({ where: { id: controle.conversaId } })).status,
-    ).toBe('needs_human')
-
-    // E a fala do cliente ficou gravada nos dois casos: o atendente precisa vê-la.
-    const papeis = (
-      await db.message.findMany({
-        where: { conversationId: controle.conversaId },
-        select: { role: true },
-      })
-    ).map((m) => m.role)
-    expect(papeis).toEqual(['user'])
-  })
-
-  it('não ressuscita conversa encerrada durante a consulta ao gate', async () => {
-    // Mesma regra do CAS: `closed` é decisão do atendente e o gate não a desfaz.
-    await db.conversation.update({
-      where: { id: controle.conversaId },
-      data: { status: 'closed' },
-    })
-
-    await processIncomingMessage({
-      tenantSlug: 'dgc',
-      message: 'oi, preciso de ajuda',
-      contactId: CONTATO,
-      conversationId: undefined,
-      mode: 'whatsapp',
-    }).catch(() => {
-      // A resolução por identidade ignora encerradas e abre uma nova; se algum dia isso mudar
-      // e virar erro, o que importa aqui continua sendo a conversa antiga estar intacta.
-    })
-
-    expect(
-      (await db.conversation.findUniqueOrThrow({ where: { id: controle.conversaId } })).status,
-    ).toBe('closed')
+    const depois = await estado()
+    expect(depois.status).toBe('needs_human')
+    expect(depois.user).toBe(1)
+    expect(depois.assistant).toBe(0)
   })
 })

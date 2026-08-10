@@ -13,6 +13,7 @@ import { extractLeadPatch } from './lead'
 import { createTimer, type Timer } from './metrics'
 import { recordMessageTrace, type TraceOutcome } from './metrics.server'
 import { retrieveRelevantChunks } from './retrieval'
+import { comRetry } from './setup/retry'
 import { resolveTenant } from './tenants.server'
 import { hasDuplicateOpenTicket } from './ticket'
 
@@ -258,52 +259,31 @@ function silencioDoHumano(
  * Limites da transação final. O cérebro fica FORA dela — dentro só há operações rápidas de
  * banco. Em contenção o Prisma lança, e quem chamou (a fila do WhatsApp) reprocessa o evento.
  */
-const TRANSACAO_FINAL = { maxWait: 5_000, timeout: 15_000 } as const
-
 /**
- * Erros que merecem outra tentativa: CONTENÇÃO do arquivo, não defeito da operação.
+ * REPETIR A TRANSAÇÃO, NUNCA O FLUXO — com o classificador que o projeto já tem.
  *
- * A lista é curta de propósito. "Tenta três vezes qualquer coisa" faz um defeito real
- * (constraint violada, bug de escrita) demorar três vezes mais para aparecer e enche o log com
- * três cópias do mesmo erro — atrasa o diagnóstico em troca de nada.
+ * Quando a persistência falha, `processIncomingMessage` lança, e na fila isso devolve o evento
+ * para `pending`: o próximo dreno reexecuta o motor DO ZERO, duplicando a fala do cliente,
+ * pagando o cérebro outra vez e reabrindo a janela de corrida com o operador — três estragos
+ * para uma falha que costuma passar milissegundos depois.
+ *
+ * Uma versão anterior deste arquivo trazia classificador PRÓPRIO, e ele era mais permissivo que
+ * `setup/retry.ts` justamente onde importa: aceitava `Transaction not found` — que também
+ * descreve a transação que já COMEÇOU e morreu, e aí a tentativa anterior pode ter escrito —,
+ * `timed out` sem exigir o código do Prisma (redação que aparece em erro de socket, de fetch,
+ * de qualquer biblioteca) e `deadlock` genérico. Repetir sobre erro ambíguo é exatamente como
+ * se duplica efeito, e o comentário prometia uma garantia ("se falhou, nada foi commitado") que
+ * só vale para erro de AQUISIÇÃO.
+ *
+ * Aquele também não tinha teto de relógio: 3 tentativas de 15 s mais backoff passava de 45 s.
+ * `comRetry` tem orçamento monotônico de 30 s e deriva `maxWait`/`timeout` dele — por isso as
+ * transações daqui recebem `opcoes` em vez de constante fixa.
+ *
+ * Dois classificadores concorrentes para a mesma pergunta é como um deles fica para trás.
+ *
+ * Isto NÃO resolve o evento reprocessado depois de restart, órfão ou `markDone` esgotado: essa
+ * é a idempotência durável do `WebhookEvent`, que precisa de estágio persistido, não de retry.
  */
-function ehContencao(erro: unknown): boolean {
-  const texto = String((erro as { message?: unknown })?.message ?? erro)
-  return /SQLITE_BUSY|database is locked|Transaction .*(timed out|not found)|deadlock/i.test(texto)
-}
-
-/**
- * Repete SÓ a transação, nunca o fluxo.
- *
- * Quando a persistência final falha, `processIncomingMessage` lança, e na fila isso devolve o
- * evento para `pending`: o próximo dreno reexecuta o motor DO ZERO. Como a fala do cliente é
- * gravada fora de transação e antes do cérebro, cada reexecução duplica a mensagem do cliente,
- * paga o cérebro outra vez e reabre a janela de corrida com o operador — três estragos para uma
- * falha que costuma passar na segunda tentativa, milissegundos depois.
- *
- * Repetir a transação é seguro porque ela é atômica: se falhou, nada foi commitado e a nova
- * tentativa parte do mesmo estado, CAS inclusive. A espera entre tentativas fica AQUI, fora da
- * transação — dentro dela seria exatamente o `await` que abre a fronteira (ver
- * `fronteira-transacao.test.ts`).
- *
- * Isto NÃO resolve o evento reprocessado depois de um restart: essa é a idempotência durável do
- * `WebhookEvent`, outro problema, com outra solução.
- */
-async function comRetryDeContencao<T>(operacao: () => Promise<T>, tentativas = 3): Promise<T> {
-  let ultimoErro: unknown
-  for (let tentativa = 0; tentativa < tentativas; tentativa += 1) {
-    try {
-      return await operacao()
-    } catch (erro) {
-      if (!ehContencao(erro)) throw erro
-      ultimoErro = erro
-      if (tentativa < tentativas - 1) {
-        await new Promise((resolver) => setTimeout(resolver, 25 * 2 ** tentativa))
-      }
-    }
-  }
-  throw ultimoErro
-}
 
 /**
  * Contexto que a casca de medição precisa e que só é conhecido no meio do
@@ -526,22 +506,46 @@ async function runIncomingMessage(
   const gate = await timer.step('billing', () => checkBillingGate(tenant.id))
   if (!gate.allowed) {
     ctx.outcome = 'billing_blocked'
-    const userMessage = await timer.step('persist_user', async () => {
-      const created = await db.message.create({
-        data: { conversationId, role: 'user', content: message },
-      })
-      // MESMA autoridade dos outros dois caminhos. Aqui era um `update` cego, e ele
-      // atropelava a decisão de quem estava conduzindo: um operador que assumisse durante a
-      // consulta ao gate via a conversa voltar para `needs_human` e sumir da tela dele no meio
-      // do atendimento. `updateMany` com o `where` do CAS transforma isso em no-op quando a
-      // conversa não é mais da IA — inclusive para `closed`.
-      const cas = casDaTomada(conversationId)
-      await db.conversation.updateMany({
-        where: cas.where,
-        data: operationalEffects ? { ...cas.data, status: 'needs_human' } : cas.data,
-      })
-      return created
-    })
+    // NUMA TRANSAÇÃO SÓ, pela mesma razão dos outros dois caminhos.
+    //
+    // Eram duas escritas soltas: `message.create` e, depois, o status. Duas coisas davam
+    // errado. A primeira, um `update` cego atropelava a decisão de quem estava conduzindo —
+    // o operador que assumisse durante a consulta ao gate via a conversa voltar para
+    // `needs_human` e sumir da tela dele no meio do atendimento. A segunda, mais silenciosa:
+    // se a fala do cliente commitasse e o status falhasse, o motor lançava, a fila devolvia o
+    // evento para `pending` e o reprocessamento gravava a fala do cliente OUTRA VEZ.
+    //
+    // Com o CAS como primeiro comando e a mensagem dentro da mesma transação, ou as duas
+    // coisas acontecem ou nenhuma acontece.
+    const userMessage = await timer.step('persist_user', () =>
+      comRetry((opcoes) =>
+        db.$transaction(async (tx) => {
+          const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
+          const created = await tx.message.create({
+            data: { conversationId, role: 'user', content: message },
+          })
+
+          if (autorizada.count === 1 && operationalEffects) {
+            await tx.conversation.update({
+              where: { id: conversationId },
+              data: { status: 'needs_human' },
+            })
+          }
+
+          // Perdemos o CAS: alguém tem a conversa. Se for um humano CONDUZINDO, a fala nova
+          // precisa reordenar a fila dele — ela acabou de chegar. Se for `closed`, não se
+          // toca em nada: o atendimento terminou e não volta por aqui.
+          if (autorizada.count === 0) {
+            await tx.conversation.updateMany({
+              where: { id: conversationId, status: 'human' },
+              data: { updatedAt: new Date() },
+            })
+          }
+
+          return created
+        }, opcoes),
+      ),
+    )
     return {
       conversationId,
       tenantSlug: input.tenantSlug,
@@ -616,7 +620,7 @@ async function runIncomingMessage(
     // conversa que um humano conduz — e um invariante protegido em um caminho só vira bug no
     // outro na primeira vez que alguém mexer.
     const finalizacao = await timer.step('persist_reply', () =>
-      comRetryDeContencao(() =>
+      comRetry((opcoes) =>
         db.$transaction(async (tx): Promise<Finalizacao> => {
           // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
           const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
@@ -642,7 +646,7 @@ async function runIncomingMessage(
             })
           }
           return { tipo: 'ok', assistantMessageId: created.id }
-        }, TRANSACAO_FINAL),
+        }, opcoes),
       ),
     )
     if (finalizacao.tipo === 'humano_assumiu') {
@@ -761,7 +765,7 @@ async function runIncomingMessage(
   // transação aborta e a resposta que afirma "registrei" não existe. A ordem antiga (chamado
   // fora, resposta depois) deixava a frase sobreviver ao chamado que não nasceu.
   const finalizacao = await timer.step('persist_reply', () =>
-    comRetryDeContencao(() =>
+    comRetry((opcoes) =>
       db.$transaction(async (tx): Promise<Finalizacao> => {
         // O CAS da tomada, inline: é ele que estabelece a ordem com a action do operador.
         const autorizada = await tx.conversation.updateMany(casDaTomada(conversationId))
@@ -839,7 +843,7 @@ async function runIncomingMessage(
           })
         }
         return { tipo: 'ok', assistantMessageId: created.id }
-      }, TRANSACAO_FINAL),
+      }, opcoes),
     ),
   )
 

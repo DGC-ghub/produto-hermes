@@ -21,14 +21,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
 import type { AttendantOutput } from './attendant/types'
 
-/** Resposta simples: o foco aqui é a persistência, não a decisão do cérebro. */
+/**
+ * Saída que causa TODOS os efeitos: chamado, lead e escalação.
+ *
+ * Uma versão anterior deste teste usava uma resposta sem efeito nenhum e provava só que a
+ * mensagem do cliente e a do assistente não duplicavam. Com isso, um refactor que tirasse
+ * lead/chamado/handoff de dentro da transação — e portanto os duplicasse a cada tentativa —
+ * passaria batido. Se os efeitos estão na transação, eles têm que sair UMA vez.
+ */
 const SAIDA: AttendantOutput = {
-  reply: 'Claro, posso ajudar com isso.',
-  needsHuman: false,
-  handoffReason: null,
-  leadPatch: null,
-  confidence: 0.9,
-  action: null,
+  reply: 'Pronto, já registrei seu chamado.',
+  needsHuman: true,
+  handoffReason: 'caso_complexo',
+  leadPatch: { name: 'Maria' },
+  confidence: 0.8,
+  action: {
+    type: 'abrir_chamado',
+    subject: 'troca de plantao',
+    description: 'cliente pediu troca de plantao',
+  },
 }
 
 vi.mock('./attendant/providers/mock', () => ({
@@ -64,21 +75,31 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  await db.ticket.deleteMany({ where: { contactId: CONTATO } })
+  await db.handoffEvent.deleteMany({ where: { conversationId: conversaId } })
+  await db.lead.deleteMany({ where: { conversationId: conversaId } })
   await db.message.deleteMany({ where: { conversationId: conversaId } })
   await db.conversation.deleteMany({ where: { id: conversaId } })
 })
 
 describe('persistência final sob contenção', () => {
   it('uma falha transitória é reexecutada NA TRANSAÇÃO, sem repetir cliente nem cérebro', async () => {
-    const real = db.$transaction.bind(db)
+    const real = db.$transaction.bind(db) as (a: unknown, b: unknown) => Promise<unknown>
     let tentativas = 0
     vi.spyOn(db, '$transaction').mockImplementation((async (fn: unknown, opts: unknown) => {
       tentativas += 1
       if (tentativas === 1) {
-        // O modo de falha real: contenção do arquivo, não defeito da operação.
-        throw new Error('SQLITE_BUSY: database is locked')
+        // Falha no COMMIT, não na abertura — e a diferença importa. Lançar antes de executar
+        // o corpo faz a primeira tentativa não escrever nada, e aí uma escrita que ESCAPOU da
+        // transação (um `db.` no lugar de um `tx.`) nunca chega a rodar e passa despercebida.
+        // Rodando o corpo inteiro e falhando depois, o que estiver dentro é desfeito pelo
+        // rollback e o que estiver fora fica — que é exatamente o que queremos flagrar.
+        await real(async (tx: unknown) => {
+          await (fn as (t: unknown) => Promise<unknown>)(tx)
+          throw new Error('SQLITE_BUSY: database is locked')
+        }, opts)
       }
-      return (real as (a: unknown, b: unknown) => Promise<unknown>)(fn, opts)
+      return real(fn, opts)
     }) as typeof db.$transaction)
 
     const r = await processIncomingMessage({
@@ -107,6 +128,89 @@ describe('persistência final sob contenção', () => {
       })
     ).map((m) => m.role)
     expect(papeis).toEqual(['user', 'assistant'])
+
+    // Os efeitos da decisão, UMA vez cada: a tentativa que falhou não deixou rastro.
+    expect(await db.ticket.count({ where: { contactId: CONTATO } })).toBe(1)
+    expect(await db.lead.count({ where: { conversationId: conversaId, name: 'Maria' } })).toBe(1)
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
+  })
+
+  it('o caminho do GUARD também repete a transação, sem chamar o cérebro', async () => {
+    // Tema sensível é decidido pelo guard determinístico e NÃO passa pelo cérebro — é outro
+    // ponto de persistência, com outra transação. Sem este teste, remover o retry só do guard
+    // sobreviveria: o teste de cima atravessa apenas o caminho do cérebro.
+    const real = db.$transaction.bind(db)
+    let tentativas = 0
+    vi.spyOn(db, '$transaction').mockImplementation((async (fn: unknown, opts: unknown) => {
+      tentativas += 1
+      if (tentativas === 1) {
+        throw new Error('SQLITE_BUSY: database is locked')
+      }
+      return (real as (a: unknown, b: unknown) => Promise<unknown>)(fn, opts)
+    }) as typeof db.$transaction)
+
+    const r = await processIncomingMessage({
+      tenantSlug: 'dgc',
+      message: 'preciso falar sobre o contrato e meus dados pessoais',
+      contactId: CONTATO,
+      mode: 'whatsapp',
+    })
+
+    // A escalação aconteceu, apesar da contenção.
+    expect(r.assistantMessageId).not.toBe('')
+    expect(tentativas).toBeGreaterThan(1)
+
+    // O guard decide sozinho: o cérebro nunca foi chamado, nem antes nem depois do retry.
+    expect(chamadasDoCerebro.contagem).toBe(0)
+
+    // Uma fala do cliente, uma resposta, um handoff — a tentativa perdida não deixou rastro.
+    const papeis = (
+      await db.message.findMany({
+        where: { conversationId: conversaId },
+        orderBy: { createdAt: 'asc' },
+        select: { role: true },
+      })
+    ).map((m) => m.role)
+    expect(papeis).toEqual(['user', 'assistant'])
+    expect(await db.handoffEvent.count({ where: { conversationId: conversaId } })).toBe(1)
+  })
+
+  it('transação que JÁ COMEÇOU e morreu NÃO é repetida', async () => {
+    // A distinção que separa um retry seguro de um duplicador de efeitos.
+    //
+    // `P2028` cobre dois sentidos opostos: a transação que não conseguiu COMEÇAR dentro do
+    // `maxWait` (aquisição — nada foi escrito, repetir é seguro) e a que já começou e morreu
+    // ("already closed", "not found", "expired"). No segundo caso a tentativa anterior PODE ter
+    // escrito, e repetir é exatamente como se duplica chamado, lead e handoff.
+    //
+    // Um classificador que olhe só a redação — "timed out", "not found", "deadlock" — não
+    // distingue os dois, e a redação "timed out" ainda por cima aparece em erro de socket, de
+    // fetch, de qualquer biblioteca. Este teste é o que impede alguém de trocar o
+    // classificador de `setup/retry.ts` por um mais permissivo.
+    const real = db.$transaction.bind(db) as (a: unknown, b: unknown) => Promise<unknown>
+    let tentativas = 0
+    vi.spyOn(db, '$transaction').mockImplementation((async (fn: unknown, opts: unknown) => {
+      tentativas += 1
+      if (tentativas === 1) {
+        const erro = Object.assign(
+          new Error('Transaction API error: Transaction already closed: Transaction not found.'),
+          { code: 'P2028' },
+        )
+        throw erro
+      }
+      return real(fn, opts)
+    }) as typeof db.$transaction)
+
+    await expect(
+      processIncomingMessage({
+        tenantSlug: 'dgc',
+        message: 'consigo remarcar meu horário?',
+        contactId: CONTATO,
+        mode: 'whatsapp',
+      }),
+    ).rejects.toThrow('Transaction already closed')
+
+    expect(tentativas).toBe(1)
   })
 
   it('erro que NÃO é de contenção propaga na hora, sem tentar de novo', async () => {
