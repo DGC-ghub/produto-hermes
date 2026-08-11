@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
+import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
 import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
 
 // Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. Default = entregue.
-vi.mock('./channels/dispatch.server', () => ({ sendReply: vi.fn(async () => true) }))
+vi.mock('./alarm.server', () => ({
+  reportDegradation: vi.fn(),
+  reportSensitiveHandoff: vi.fn(),
+}))
+
+vi.mock('./channels/dispatch.server', () => ({
+  sendReply: vi.fn(async () => ({ status: 'sent', providerMessageId: 'wamid.teste' })),
+}))
 
 const TEST_CONTACT_ID = 'test-queue-5511999990000'
 const TEST_PHONE_ID = 'test-queue-phone-id'
@@ -32,7 +40,10 @@ beforeEach(async () => {
   await ensureInitialTenants()
   // Mapeia o número de teste pro tenant dgc (o caminho REAL de resolução).
   await registerWhatsappNumber(TEST_PHONE_ID, 'dgc')
-  vi.mocked(sendReply).mockReset().mockResolvedValue(true) // default: envio entregue
+  // default: envio entregue, com comprovante
+  vi.mocked(sendReply)
+    .mockReset()
+    .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.teste' })
 })
 
 afterEach(async () => {
@@ -106,7 +117,11 @@ describe('drainPending', () => {
 
   it('reenvia o envio ao falhar (blip) sem reprocessar o motor, e completa (#8)', async () => {
     // 1ª tentativa de envio falha; sendWithRetry reenvia e entrega na 2ª.
-    vi.mocked(sendReply).mockReset().mockResolvedValueOnce(false).mockResolvedValue(true)
+    // Primeira tentativa falha de forma RETENTÁVEL; a segunda entrega.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValueOnce({ status: 'not_sent', retryable: true, reason: 'http_429' })
+      .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.teste' })
     await persistInbound([inbound('wamid.test-send-retry')])
     await drainPending()
 
@@ -344,5 +359,45 @@ describe('a cortesia de mídia passa pela mesma autorização do motor', () => {
     expect(evento.status).toBe('pending')
     expect(evento.attempts).toBe(1)
     vi.restoreAllMocks()
+  })
+})
+
+describe('a fila reage ao desfecho do envio, não a um booleano', () => {
+  it('11. ambíguo: uma tentativa só, sem retry, e alarme', async () => {
+    // Reenviar sobre a dúvida entrega uma segunda cópia ao cliente. O sistema para e alarma.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'ambiguous', reason: 'falha_de_rede' })
+
+    await persistInbound([inbound('wamid-envio-ambiguo')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBe(1)
+    expect(reportDegradation).toHaveBeenCalledWith('envio_whatsapp_ambiguo')
+  })
+
+  it('12. não enviado e retentável: o retry acontece', async () => {
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValueOnce({ status: 'not_sent', retryable: true, reason: 'http_429' })
+      .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.ok' })
+
+    await persistInbound([inbound('wamid-envio-429')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('13. não enviado e definitivo: uma tentativa só, e alarme de falha', async () => {
+    // 401 não melhora esperando. Insistir só atrasa o alarme que o dono precisa ver.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'not_sent', retryable: false, reason: 'http_401' })
+
+    await persistInbound([inbound('wamid-envio-401')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBe(1)
+    expect(reportDegradation).toHaveBeenCalledWith('envio_whatsapp_falhou')
   })
 })

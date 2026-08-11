@@ -9,7 +9,7 @@ import { db } from '../../db.server'
 import { reportDegradation } from '../alarm.server'
 import { type DbAuthState, useDbAuthState } from './baileys-auth.server'
 import { installLibsignalLogGuard } from './libsignal-log-guard.server'
-import type { InboundEvent } from './types'
+import type { InboundEvent, SendResult } from './types'
 
 // `libsignal` escreve a sessão criptográfica inteira direto no console, ignorando o logger
 // silencioso do socket. Instalar antes de qualquer conexão evita chaves privadas no log.
@@ -445,17 +445,17 @@ export function getSessionView(sessionId: string): { status: string; qr: string 
  * Envia texto por uma sessão Baileys. Best-effort → boolean (contrato do dispatcher).
  * Ritmo humano (anti-ban): presence 'composing' + atraso proporcional ao tamanho.
  */
-export async function sendText(sessionId: string, to: string, text: string): Promise<boolean> {
+export async function sendText(sessionId: string, to: string, text: string): Promise<SendResult> {
   const entry = sessions.get(sessionId)
   if (entry?.status !== 'conectado') {
     console.warn(`[baileys] envio ignorado — sessão ${sessionId} não conectada`)
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'sessao_desconectada' }
   }
   const jid = resolveReplyJid(sessionId, to)
   if (overContactCap(jid)) {
     console.warn(`[baileys] teto por contato atingido — envio suprimido p/ ${jid}`)
     void reportDegradation('baileys_ping_pong_suprimido')
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'teto_por_contato' }
   }
   try {
     // Teto diário SOFT: só avisa (bloquear deixaria o cliente sem resposta).
@@ -471,15 +471,28 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     await entry.sock.sendPresenceUpdate('composing', jid).catch(() => {})
     const delay = Math.min(PACE_MIN_MS + text.length * PACE_PER_CHAR_MS, PACE_MAX_MS)
     await new Promise((r) => setTimeout(r, delay))
-    await entry.sock.sendMessage(jid, { text })
+    // O comprovante do Baileys é o `key.id` da mensagem devolvida. Ele era descartado.
+    const enviada = await entry.sock.sendMessage(jid, { text })
+
+    // A presença ("digitando…"/"parou") é COSMÉTICA e vem DEPOIS do envio. O `.catch` já
+    // existia, e a razão dele fica registrada: uma falha aqui não pode transformar uma
+    // mensagem comprovadamente entregue em ambígua — isso levaria o sistema a parar e pedir
+    // reconciliação humana por causa de um indicador de digitação.
     await entry.sock.sendPresenceUpdate('paused', jid).catch(() => {})
-    return true
+
+    const id = (enviada as { key?: { id?: unknown } } | null | undefined)?.key?.id
+    if (typeof id !== 'string' || id.length === 0) {
+      console.error('[baileys] envio sem comprovante (key.id) — tratando como ambíguo')
+      return { status: 'ambiguous', reason: 'sem_comprovante' }
+    }
+    return { status: 'sent', providerMessageId: id }
   } catch (error) {
+    // O socket pode ter transmitido antes de cair. Do lado de cá é indistinguível.
     console.error(
       `[baileys] erro no envio (${sessionId}):`,
       error instanceof Error ? error.message : error,
     )
-    return false
+    return { status: 'ambiguous', reason: 'falha_no_socket' }
   }
 }
 

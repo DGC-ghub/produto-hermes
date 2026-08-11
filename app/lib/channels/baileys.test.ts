@@ -37,8 +37,10 @@ function makeFakeSock() {
     _emit: (event: string, arg: unknown) => handlers[event]?.(arg),
     ev: { on: (event: string, cb: (arg: unknown) => void) => (handlers[event] = cb) },
     user: { id: '5511988887777:12@s.whatsapp.net' },
-    sendMessage: vi.fn(async () => ({})),
-    sendPresenceUpdate: vi.fn(async () => {}),
+    // O dublê devolve o comprovante como o Baileys real: `key.id` é o que prova o envio, e
+    // sem ele o resultado é ambíguo (por desenho, não por bug do teste).
+    sendMessage: vi.fn(async () => ({ key: { id: 'BAE5F1A2B3C4D5E6' } })),
+    sendPresenceUpdate: vi.fn(async (_estado: string, _jid?: string) => {}),
     presenceSubscribe: vi.fn(async () => {}),
     end: vi.fn(),
     logout: vi.fn(async () => {}),
@@ -152,16 +154,37 @@ describe('gerente Baileys (ciclo de vida)', () => {
 
   it('sendText só envia quando conectado, com o jid certo', async () => {
     await startPairing('s2')
-    // ainda não conectou → false
-    expect(await sendText('s2', '5511988887777', 'oi')).toBe(false)
+    // ainda não conectou → não enviado, e nada saiu (seguro tentar depois)
+    expect((await sendText('s2', '5511988887777', 'oi')).status).toBe('not_sent')
 
     fake._emit('connection.update', { connection: 'open' })
     await tick()
-    const ok = await sendText('s2', '5511988887777', 'pronto')
-    expect(ok).toBe(true)
+    const r = await sendText('s2', '5511988887777', 'pronto')
+    expect(r.status).toBe('sent')
+    expect(r.status === 'sent' && r.providerMessageId).toBe('BAE5F1A2B3C4D5E6')
     expect(fake.sendMessage).toHaveBeenCalledWith('5511988887777@s.whatsapp.net', {
       text: 'pronto',
     })
+  })
+
+  it('10. falha só na presença NÃO apaga um envio já confirmado', async () => {
+    // `sendPresenceUpdate('paused')` é cosmético e roda DEPOIS do envio. Se uma falha ali
+    // virasse `ambiguous`, o sistema pararia e pediria reconciliação humana por causa de um
+    // indicador de "digitando…" — sobre uma mensagem que o cliente já recebeu.
+    await startPairing('s9')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    fake.sendPresenceUpdate.mockImplementation(async (estado: string, _jid?: string) => {
+      if (estado === 'paused') {
+        throw new Error('socket ocupado')
+      }
+    })
+
+    const r = await sendText('s9', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('sent')
+    expect(fake.sendMessage).toHaveBeenCalled()
   })
 
   it('responde ao remoteJid @lid original, não aos dígitos reconstruídos', async () => {
@@ -188,8 +211,8 @@ describe('gerente Baileys (ciclo de vida)', () => {
     expect(inbound.mock.calls[0][0]).toMatchObject({ contactId: lid, remoteJid: `${lid}@lid` })
 
     // o motor responde passando o contactId (só dígitos) → deve sair pro @lid original
-    const ok = await sendText('s5', lid, 'pronto')
-    expect(ok).toBe(true)
+    const r = await sendText('s5', lid, 'pronto')
+    expect(r.status).toBe('sent')
     expect(fake.sendMessage).toHaveBeenCalledWith(`${lid}@lid`, { text: 'pronto' })
   })
 

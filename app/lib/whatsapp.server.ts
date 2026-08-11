@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { db } from '../db.server'
+import type { SendResult } from './channels/types'
 import { resolveWhatsappCredential } from './whatsapp-credential.server'
 
 // Integração com o WhatsApp Business Platform (Meta Cloud API). O webhook reutiliza
@@ -215,18 +216,18 @@ export async function sendWhatsAppMessage(
   to: string,
   text: string,
   phoneNumberId?: string,
-): Promise<boolean> {
+): Promise<SendResult> {
   const numberId = phoneNumberId ?? process.env.WHATSAPP_PHONE_NUMBER_ID
   if (!numberId) {
     console.warn('[whatsapp] envio ignorado — PHONE_NUMBER_ID ausente')
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'sem_phone_number_id' }
   }
   // Credencial do tenant dono do número (banco, cifrada) com fallback pro env global —
   // permite o 2º cliente enviar pelo próprio token sem que os pilotos (no env) mudem.
   const { accessToken: token } = await resolveWhatsappCredential(numberId)
   if (!token) {
     console.warn('[whatsapp] envio ignorado — sem WHATSAPP_ACCESS_TOKEN (banco/env) para o número')
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'sem_token' }
   }
   try {
     const response = await fetch(
@@ -245,11 +246,39 @@ export async function sendWhatsAppMessage(
     if (!response.ok) {
       const errorBody = await response.text()
       console.error(`[whatsapp] envio falhou: HTTP ${response.status} — ${errorBody}`)
-      return false
+      // 5xx é AMBÍGUO, não "não enviado": o servidor pode ter aceitado a mensagem e falhado
+      // depois, ao montar a resposta. Reenviar aqui duplica no cliente.
+      if (response.status >= 500) {
+        return { status: 'ambiguous', reason: `http_${response.status}` }
+      }
+      // 429 é o único 4xx que melhora esperando; os outros são defeito da requisição.
+      return {
+        status: 'not_sent',
+        retryable: response.status === 429,
+        reason: `http_${response.status}`,
+      }
     }
-    return true
+
+    // O COMPROVANTE. Sem ele não há como saber depois o que aconteceu com esta mensagem, e é
+    // por isso que 200-sem-`wamid` é ambíguo em vez de enviado: o provedor respondeu OK, mas
+    // nada no sistema poderá confirmar a entrega nem reconciliar mais tarde.
+    let providerMessageId: string | null = null
+    try {
+      const corpo = (await response.json()) as { messages?: Array<{ id?: unknown }> }
+      const id = corpo?.messages?.[0]?.id
+      providerMessageId = typeof id === 'string' && id.length > 0 ? id : null
+    } catch {
+      providerMessageId = null
+    }
+    if (!providerMessageId) {
+      console.error('[whatsapp] envio aceito mas SEM comprovante (wamid) — tratando como ambíguo')
+      return { status: 'ambiguous', reason: 'sem_comprovante' }
+    }
+    return { status: 'sent', providerMessageId }
   } catch (error) {
+    // A requisição pode ter chegado e a resposta ter se perdido na volta. Do lado de cá os
+    // dois casos são idênticos — e é exatamente por isso que este é o caso ambíguo.
     console.error('[whatsapp] erro no envio:', error instanceof Error ? error.message : error)
-    return false
+    return { status: 'ambiguous', reason: 'falha_de_rede' }
   }
 }

@@ -11,6 +11,30 @@ export type ChannelRef =
   | { kind: 'meta'; phoneNumberId?: string }
   | { kind: 'baileys'; sessionId: string }
 
+/**
+ * O DESFECHO DE UM ENVIO — três casos, não dois.
+ *
+ * O contrato anterior era `Promise<boolean>`, e nele "não enviei" e "não sei se enviei" eram o
+ * MESMO valor. Um `false` podia ser "sem token" (seguro reenviar) ou "a requisição saiu, o
+ * provedor aceitou, e a resposta se perdeu na volta" (proibido reenviar) — e o código reenviava
+ * nos dois casos. Daí saíam três caminhos de mensagem duplicada, nenhum deles precisando de bug:
+ *
+ *   1. o retry de envio, disparado por qualquer `false`;
+ *   2. o reprocessamento do evento após crash;
+ *   3. o OPERADOR: a tela dizia "não foi enviada", ele clicava de novo, e o cliente recebia
+ *      duas vezes. Sem erro, sem log, fazendo exatamente o que a tela mandou.
+ *
+ * `providerMessageId` é OBRIGATÓRIO em `sent`, e não opcional. Um envio que "deu certo" sem
+ * comprovante não é um envio confirmado — é justamente um caso ambíguo, e deixá-lo entrar como
+ * `sent` com id nulo recriaria dentro do tipo a ambiguidade que ele existe para eliminar.
+ *
+ * `retryable` separa o que o `not_sent` sozinho não separava: 429 pede nova tentativa, 401 não.
+ */
+export type SendResult =
+  | { status: 'sent'; providerMessageId: string }
+  | { status: 'not_sent'; retryable: boolean; reason: string }
+  | { status: 'ambiguous'; reason: string }
+
 // Helper do canal oficial da Meta (preserva o fallback pro env quando sem número).
 export function metaRef(phoneNumberId?: string): ChannelRef {
   return { kind: 'meta', phoneNumberId }

@@ -72,7 +72,9 @@ export async function action({ request }: Route.ActionArgs) {
       text: String(formData.get('text') ?? ''),
     })
     if (!result.ok) {
-      return { error: result.error }
+      // `ambiguous` NÃO é falha: a mensagem pode ter sido entregue. Tratá-lo como erro faria a
+      // tela dizer "falhou", o operador clicaria de novo e o cliente receberia duas vezes.
+      return { error: result.error, ambiguous: result.ambiguous === true }
     }
     return redirect(`/atendente?contactId=${contactId}`)
   }
@@ -433,7 +435,16 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
       <div className="p-6">
         {!onboarding.allDone && <OnboardingChecklist status={onboarding} />}
         {actionData?.error && (
-          <div className="mb-4 rounded-lg border border-urgent/30 bg-urgent/10 px-3 py-2 text-sm text-urgent">
+          <div
+            className={cx(
+              'mb-4 rounded-lg border px-3 py-2 text-sm',
+              // Aviso, não erro: o vermelho de "falhou" empurra o operador a reenviar, que é
+              // exatamente o que não pode acontecer sobre uma entrega incerta.
+              actionData.ambiguous
+                ? 'border-waiting/30 bg-waiting/10 text-ink'
+                : 'border-urgent/30 bg-urgent/10 text-urgent',
+            )}
+          >
             {actionData.error}
           </div>
         )}

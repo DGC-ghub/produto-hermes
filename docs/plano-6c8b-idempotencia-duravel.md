@@ -265,7 +265,15 @@ ancorar.
 > Cada tarefa: arquivos, o RED antes, o comando, e o checkpoint que a fecha.
 > Nenhuma tarefa começa sem a anterior verde.
 
-## T1 — `SendResult` discriminado e fim do retry sobre ambíguo
+## T1 — `SendResult` discriminado e fim do retry sobre ambíguo ✅ **FEITO**
+
+> Entregue. 17 provas, 5 mutações mortas, gate limpo (1420 testes). Dois achados registrados no
+> código: (a) com o retorno virando objeto, `if (await sendReply(...))` fica **sempre
+> verdadeiro** e o retry acharia que todo envio deu certo — o compilador não pega; (b) o
+> primeiro teste do transporte usava `WHATSAPP_TOKEN` onde o código lê `WHATSAPP_ACCESS_TOKEN`,
+> e o caso "sem token" **passava sem provar nada**. A mutação da presença cosmética só morreu
+> depois de o RED 10 existir: um caminho sem prova própria não fica protegido por estar perto
+> de outro que tem.
 
 **Sem migration.** É a única coisa que o passo 1 faz: **discriminar** e **parar de reenviar o
 ambíguo**. Persistir o comprovante fica para T4 — hoje não há coluna onde guardá-lo.

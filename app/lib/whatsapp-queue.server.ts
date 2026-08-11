@@ -9,7 +9,7 @@
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
-import { type ChannelRef, type InboundEvent, metaRef } from './channels/types'
+import { type ChannelRef, type InboundEvent, metaRef, type SendResult } from './channels/types'
 import { processIncomingMessage } from './conversation.server'
 import { type InboundMessage, resolveTenantSlugByPhoneNumber } from './whatsapp.server'
 
@@ -100,16 +100,47 @@ const UNSUPPORTED_MEDIA_REPLY =
 // Chamado/lead). Falha persistente (token errado) ainda cai no alarme; o "guardar e
 // reentregar" completo pra persistente é follow-up (decisão de at-least-once do dono).
 const SEND_RETRIES = 3
-async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise<boolean> {
+/**
+ * Tenta enviar, repetindo SÓ o que se sabe que não saiu.
+ *
+ * A versão anterior era `if (await sendReply(...)) return true` — e repetia qualquer `false`.
+ * Como `false` também significava "a requisição saiu e a resposta se perdeu", o retry
+ * entregava uma segunda cópia ao cliente sem que nada tivesse dado errado no sistema.
+ *
+ * ⚠️ Cuidado que o compilador NÃO pega: com o retorno virando objeto, `if (await sendReply(...))`
+ * fica SEMPRE verdadeiro, e o retry silenciosamente acharia que todo envio deu certo. A
+ * condição tem que olhar o `status`, nunca a verdade do valor.
+ */
+async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise<SendResult> {
+  let ultimo: SendResult = { status: 'not_sent', retryable: true, reason: 'nao_tentado' }
   for (let i = 0; i < SEND_RETRIES; i++) {
-    if (await sendReply(ref, to, text)) {
-      return true
+    ultimo = await sendReply(ref, to, text)
+    // Repete apenas o não-enviado que melhora esperando. `sent` não precisa; `ambiguous` não
+    // pode; `not_sent` permanente não muda.
+    if (!(ultimo.status === 'not_sent' && ultimo.retryable)) {
+      return ultimo
     }
     if (i < SEND_RETRIES - 1) {
       await new Promise((r) => setTimeout(r, 400 * (i + 1)))
     }
   }
-  return false
+  return ultimo
+}
+
+/**
+ * O alarme do envio, por desfecho. `ambiguous` é o caso que precisa de olho humano: a mensagem
+ * pode ter chegado, e o sistema não vai reenviar por decisão de projeto.
+ */
+function alarmarDesfechoDoEnvio(resultado: SendResult): void {
+  if (resultado.status === 'sent') {
+    return
+  }
+  if (resultado.status === 'ambiguous') {
+    console.error(`[fila] envio AMBÍGUO (${resultado.reason}) — não será reenviado`)
+    void reportDegradation('envio_whatsapp_ambiguo')
+    return
+  }
+  void reportDegradation('envio_whatsapp_falhou')
 }
 
 /** O tenant do evento: Baileys pela sessão, Meta pelo número. */
@@ -217,10 +248,7 @@ async function processEvent(event: {
     if (!(await autorizarCortesiaDeMidia({ tenantSlug, contactId: event.contactId }))) {
       return
     }
-    const sent = await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
-    if (!sent) {
-      void reportDegradation('envio_whatsapp_falhou')
-    }
+    alarmarDesfechoDoEnvio(await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY))
     return
   }
 
@@ -233,12 +261,9 @@ async function processEvent(event: {
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendWithRetry(ref, replyTo, result.reply)
     // Falha de ENVIO (após os retries) não marca o evento como falho: a mensagem FOI
     // processada (reprocessar duplicaria chamado/lead). Alarma e segue.
-    if (!sent) {
-      void reportDegradation('envio_whatsapp_falhou')
-    }
+    alarmarDesfechoDoEnvio(await sendWithRetry(ref, replyTo, result.reply))
   }
 }
 
