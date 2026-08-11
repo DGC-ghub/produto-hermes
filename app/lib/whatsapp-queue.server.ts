@@ -112,34 +112,73 @@ async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise
   return false
 }
 
-/**
- * Alguém está CONDUZINDO esta conversa agora?
- *
- * Pergunta feita pelo ramo de áudio/mídia, que responde uma cortesia sem passar pelo motor —
- * e portanto sem passar pelo CAS que protege todos os outros caminhos. Sem isto, o único
- * ponto do produto que fala com o cliente sem perguntar de quem é a conversa.
- *
- * Só o canal `whatsapp` importa aqui: é o único que este código atende. E só `human` — a
- * conversa encerrada não é reutilizada pela resolução por identidade, então um áudio depois
- * do encerramento inicia atendimento novo e merece a cortesia.
- *
- * Erro de leitura NÃO cala o Hermes: o desfecho ruim de falhar aqui é o cliente ficar sem
- * resposta nenhuma, que é pior que uma cortesia a mais.
- */
-async function conversaSobConducaoHumana(event: {
-  contactId: string
+/** O tenant do evento: Baileys pela sessão, Meta pelo número. */
+async function resolveTenantSlugFromEvent(event: {
   phoneNumberId: string
   channelSessionId: string | null
+}): Promise<string | null> {
+  return event.channelSessionId
+    ? ((
+        await db.channelSession.findUnique({
+          where: { id: event.channelSessionId },
+          select: { tenant: { select: { slug: true } } },
+        })
+      )?.tenant.slug ?? null)
+    : await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
+}
+
+/**
+ * A cortesia de mídia pode ser enviada?
+ *
+ * O ramo de áudio responde sem passar pelo motor, e portanto sem passar pelo CAS que protege
+ * todos os outros caminhos. Esta função é o CAS dele — com as três propriedades que a versão
+ * anterior não tinha:
+ *
+ * 1. ISOLAMENTO POR TENANT. A primeira versão buscava só por `contactId` e `status: 'human'`.
+ *    O mesmo telefone pode falar com duas empresas, e um atendimento humano na empresa A
+ *    silenciava a empresa B — o oposto do isolamento que o motor já garante por
+ *    tenant + canal + contato.
+ *
+ * 2. LINEARIZAÇÃO, não leitura. Uma leitura só encurta a janela: entre o `find` e o envio, o
+ *    operador ainda assume e a cortesia escapa. O `updateMany` condicional É a escrita que
+ *    estabelece a ordem, exatamente como `casDaTomada` faz no motor.
+ *
+ * 3. FAIL-CLOSED. A versão anterior tinha `catch { return false }`, e o chamador lê `false`
+ *    como "pode falar" — ou seja, banco indisponível AUTORIZAVA o robô a falar sem que
+ *    ninguém tivesse verificado a autoridade. Agora o erro sobe: a fila devolve o evento para
+ *    `pending` e tenta de novo. O cliente não fica sem resposta, fica com resposta adiada.
+ *
+ * `closed` fica fora da busca de propósito: conversa encerrada não é reutilizada pela
+ * resolução por identidade, então áudio depois do encerramento é atendimento novo e merece a
+ * cortesia.
+ */
+async function autorizarCortesiaDeMidia(input: {
+  tenantSlug: string
+  contactId: string
 }): Promise<boolean> {
-  try {
-    const conversa = await db.conversation.findFirst({
-      where: { contactId: event.contactId, channel: 'whatsapp', status: 'human' },
-      select: { id: true },
-    })
-    return conversa !== null
-  } catch {
-    return false
+  const ativa = await db.conversation.findFirst({
+    where: {
+      tenant: { slug: input.tenantSlug },
+      contactId: input.contactId,
+      channel: 'whatsapp',
+      status: { not: 'closed' },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { id: true },
+  })
+
+  // Nenhuma conversa ativa: é atendimento novo, e não há autoridade a respeitar.
+  if (!ativa) {
+    return true
   }
+
+  // O ponto de linearização com a tomada humana. Mesma allowlist do motor: `human`, `closed`
+  // e qualquer status que ninguém previu perdem — fail-closed por construção.
+  const autorizada = await db.conversation.updateMany({
+    where: { id: ativa.id, status: { in: ['open', 'needs_human'] } },
+    data: { updatedAt: new Date() },
+  })
+  return autorizada.count === 1
 }
 
 async function processEvent(event: {
@@ -158,19 +197,24 @@ async function processEvent(event: {
   // sendo a IDENTIDADE (o motor usa ele); só o destino do envio muda.
   const replyTo = ref.kind === 'baileys' ? (event.remoteJid ?? event.contactId) : event.contactId
 
-  // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
-  // o conteúdo real a gente ainda não lê, então não há o que registrar.
+  // O tenant vem ANTES de qualquer resposta, inclusive a de mídia: sem ele não dá para saber
+  // de quem é a conversa, e responder sem saber é o que quebrava o isolamento.
+  const tenantSlug = await resolveTenantSlugFromEvent(event)
+  if (!tenantSlug) {
+    throw new Error(
+      event.channelSessionId
+        ? `sessão sem empresa: ${event.channelSessionId}`
+        : `número sem empresa mapeada: ${event.phoneNumberId}`,
+    )
+  }
+
+  // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) — o conteúdo real
+  // a gente ainda não lê, então não há o que registrar.
   //
-  // Mas a cortesia É a IA falando com o cliente, e por isso obedece o MESMO invariante do
-  // motor: se um humano conduz a conversa, o Hermes se cala. Este era o único ponto do
-  // produto que falava sem perguntar de quem é a conversa — e o pior tipo de furo, porque
-  // essa fala não vira `Message` e o operador nem descobria o que o cliente ouviu.
-  //
-  // `closed` não entra na regra: a conversa encerrada não é reutilizada (a resolução por
-  // identidade a ignora), então um áudio depois do encerramento é atendimento novo e merece
-  // a cortesia. Aqui a pergunta é só uma: alguém está conduzindo AGORA?
+  // Mas a cortesia É a IA falando com o cliente, e por isso passa pelo mesmo tipo de
+  // autorização que o motor usa. Ver `autorizarCortesiaDeMidia`.
   if (event.kind === 'unsupported') {
-    if (await conversaSobConducaoHumana(event)) {
+    if (!(await autorizarCortesiaDeMidia({ tenantSlug, contactId: event.contactId }))) {
       return
     }
     const sent = await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
@@ -178,23 +222,6 @@ async function processEvent(event: {
       void reportDegradation('envio_whatsapp_falhou')
     }
     return
-  }
-
-  // Resolve o tenant pela origem: Baileys → pela sessão; Meta → pelo número.
-  const tenantSlug = event.channelSessionId
-    ? ((
-        await db.channelSession.findUnique({
-          where: { id: event.channelSessionId },
-          select: { tenant: { select: { slug: true } } },
-        })
-      )?.tenant.slug ?? null)
-    : await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
-  if (!tenantSlug) {
-    throw new Error(
-      event.channelSessionId
-        ? `sessão sem empresa: ${event.channelSessionId}`
-        : `número sem empresa mapeada: ${event.phoneNumberId}`,
-    )
   }
 
   const result = await processIncomingMessage({

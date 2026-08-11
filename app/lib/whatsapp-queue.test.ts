@@ -36,6 +36,12 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  // `MessageTrace.conversationId` não tem FK: apagar a conversa não leva o trace junto, e
+  // estes testes agora atravessam o motor.
+  const idsDeConversa = (
+    await db.conversation.findMany({ where: { contactId: TEST_CONTACT_ID }, select: { id: true } })
+  ).map((c) => c.id)
+  await db.messageTrace.deleteMany({ where: { conversationId: { in: idsDeConversa } } })
   await db.webhookEvent.deleteMany({ where: { contactId: TEST_CONTACT_ID } })
   await db.whatsappNumber.deleteMany({ where: { phoneNumberId: TEST_PHONE_ID } })
   await db.ticket.deleteMany({ where: { contactId: TEST_CONTACT_ID } })
@@ -266,5 +272,77 @@ describe('o silêncio da 6C chega até o fio', () => {
     // vai para o vácuo — é para isso que a coluna `remoteJid` existe.
     expect(vi.mocked(sendReply).mock.calls[0]?.[1]).toBe(TEST_CONTACT_ID)
     expect(String(vi.mocked(sendReply).mock.calls[0]?.[2])).toContain('áudio')
+  })
+})
+
+describe('a cortesia de mídia passa pela mesma autorização do motor', () => {
+  async function conversaDoTenant(slug: string, status: string) {
+    const tenant = await db.tenant.findUniqueOrThrow({ where: { slug } })
+    return db.conversation.create({
+      data: { tenantId: tenant.id, contactId: TEST_CONTACT_ID, channel: 'whatsapp', status },
+    })
+  }
+
+  it('humano em OUTRA empresa não silencia esta', async () => {
+    // O mesmo telefone fala com duas empresas. Um atendimento humano na empresa A não pode
+    // calar a empresa B — é o mesmo isolamento por tenant + canal + contato que o motor já
+    // garante, e que a primeira versão desta autorização não tinha.
+    await conversaDoTenant('assistencia-tecnica-demo', 'human')
+
+    await persistInbound([inbound('wamid-audio-outro-tenant', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('conversa ENCERRADA não silencia um atendimento novo', async () => {
+    // Áudio depois do encerramento é atendimento novo — a resolução por identidade ignora as
+    // encerradas, e a cortesia acompanha essa decisão.
+    await conversaDoTenant('dgc', 'closed')
+
+    await persistInbound([inbound('wamid-audio-encerrada', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('tomada humana ENTRE a resolução e a autorização: silêncio', async () => {
+    // A janela real. Uma leitura só a encurta: entre o `find` e o envio o operador ainda
+    // assume. O spy troca o status DETERMINISTICAMENTE no instante entre a resolução da
+    // conversa e o compare-and-swap — sem `setTimeout`, sem depender de tempo.
+    const conversa = await conversaDoTenant('dgc', 'open')
+    const updateManyReal = db.conversation.updateMany.bind(db.conversation)
+    vi.spyOn(db.conversation, 'updateMany').mockImplementationOnce((async (args: unknown) => {
+      await db.conversation.update({ where: { id: conversa.id }, data: { status: 'human' } })
+      return updateManyReal(args as Parameters<typeof updateManyReal>[0])
+    }) as typeof db.conversation.updateMany)
+
+    await persistInbound([inbound('wamid-audio-tomada', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
+  it('falha ao verificar a autoridade NÃO autoriza o envio', async () => {
+    // Fail-closed. A versão anterior tinha `catch { return false }`, e o chamador lê `false`
+    // como "pode falar": banco indisponível AUTORIZAVA o robô a falar sem ninguém ter
+    // verificado a autoridade. Agora o erro sobe, o evento volta para a fila e é retentado —
+    // o cliente não fica sem resposta, fica com resposta adiada.
+    vi.spyOn(db.conversation, 'findFirst').mockRejectedValueOnce(
+      new Error('SQLITE_BUSY: database is locked'),
+    )
+
+    await persistInbound([inbound('wamid-audio-erro', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid-audio-erro' },
+    })
+    expect(evento.status).toBe('pending')
+    expect(evento.attempts).toBe(1)
+    vi.restoreAllMocks()
   })
 })
