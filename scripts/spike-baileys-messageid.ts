@@ -92,18 +92,60 @@ if (sessao.tenant.slug !== tenantEsperado) {
 }
 
 /**
- * Empresas que NUNCA podem ser usadas no spike, mesmo com todo o resto correto.
+ * CONFIRMAÇÃO NOMINAL do risco — não um "sim" genérico.
  *
- * `adv-gac` atende cliente de verdade pelo QR. Abrir uma segunda conexão com as credenciais
- * dela pode derrubar o atendimento — e o `disconnect()` do produto grava `desconectado`, estado
- * que o boot do serviço NÃO retoma sozinho. O cliente ficaria mudo até alguém parear de novo.
+ * Abrir uma segunda conexão com as credenciais de uma sessão pareada pode derrubá-la, e aí
+ * alguém precisa escanear o QR de novo. Quem autoriza tem que NOMEAR a empresa e a sessão: um
+ * `=sim` solto foi exatamente o defeito da primeira versão deste script — removia o aviso sem
+ * remover o risco, e aceitava qualquer sessão, inclusive a errada.
+ *
+ * As duas variáveis são conferidas contra o que está no banco. Errar de sessão exige errar
+ * duas vezes, escrevendo o id certo da sessão errada.
  */
-const PROIBIDAS = ['adv-gac']
-if (PROIBIDAS.includes(sessao.tenant.slug)) {
+const riscoAceito = process.env.SPIKE_ACEITO_RISCO_TENANT ?? ''
+const sessaoEsperada = process.env.SPIKE_EXPECTED_SESSION_ID ?? ''
+
+if (riscoAceito !== sessao.tenant.slug) {
   abortar(
-    `A empresa "${sessao.tenant.slug}" atende cliente real e está bloqueada para spike.\n` +
-      '   Use uma sessão dedicada de teste (forma A do roteiro).',
+    `Falta a confirmação nominal do risco desta empresa.\n` +
+      `   A sessão pertence a "${sessao.tenant.slug}". Para prosseguir, declare:\n` +
+      `   SPIKE_ACEITO_RISCO_TENANT=${sessao.tenant.slug}\n` +
+      '   (a sessão pode cair e exigir novo pareamento por QR)',
   )
+}
+if (sessaoEsperada !== sessionId) {
+  abortar(
+    'Falta SPIKE_EXPECTED_SESSION_ID, ou ele não bate com SPIKE_SESSION_ID.\n' +
+      '   As duas precisam nomear a MESMA sessão — é a segunda barreira contra rodar na errada.',
+  )
+}
+
+/**
+ * O serviço tem que estar PARADO.
+ *
+ * Duas conexões com as mesmas credenciais brigam, e é assim que a sessão cai. Verificar o
+ * processo é mais confiável que confiar no passo do roteiro ter sido seguido.
+ */
+const { execSync } = await import('node:child_process')
+let servicoAtivo = false
+try {
+  servicoAtivo =
+    execSync('systemctl --user is-active hermes 2>/dev/null || true').toString().trim() === 'active'
+} catch {
+  servicoAtivo = false
+}
+if (servicoAtivo) {
+  abortar(
+    'O serviço hermes está ATIVO. Ele mantém o próprio socket desta sessão, e duas conexões\n' +
+      '   com as mesmas credenciais derrubam o pareamento.\n' +
+      '   Pare antes:  systemctl --user stop hermes',
+  )
+}
+
+/** Fila vazia: não vale rodar com mensagem de alguém esperando processamento. */
+const emVoo = await db.webhookEvent.count({ where: { status: { in: ['pending', 'processing'] } } })
+if (emVoo > 0) {
+  abortar(`Há ${emVoo} evento(s) na fila (pending/processing). Espere esvaziar antes do spike.`)
 }
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
@@ -195,7 +237,7 @@ for (const sinal of ['SIGINT', 'SIGTERM'] as const) {
 console.log('\n── SPIKE: messageId repetido no Baileys ──')
 console.log(`empresa:  ${sessao.tenant.slug}`)
 console.log(`sessão:   ${sessionId}`)
-console.log(`destino:  ${to}`)
+console.log(`destino:  ${to.slice(0, 4)}***${to.slice(-4)} (mascarado)`)
 console.log(`id:       ${idRepetido}\n`)
 
 let id1 = ''
