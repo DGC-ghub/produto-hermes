@@ -272,7 +272,9 @@ export async function sendWhatsAppMessage(
       providerMessageId = null
     }
     if (!providerMessageId) {
-      console.error('[whatsapp] envio aceito mas SEM comprovante (wamid) — tratando como ambíguo')
+      console.error('[whatsapp] resposta 2xx SEM identificador (wamid) — tratando como ambíguo')
+      // O valor do `reason` é IDENTIDADE INTERNA (telemetria/consumidores) e fica como está —
+      // renomear é refatoração própria. Leia-o como "sem identificador", não como um recibo.
       return { status: 'ambiguous', reason: 'sem_comprovante' }
     }
     return { status: 'sent', providerMessageId }

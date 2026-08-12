@@ -5,11 +5,15 @@
 //
 //   not_sent  → nada saiu. Reenviar é seguro (e `retryable` diz se vale a pena).
 //   ambiguous → pode ter saído. Reenviar duplica no cliente.
-//   sent      → saiu, e temos o comprovante do provedor.
+//   sent      → a chamada concluiu e devolveu um identificador de mensagem.
+//
+// `sent` é o melhor desfecho que este lado consegue observar, e ainda assim é modesto: o
+// identificador NÃO prova aceitação remota, entrega ao aparelho nem leitura (T2: três
+// identificadores devolvidos, zero entregas).
 //
 // O caso 6 é o mais sutil: HTTP 200 sem `wamid` no corpo. É tentador chamar de `sent` — o
-// provedor respondeu OK. Mas sem comprovante não há como saber depois o que aconteceu com
-// aquela mensagem, e `sent` sem id recriaria dentro do tipo a ambiguidade que ele elimina.
+// provedor respondeu OK. Mas sem identificador não há como saber depois de QUAL mensagem
+// estamos falando, e `sent` sem id recriaria dentro do tipo a ambiguidade que ele elimina.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sendWhatsAppMessage } from './whatsapp.server'
@@ -73,7 +77,7 @@ describe('classificação do envio (Meta)', () => {
     expect(r.status).toBe('ambiguous')
   })
 
-  it('5. HTTP 200 com wamid é ENVIADO, e o comprovante vem junto', async () => {
+  it('5. HTTP 200 com wamid é ENVIADO, e o identificador vem junto', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       respostaDaMeta(200, { messages: [{ id: 'wamid.ABC123' }] }),
     )
@@ -85,7 +89,7 @@ describe('classificação do envio (Meta)', () => {
   })
 
   it('6. HTTP 200 SEM wamid é AMBÍGUO, não enviado-com-sucesso', async () => {
-    // Sem comprovante não há como saber depois o que aconteceu com esta mensagem. Chamar de
+    // Sem identificador não há como voltar a falar desta mensagem em particular. Chamar de
     // `sent` aqui autorizaria o resto do sistema a seguir em frente com uma certeza que não
     // existe.
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(respostaDaMeta(200, { messages: [] }))

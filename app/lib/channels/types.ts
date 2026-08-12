@@ -16,8 +16,9 @@ export type ChannelRef =
  *
  * O contrato anterior era `Promise<boolean>`, e nele "não enviei" e "não sei se enviei" eram o
  * MESMO valor. Um `false` podia ser "sem token" (seguro reenviar) ou "a requisição saiu, o
- * provedor aceitou, e a resposta se perdeu na volta" (proibido reenviar) — e o código reenviava
- * nos dois casos. Daí saíam três caminhos de mensagem duplicada, nenhum deles precisando de bug:
+ * provedor PODE tê-la processado, e a resposta se perdeu na volta" (proibido reenviar) — e o
+ * código reenviava nos dois casos. O segundo é hipótese, e é justamente por não ser observável
+ * daqui que ele obriga a parar. Daí saíam três caminhos de mensagem duplicada, nenhum deles precisando de bug:
  *
  *   1. o retry de envio, disparado por qualquer `false`;
  *   2. o reprocessamento do evento após crash;
@@ -25,8 +26,15 @@ export type ChannelRef =
  *      duas vezes. Sem erro, sem log, fazendo exatamente o que a tela mandou.
  *
  * `providerMessageId` é OBRIGATÓRIO em `sent`, e não opcional. Um envio que "deu certo" sem
- * comprovante não é um envio confirmado — é justamente um caso ambíguo, e deixá-lo entrar como
- * `sent` com id nulo recriaria dentro do tipo a ambiguidade que ele existe para eliminar.
+ * identificador não é um envio distinguível de nenhum outro — é justamente um caso ambíguo, e
+ * deixá-lo entrar como `sent` com id nulo recriaria dentro do tipo a ambiguidade que ele existe
+ * para eliminar.
+ *
+ * ⚠️ **O QUE `sent` NÃO DIZ.** `providerMessageId` é o identificador da mensagem retornado por
+ * uma chamada de envio que concluiu com estrutura válida. Ele **não** prova aceitação remota,
+ * **não** prova entrega ao aparelho e **não** prova leitura. O T2 mediu o limite disso na
+ * prática: três identificadores devolvidos e ZERO entregas (destino errado). O que ele dá é a
+ * capacidade de, mais tarde, falar sobre ESTA mensagem em vez de sobre "alguma".
  *
  * `retryable` separa o que o `not_sent` sozinho não separava: 429 pede nova tentativa, 401 não.
  */
@@ -45,8 +53,11 @@ export function metaRef(phoneNumberId?: string): ChannelRef {
 // sessão e persiste na fila (mesmo caminho do inbound Meta). Ver plano §1.2/§5.
 export type InboundEvent = {
   channelSessionId: string // a sessão Baileys que recebeu (resolve o tenant)
-  contactId: string // MSISDN do cliente (só dígitos, casa com o wa_id da Meta)
-  remoteJid: string // endereço ORIGINAL pra responder (sock.sendMessage), sem reconstruir
+  // Identidade normalizada do contato NESTE canal — só dígitos, e não necessariamente um
+  // telefone: em `@s.whatsapp.net` casa com o `wa_id` da Meta, mas em `@lid` (número oculto) é
+  // um identificador opaco do qual não se deriva o número. Ver a nota em `jidToMsisdn`.
+  contactId: string
+  remoteJid: string // endereço REAL pra responder (sock.sendMessage), sem reconstruir
   messageId: string // key.id — dedup POR sessão (não é único global)
   kind: 'text' | 'unsupported'
   text?: string

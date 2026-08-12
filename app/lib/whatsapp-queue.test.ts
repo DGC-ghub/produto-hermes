@@ -6,7 +6,8 @@ import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
 
-// Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. Default = entregue.
+// Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. O default é o desfecho
+// `sent` — chamada concluída com identificador —, que não é o mesmo que "entregue ao aparelho".
 vi.mock('./alarm.server', () => ({
   reportDegradation: vi.fn(),
   reportSensitiveHandoff: vi.fn(),
@@ -40,7 +41,7 @@ beforeEach(async () => {
   await ensureInitialTenants()
   // Mapeia o número de teste pro tenant dgc (o caminho REAL de resolução).
   await registerWhatsappNumber(TEST_PHONE_ID, 'dgc')
-  // default: envio entregue, com comprovante
+  // default: envio concluído localmente, com identificador
   vi.mocked(sendReply)
     .mockReset()
     .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.teste' })
@@ -385,7 +386,7 @@ describe('a fila reage ao desfecho do envio, não a um booleano', () => {
     ).toHaveLength(1)
   })
 
-  it('11b. entregue: nenhum alarme de envio — o silêncio é o sinal de que deu certo', async () => {
+  it('11b. `sent`: nenhum alarme de envio — o silêncio é o sinal de que deu certo', async () => {
     // O par positivo dos casos 11 e 13. Sem ele, um alarme disparado também no caminho feliz
     // passaria despercebido: os dois testes de falha continuariam verdes, e o dono receberia
     // `envio_whatsapp_falhou` no celular a cada mensagem respondida com sucesso.

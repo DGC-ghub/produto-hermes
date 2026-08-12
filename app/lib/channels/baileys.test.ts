@@ -81,7 +81,9 @@ describe('normalizeInbound (filtros defensivos)', () => {
     const m = textMsg('5511988887777', 'antiga', old)
     expect(normalizeInbound('s1', m as never, Date.now())).toBeNull()
   })
-  it('texto vira InboundEvent com contactId em MSISDN e o remoteJid original', () => {
+  // Aqui o jid é `@s.whatsapp.net`, e só AÍ os dígitos do `contactId` são mesmo um telefone.
+  // Em `@lid` o mesmo campo é identificador opaco — ver o teste do `@lid` mais abaixo.
+  it('texto vira InboundEvent com os dígitos do jid @s.whatsapp.net e o remoteJid original', () => {
     const e = normalizeInbound('s1', textMsg('5511988887777', 'geladeira parou') as never, null)
     expect(e).toMatchObject({
       channelSessionId: 's1',

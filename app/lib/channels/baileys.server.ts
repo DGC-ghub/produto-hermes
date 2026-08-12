@@ -171,7 +171,13 @@ const silentLogger: any = {
   error: () => {},
 }
 
-// Só dígitos do jid (5511...:12@s.whatsapp.net → 5511...) — casa com o wa_id da Meta.
+// Só os dígitos do jid (5511…:12@s.whatsapp.net → 5511…).
+//
+// ⚠️ O NOME PROMETE MAIS DO QUE A FUNÇÃO ENTREGA, e o T2 mediu isso: num jid `@lid` (número
+// oculto) os dígitos extraídos NÃO são um telefone — são um identificador opaco de 14–15
+// dígitos, e não há conversão daqui para o número. Só em `@s.whatsapp.net` o resultado casa com
+// o `wa_id` da Meta. Isto é identidade normalizada do contato no canal, não MSISDN garantido.
+// (Renomear é refatoração própria; mapear LID ↔ telefone é frente separada, fora da 6C.8B.)
 function jidToMsisdn(jid: string): string {
   return jid.split('@')[0]?.split(':')[0]?.replace(/\D/g, '') ?? ''
 }
@@ -478,18 +484,19 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     await entry.sock.sendPresenceUpdate('composing', jid).catch(() => {})
     const delay = Math.min(PACE_MIN_MS + text.length * PACE_PER_CHAR_MS, PACE_MAX_MS)
     await new Promise((r) => setTimeout(r, delay))
-    // O comprovante do Baileys é o `key.id` da mensagem devolvida. Ele era descartado.
+    // O identificador do Baileys é o `key.id` da mensagem devolvida. Ele era descartado.
     const enviada = await entry.sock.sendMessage(jid, { text })
 
-    // A presença ("digitando…"/"parou") é COSMÉTICA e vem DEPOIS do envio. O `.catch` já
-    // existia, e a razão dele fica registrada: uma falha aqui não pode transformar uma
-    // mensagem comprovadamente entregue em ambígua — isso levaria o sistema a parar e pedir
-    // reconciliação humana por causa de um indicador de digitação.
+    // A presença ("digitando…"/"parou") é COSMÉTICA e roda DEPOIS de `sendMessage` já ter
+    // concluído com identificador. O `.catch` já existia, e a razão dele fica registrada: uma
+    // falha aqui não pode apagar aquele desfecho nem transformá-lo em ambíguo — isso levaria o
+    // sistema a parar e pedir reconciliação humana por causa de um indicador de digitação.
     await entry.sock.sendPresenceUpdate('paused', jid).catch(() => {})
 
     const id = (enviada as { key?: { id?: unknown } } | null | undefined)?.key?.id
     if (typeof id !== 'string' || id.length === 0) {
-      console.error('[baileys] envio sem comprovante (key.id) — tratando como ambíguo')
+      console.error('[baileys] envio sem identificador (key.id) — tratando como ambíguo')
+      // `reason` é identidade interna e não muda aqui (ver a mesma nota em whatsapp.server.ts).
       return { status: 'ambiguous', reason: 'sem_comprovante' }
     }
     return { status: 'sent', providerMessageId: id }
