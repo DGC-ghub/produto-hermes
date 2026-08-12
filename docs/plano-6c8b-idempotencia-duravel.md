@@ -400,7 +400,13 @@ ser — mesmo desenho do `(sourceEventId, sourceEventKind)` do ponto 7.
    decisão a ser consciente;
 6. o id casa com `/^3EB0[0-9A-F]{36}$/`, o único formato que o T2 observou;
 7. **sem** id fornecido, o envio segue como hoje e a biblioteca escolhe — o T3a não pode tornar o
-   parâmetro obrigatório (o operator-reply é ação do operador e não tem evento de origem).
+   parâmetro obrigatório (o operator-reply é ação do operador e não tem evento de origem);
+8. o identificador **devolvido** tem que ser o solicitado: `key.id` divergente é
+   `ambiguous / identificador_divergente`, nunca `sent` (lacuna P1 achada na revisão do T3a —
+   encaminhar o id não bastava, o adapter aceitava qualquer id de volta, e o T3b passaria a reusar
+   um identificador que não é o da mensagem que existe do outro lado). `ambiguous` e não
+   `not_sent` porque o socket já foi chamado; e o id solicitado **não** vira `providerMessageId`,
+   para a divergência não ficar maquiada.
 
 O terceiro é o que dá valor aos dois primeiros: sem ele, "id sempre igual" também seria
 satisfeito por uma constante — e uma constante colaria mensagens diferentes numa só.

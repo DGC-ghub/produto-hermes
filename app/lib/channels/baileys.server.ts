@@ -516,6 +516,25 @@ export async function sendText(
       // `reason` é identidade interna e não muda aqui (ver a mesma nota em whatsapp.server.ts).
       return { status: 'ambiguous', reason: 'sem_comprovante' }
     }
+    // O IDENTIFICADOR DEVOLVIDO TEM QUE SER O SOLICITADO.
+    //
+    // Encaminhar o id no terceiro argumento não basta: sem esta conferência, uma chamada feita
+    // com X podia concluir como `sent(Y)`, e o T3b — que vai reusar o identificador para repetir
+    // um envio depois de um crash — estaria falando de uma mensagem que não é a que existe do
+    // outro lado. Na biblioteca instalada um `messageId` fornecido PREVALECE
+    // (`Socket/messages-send.js:1086`: `{ messageId: generateMessageIDV2(...), ...options }`),
+    // então divergir dali é comportamento inesperado, não sucesso seguro.
+    //
+    // `ambiguous` e não `not_sent`: o socket JÁ foi chamado, e o que aconteceu do lado de fora é
+    // incerto — reenviar sobre isso é a duplicação que a 6C.8B existe para eliminar. E o id
+    // solicitado NÃO vira `providerMessageId`: maquiar a divergência esconderia justamente o
+    // desencontro que precisa ficar visível.
+    if (options?.outboundMessageId && id !== options.outboundMessageId) {
+      console.error(
+        '[baileys] identificador retornado diverge do solicitado — tratando como ambíguo',
+      )
+      return { status: 'ambiguous', reason: 'identificador_divergente' }
+    }
     return { status: 'sent', providerMessageId: id }
   } catch (error) {
     // O socket pode ter transmitido antes de cair. Do lado de cá é indistinguível.

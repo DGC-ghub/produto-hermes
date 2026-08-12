@@ -40,7 +40,17 @@ function makeFakeSock() {
     // O dublê devolve o `key.id` como o Baileys real: é o IDENTIFICADOR de uma chamada
     // concluída — não prova aceitação remota nem entrega —, e sem ele o resultado é ambíguo
     // (por desenho, não por bug do teste).
-    sendMessage: vi.fn(async () => ({ key: { id: 'BAE5F1A2B3C4D5E6' } })),
+    //
+    // E ele ECOA o `messageId` recebido, porque é o que a biblioteca instalada faz:
+    // `messages-send.js:1086` monta `{ messageId: generateMessageIDV2(...), ...options }`, e o
+    // espalhamento vem DEPOIS — um id fornecido prevalece. Um dublê que ignorasse o id pedido
+    // deixaria o adapter livre para aceitar qualquer identificador de volta, que é exatamente a
+    // divergência provada logo abaixo (caso 22).
+    sendMessage: vi.fn(
+      async (_jid: string, _content: unknown, options?: { messageId?: string }) => ({
+        key: { id: options?.messageId ?? 'BAE5F1A2B3C4D5E6' },
+      }),
+    ),
     sendPresenceUpdate: vi.fn(async (_estado: string, _jid?: string) => {}),
     presenceSubscribe: vi.fn(async () => {}),
     end: vi.fn(),
@@ -272,6 +282,49 @@ describe('gerente Baileys (ciclo de vida)', () => {
       { text: 'pronto' },
       { messageId: id },
     )
+  })
+
+  it('22. identificador DEVOLVIDO diferente do solicitado é AMBÍGUO, não sucesso', async () => {
+    // A lacuna que a revisão achou: o adapter provava que o id SAI no terceiro argumento, e
+    // aceitava de volta qualquer `key.id`. Ficava possível concluir com `sent(Y)` uma chamada
+    // feita com X — e o T3b, que vai reusar o identificador para repetir um envio depois de um
+    // crash, estaria falando de uma mensagem que não é a que existe do outro lado.
+    //
+    // Na biblioteca instalada (`messages-send.js:1086`) um `messageId` fornecido PREVALECE.
+    // Divergir dali é comportamento inesperado, não sucesso seguro — e como o socket já foi
+    // chamado, o desfecho externo é incerto: `ambiguous`, nunca `not_sent`.
+    await startPairing('s15')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const solicitado = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+    fake.sendMessage.mockResolvedValueOnce({
+      key: { id: '3EB0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' },
+    } as never)
+
+    const r = await sendText('s15', '5511988887777', 'pronto', {
+      outboundMessageId: solicitado,
+    })
+
+    expect(r.status).toBe('ambiguous')
+    expect(r.status === 'ambiguous' && r.reason).toBe('identificador_divergente')
+    // E o identificador solicitado NÃO pode ser devolvido como se fosse o do provedor: a
+    // divergência tem que ficar visível, não maquiada.
+    expect(r.status === 'sent').toBe(false)
+  })
+
+  it('23. par positivo — identificador devolvido IGUAL ao solicitado conclui com ele', async () => {
+    // Sem este par, recusar tudo passaria no caso 22 e o canal QR nunca mais concluiria um envio.
+    await startPairing('s16')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const solicitado = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+
+    const r = await sendText('s16', '5511988887777', 'pronto', {
+      outboundMessageId: solicitado,
+    })
+
+    expect(r.status).toBe('sent')
+    expect(r.status === 'sent' && r.providerMessageId).toBe(solicitado)
   })
 
   it('21. SEM id fornecido o envio segue como hoje — a biblioteca escolhe', async () => {
