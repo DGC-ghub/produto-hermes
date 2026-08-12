@@ -363,6 +363,12 @@ describe('a cortesia de mídia passa pela mesma autorização do motor', () => {
 })
 
 describe('a fila reage ao desfecho do envio, não a um booleano', () => {
+  // O dublê do alarme é de módulo e ACUMULA entre os testes do arquivo. Contar chamadas sem
+  // zerar aqui mediria o que os testes anteriores fizeram, não este.
+  beforeEach(() => {
+    vi.mocked(reportDegradation).mockClear()
+  })
+
   it('11. ambíguo: uma tentativa só, sem retry, e alarme', async () => {
     // Reenviar sobre a dúvida entrega uma segunda cópia ao cliente. O sistema para e alarma.
     vi.mocked(sendReply)
@@ -373,7 +379,23 @@ describe('a fila reage ao desfecho do envio, não a um booleano', () => {
     await drainPending()
 
     expect(vi.mocked(sendReply).mock.calls.length).toBe(1)
-    expect(reportDegradation).toHaveBeenCalledWith('envio_whatsapp_ambiguo')
+    // UMA vez, e não uma por tentativa: alarme repetido é alarme que o dono aprende a ignorar.
+    expect(
+      vi.mocked(reportDegradation).mock.calls.filter((c) => c[0] === 'envio_whatsapp_ambiguo'),
+    ).toHaveLength(1)
+  })
+
+  it('11b. entregue: nenhum alarme de envio — o silêncio é o sinal de que deu certo', async () => {
+    // O par positivo dos casos 11 e 13. Sem ele, um alarme disparado também no caminho feliz
+    // passaria despercebido: os dois testes de falha continuariam verdes, e o dono receberia
+    // `envio_whatsapp_falhou` no celular a cada mensagem respondida com sucesso.
+    await persistInbound([inbound('wamid-envio-ok-sem-alarme')])
+    await drainPending()
+
+    const alarmesDeEnvio = vi
+      .mocked(reportDegradation)
+      .mock.calls.filter((c) => String(c[0]).startsWith('envio_whatsapp'))
+    expect(alarmesDeEnvio).toEqual([])
   })
 
   it('12. não enviado e retentável: o retry acontece', async () => {

@@ -55,8 +55,12 @@ const loaderData = {
 // A tela é um componente de rota; aqui só o `loaderData` importa.
 const Screen = Atendente as unknown as (props: { loaderData: typeof loaderData }) => ReactNode
 
-/** Renderiza a Central com uma submissão em voo (ou nenhuma, quando `formData` é omitido). */
-function render(formData?: FormData): string {
+/**
+ * Renderiza a Central com uma submissão em voo (ou nenhuma, quando `formData` é omitido) e,
+ * opcionalmente, com o desfecho de uma ação já concluída (`actionData`) — é por ele que a tela
+ * fica sabendo se o envio falhou ou apenas ficou em dúvida.
+ */
+function render(formData?: FormData, actionData?: { error?: string; ambiguous?: boolean }): string {
   const navigation = formData ? { state: 'submitting', formData } : { state: 'idle' }
   // Contextos mínimos de um router com dados: `useNavigation`/`useActionData` (e o `<Form>`
   // e o `<NavLink>` da casca) leem daqui. Nada é submetido de verdade — só marcação.
@@ -72,7 +76,14 @@ function render(formData?: FormData): string {
     <MemoryRouter>
       <UNSAFE_DataRouterContext.Provider value={routerContext as never}>
         <UNSAFE_DataRouterStateContext.Provider
-          value={{ navigation, loaderData: {}, actionData: undefined } as never}
+          value={
+            {
+              navigation,
+              loaderData: {},
+              // `useActionData` lê o desfecho pela ID da rota — a mesma do `match` acima.
+              actionData: actionData ? { atendente: actionData } : undefined,
+            } as never
+          }
         >
           <UNSAFE_RouteContext.Provider value={routeContext as never}>
             <Screen loaderData={loaderData} />
@@ -96,6 +107,14 @@ function isDisabled(html: string, label: string): boolean {
   const button = buttonWith(html, label)
   expect(button, `botão "${label}" não encontrado na tela`).toBeDefined()
   return / disabled=""/.test(String(button))
+}
+
+/** As classes da caixa de aviso que envolve exatamente esta mensagem. */
+function bannerClasses(html: string, message: string): string {
+  const escaped = message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = html.match(new RegExp(`<div class="([^"]*)">${escaped}</div>`))
+  expect(match, `caixa com a mensagem "${message}" não encontrada na tela`).not.toBeNull()
+  return String(match?.[1])
 }
 
 function submission(entries: Record<string, string>): FormData {
@@ -122,6 +141,33 @@ describe('Central do atendente — editor da resposta', () => {
 
   it('mantém a identidade quando o envio falha e nenhuma mensagem é persistida', () => {
     expect(replyComposerKey({ ...dossier })).toBe(replyComposerKey(dossier))
+  })
+})
+
+describe('a dúvida do envio chega à TELA como dúvida, não como falha', () => {
+  // A prova do `operator-reply.server.ts` para no servidor: ela mostra que o TEXTO muda. Mas
+  // quem induz (ou não) o segundo clique é a tela, e ali o desfecho ambíguo passava pela mesma
+  // caixa vermelha de "falhou" até a `action` carregar o `ambiguous` adiante. Sem esta prova,
+  // apagar o ternário do banner deixava a suíte inteira verde.
+  const AMBIGUO = 'Registrei a mensagem, mas a confirmação do WhatsApp não voltou.'
+  const FALHOU = 'Registrei a mensagem, mas o envio pelo WhatsApp falhou.'
+
+  it('ambíguo aparece como AVISO — sem o vermelho que empurra para reenviar', () => {
+    const html = render(undefined, { error: AMBIGUO, ambiguous: true })
+
+    const classes = bannerClasses(html, AMBIGUO)
+    expect(classes).toContain('bg-waiting/10')
+    expect(classes).not.toContain('text-urgent')
+  })
+
+  it('falha definitiva continua vermelha — os dois casos NÃO se parecem', () => {
+    // O par negativo. Sem ele, "tudo amarelo" também passaria no teste de cima, e o operador
+    // perderia o sinal de que precisa mesmo conferir o número conectado.
+    const html = render(undefined, { error: FALHOU, ambiguous: false })
+
+    const classes = bannerClasses(html, FALHOU)
+    expect(classes).toContain('text-urgent')
+    expect(classes).not.toContain('bg-waiting/10')
   })
 })
 

@@ -259,9 +259,10 @@ export async function sendWhatsAppMessage(
       }
     }
 
-    // O COMPROVANTE. Sem ele não há como saber depois o que aconteceu com esta mensagem, e é
-    // por isso que 200-sem-`wamid` é ambíguo em vez de enviado: o provedor respondeu OK, mas
-    // nada no sistema poderá confirmar a entrega nem reconciliar mais tarde.
+    // O IDENTIFICADOR — e nada além disso: ele não prova entrega. Sem ele, porém, não há como
+    // sequer saber depois de QUAL mensagem estamos falando, e é por isso que 200-sem-`wamid` é
+    // ambíguo em vez de enviado: o provedor respondeu OK, mas nada no sistema poderá
+    // reconciliar essa mensagem mais tarde.
     let providerMessageId: string | null = null
     try {
       const corpo = (await response.json()) as { messages?: Array<{ id?: unknown }> }

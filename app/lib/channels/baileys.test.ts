@@ -37,8 +37,9 @@ function makeFakeSock() {
     _emit: (event: string, arg: unknown) => handlers[event]?.(arg),
     ev: { on: (event: string, cb: (arg: unknown) => void) => (handlers[event] = cb) },
     user: { id: '5511988887777:12@s.whatsapp.net' },
-    // O dublê devolve o comprovante como o Baileys real: `key.id` é o que prova o envio, e
-    // sem ele o resultado é ambíguo (por desenho, não por bug do teste).
+    // O dublê devolve o `key.id` como o Baileys real: é o IDENTIFICADOR de uma chamada
+    // concluída — não prova aceitação remota nem entrega —, e sem ele o resultado é ambíguo
+    // (por desenho, não por bug do teste).
     sendMessage: vi.fn(async () => ({ key: { id: 'BAE5F1A2B3C4D5E6' } })),
     sendPresenceUpdate: vi.fn(async (_estado: string, _jid?: string) => {}),
     presenceSubscribe: vi.fn(async () => {}),
@@ -185,6 +186,64 @@ describe('gerente Baileys (ciclo de vida)', () => {
 
     expect(r.status).toBe('sent')
     expect(fake.sendMessage).toHaveBeenCalled()
+  })
+
+  // OS DESFECHOS DO BAILEYS QUE NÃO TINHAM PROVA PRÓPRIA.
+  //
+  // O T1 implementou os três corretamente, e nenhum era verificado: a suíte só exercitava o
+  // caminho feliz e a sessão desconectada. É exatamente a lição registrada no próprio T1 — um
+  // caminho sem prova própria não fica protegido por estar perto de outro que tem.
+  //
+  // O `catch` é o mais caro dos três. Mutá-lo para `not_sent` retentável faria o retry da fila
+  // reenviar sobre um socket que PODE ter transmitido — a duplicação no cliente que o T1
+  // inteiro existe para eliminar — e, até estes testes, a suíte permanecia verde.
+
+  it('17. `sendMessage` sem `key.id` é AMBÍGUO, não enviado-com-sucesso', async () => {
+    // Simétrico ao caso 6 do canal Meta (200 sem `wamid`). Sem identificador não há como saber
+    // depois o que aconteceu com esta mensagem, e `sent` sem id recriaria dentro do tipo a
+    // ambiguidade que ele elimina.
+    await startPairing('s10')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    fake.sendMessage.mockResolvedValueOnce({} as never)
+
+    const r = await sendText('s10', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('ambiguous')
+  })
+
+  it('18. `sendMessage` lançando é AMBÍGUO — o socket pode ter transmitido antes de cair', async () => {
+    await startPairing('s11')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    fake.sendMessage.mockRejectedValueOnce(new Error('Connection Closed'))
+
+    const r = await sendText('s11', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('ambiguous')
+    // E não `not_sent`: sob `not_sent` retentável a fila reenviaria, e o cliente receberia duas.
+    expect(r.status === 'not_sent').toBe(false)
+  })
+
+  it('19. teto por contato é NÃO ENVIADO definitivo — e nada chega ao socket', async () => {
+    // O teto é decidido AQUI, antes do socket: nada saiu, então reenviar depois é seguro — mas
+    // não adianta insistir agora, e por isso `retryable: false`. O teste anterior exercitava só
+    // a função pura `overContactCap`; o desfecho de `sendText` não tinha prova.
+    await startPairing('s12')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const numero = '5511900000019'
+    // CONTACT_CAP = 12 envios na janela; o 13º é suprimido.
+    for (let i = 0; i < 12; i++) {
+      await sendText('s12', numero, `msg ${i}`)
+    }
+    fake.sendMessage.mockClear()
+
+    const r = await sendText('s12', numero, 'a que estoura o teto')
+
+    expect(r.status).toBe('not_sent')
+    expect(r.status === 'not_sent' && r.retryable).toBe(false)
+    expect(fake.sendMessage).not.toHaveBeenCalled()
   })
 
   it('responde ao remoteJid @lid original, não aos dígitos reconstruídos', async () => {

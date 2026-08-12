@@ -442,7 +442,14 @@ export function getSessionView(sessionId: string): { status: string; qr: string 
 }
 
 /**
- * Envia texto por uma sessão Baileys. Best-effort → boolean (contrato do dispatcher).
+ * Envia texto por uma sessão Baileys. Nunca lança → devolve `SendResult` (contrato do
+ * dispatcher): o retorno deixou de ser `boolean` no T1 da 6C.8B, e este comentário ainda
+ * anunciava o contrato antigo.
+ *
+ * `key.id` é o identificador da mensagem devolvido por uma chamada concluída — ele NÃO prova
+ * aceitação remota nem entrega (o spike do T2 teve três `key.id` e zero entregas). É só o que
+ * permite, mais tarde, falar sobre esta mensagem em vez de sobre "alguma".
+ *
  * Ritmo humano (anti-ban): presence 'composing' + atraso proporcional ao tamanho.
  */
 export async function sendText(sessionId: string, to: string, text: string): Promise<SendResult> {
