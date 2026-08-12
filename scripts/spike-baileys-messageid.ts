@@ -15,9 +15,23 @@
 //            corresponde ao caso real (o processo caiu e outro assumiu).
 // T3 só entra no plano se a FASE 2 também deduplicar.
 
-import makeWASocket, { generateMessageID } from '@whiskeysockets/baileys'
+import makeWASocket, { fetchLatestWaWebVersion, generateMessageID } from '@whiskeysockets/baileys'
 import { db } from '../app/db.server'
 import { useDbAuthState } from '../app/lib/channels/baileys-auth.server'
+
+/**
+ * CONTROLE NEGATIVO — o par que discrimina.
+ *
+ * Três envios com o mesmo id resultando em UMA bolha é compatível com duas explicações
+ * opostas: o WhatsApp deduplicou, ou só uma das três chegou. Uma execução anterior deste
+ * mesmo spike teve três `key.id` devolvidos e ZERO entregas (endereço errado), então
+ * "recibo do provedor" não distingue nada.
+ *
+ * Com `SPIKE_CONTROLE=1` o script manda três mensagens com ids DIFERENTES. Se chegarem três,
+ * a entrega é confiável e a bolha única do outro modo foi deduplicação de verdade. Se chegar
+ * uma de novo, o que existe é entrega não confiável — e a conclusão é a oposta.
+ */
+const modoControle = process.env.SPIKE_CONTROLE === '1'
 
 const sessionId = process.env.SPIKE_SESSION_ID ?? ''
 const to = process.env.SPIKE_TO ?? ''
@@ -127,20 +141,54 @@ if (sessaoEsperada !== sessionId) {
  * processo é mais confiável que confiar no passo do roteiro ter sido seguido.
  */
 const { execSync } = await import('node:child_process')
-let servicoAtivo = false
-try {
-  servicoAtivo =
-    execSync('systemctl --user is-active hermes 2>/dev/null || true').toString().trim() === 'active'
-} catch {
-  servicoAtivo = false
+
+/** Quantos processos do servidor ainda vivem. O padrão evita casar com o próprio comando. */
+function processosDoServidor(): number {
+  try {
+    const saida = execSync("pgrep -f 'node .*server[.]js' 2>/dev/null || true").toString().trim()
+    return saida ? saida.split('\n').filter(Boolean).length : 0
+  } catch {
+    return 0
+  }
 }
-if (servicoAtivo) {
+
+const flagAtiva =
+  execSync('systemctl --user is-active hermes 2>/dev/null || true').toString().trim() === 'active'
+if (flagAtiva) {
   abortar(
     'O serviço hermes está ATIVO. Ele mantém o próprio socket desta sessão, e duas conexões\n' +
-      '   com as mesmas credenciais derrubam o pareamento.\n' +
+      '   com as mesmas credenciais brigam.\n' +
       '   Pare antes:  systemctl --user stop hermes',
   )
 }
+
+/**
+ * A FLAG NÃO BASTA — e foi assim que a primeira execução falhou.
+ *
+ * `systemctl stop` volta assim que marca o serviço inativo, mas o processo ainda leva um tempo
+ * para fechar o socket do WhatsApp. Na primeira tentativa o `systemctl` disse `inactive`, havia
+ * dois processos vivos, e o WhatsApp respondeu `Connection Failure` — exatamente a briga de duas
+ * conexões que este roteiro existe para evitar, acontecendo no procedimento em vez de no
+ * experimento.
+ *
+ * O que importa é o PROCESSO ter morrido, não a flag ter mudado.
+ */
+process.stdout.write('esperando o processo do servidor encerrar')
+let vivos = processosDoServidor()
+for (let i = 0; vivos > 0 && i < 30; i += 1) {
+  process.stdout.write('.')
+  await new Promise((r) => setTimeout(r, 1000))
+  vivos = processosDoServidor()
+}
+console.log(vivos === 0 ? ' encerrado ✅' : '')
+if (vivos > 0) {
+  abortar(
+    `Ainda há ${vivos} processo(s) do servidor vivos depois de 30s.\n` +
+      '   Conectar agora brigaria pelo pareamento. Investigue antes:  pgrep -af server.js',
+  )
+}
+// Folga extra: o socket do WhatsApp pode demorar um pouco mais que o processo a soltar.
+await new Promise((r) => setTimeout(r, 3000))
 
 /** Fila vazia: não vale rodar com mensagem de alguém esperando processamento. */
 const emVoo = await db.webhookEvent.count({ where: { status: { in: ['pending', 'processing'] } } })
@@ -148,8 +196,67 @@ if (emVoo > 0) {
   abortar(`Há ${emVoo} evento(s) na fila (pending/processing). Espere esvaziar antes do spike.`)
 }
 
-// ── Utilidades ──────────────────────────────────────────────────────────────
-const jid = `${to}@s.whatsapp.net`
+// ── O ENDEREÇO DE ENTREGA ───────────────────────────────────────────────────
+//
+// O WhatsApp novo endereça por `@lid` (número oculto), e responder aos dígitos reconstruídos
+// vai para o VÁCUO — o comentário está em `whatsapp-queue.server.ts` e a coluna `remoteJid`
+// existe por causa disso. A primeira execução deste spike ignorou o aviso, mandou para
+// `<digitos>@s.whatsapp.net`, recebeu `key.id` nos três envios, e NADA foi entregue.
+//
+// Isso virou um achado por acidente: comprovante do provedor não é prova de entrega.
+//
+// Aqui o endereço vem do último inbound real daquele contato, que é a fonte de verdade — o
+// mesmo caminho que o produto usa para responder.
+// O inbound é escolhido pelo ID DO EVENTO, não por casar telefone.
+//
+// No `@lid` o `contactId` é um identificador opaco — 14/15 dígitos, não é telefone e não dá
+// para derivar um a partir do outro. Uma trava que compare com o número declarado barra o
+// contato certo (foi o que aconteceu na tentativa anterior). Quem identifica o inbound sem
+// ambiguidade é a chave primária dele, confirmada por quem autorizou.
+const inboundId = process.env.SPIKE_INBOUND_ID ?? ''
+if (!inboundId) {
+  abortar('Falta SPIKE_INBOUND_ID — o id do evento de entrada que define o destino.')
+}
+
+const inbound = await db.webhookEvent.findUnique({
+  where: { id: inboundId },
+  select: { remoteJid: true, contactId: true, channelSessionId: true, text: true, createdAt: true },
+})
+
+if (!inbound) abortar(`Inbound ${inboundId} não existe neste banco.`)
+if (inbound.channelSessionId !== sessionId) {
+  abortar('O inbound informado é de OUTRA sessão. Nada foi enviado.')
+}
+if (!inbound.remoteJid) {
+  abortar(
+    'Esse inbound não tem `remoteJid` — sem ele não há endereço real de entrega, e mandar\n' +
+      '   para os dígitos reconstruídos vai para o vácuo.',
+  )
+}
+
+/**
+ * Mais de um candidato = aborta.
+ *
+ * Se chegou mensagem nova depois da autorização, o "último inbound" mudou e o destino
+ * confirmado pode não ser mais o que o autorizador viu.
+ */
+const inboundsDepois = await db.webhookEvent.count({
+  where: {
+    channelSessionId: sessionId,
+    remoteJid: { not: null },
+    createdAt: { gt: inbound.createdAt },
+  },
+})
+if (inboundsDepois > 0) {
+  abortar(
+    `Chegaram ${inboundsDepois} mensagem(ns) DEPOIS do inbound autorizado.\n` +
+      '   O destino confirmado pode não ser mais o correto. Reconfirme antes de enviar.',
+  )
+}
+
+const jid = inbound.remoteJid
+console.log(`inbound:  "${inbound.text.slice(0, 12)}" de ${inbound.createdAt.toISOString()}`)
+console.log(`destino:  ***${jid.slice(-8)} (mascarado — @lid do inbound autorizado)`)
 // Id no formato da PRÓPRIA versão instalada: se o WhatsApp normalizar ou recusar um formato
 // inventado, não dá para distinguir "id inválido" de "não deduplica".
 const idRepetido = generateMessageID()
@@ -165,11 +272,30 @@ function comLimite<T>(promessa: Promise<T>, ms: number, oQue: string): Promise<T
 type Socket = ReturnType<typeof makeWASocket>
 const abertos: Socket[] = []
 
+/**
+ * A versão do WA Web — a mesma coisa que o produto faz, e a causa das duas primeiras falhas.
+ *
+ * Sem passar `version`, o Baileys usa a embutida no pacote (`7.0.0-rc13`), que está defasada, e
+ * o WhatsApp recusa o handshake com `statusCode=405 Connection Failure`. O comentário em
+ * `baileys.server.ts` já avisava: "se falhar ou vier defasada, o pareamento pode ser recusado".
+ * O spike não pode divergir do produto justamente no que faz a conexão ser aceita.
+ */
+let versaoWa: [number, number, number] | undefined
+try {
+  const { version } = await fetchLatestWaWebVersion({})
+  versaoWa = version
+  console.log(`versão do WA Web: ${version.join('.')}`)
+} catch (e) {
+  console.log(`⚠️  não consegui buscar a versão do WA Web (${e instanceof Error ? e.message : e})`)
+  console.log('   seguindo com o default do pacote — o handshake pode ser recusado com 405')
+}
+
 async function abrirSocket(rotulo: string): Promise<{ sock: Socket; fechar: () => Promise<void> }> {
   // O prefixo `use` é convenção do Baileys para provedores de auth-state, não React.
   // biome-ignore lint/correctness/useHookAtTopLevel: não é hook React — função de servidor
   const auth = await useDbAuthState(sessionId)
   const sock = makeWASocket({
+    version: versaoWa,
     auth: auth.state,
     printQRInTerminal: false,
     browser: ['Mac OS', 'Chrome', '14.4.1'],
@@ -184,7 +310,19 @@ async function abrirSocket(rotulo: string): Promise<{ sock: Socket; fechar: () =
       sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') resolve()
         if (u.qr) reject(new Error('a sessão pediu QR — o pareamento não está mais válido'))
-        if (u.connection === 'close') reject(new Error('a conexão fechou antes de abrir'))
+        if (u.connection === 'close') {
+          // O código do Boom diz POR QUE o WhatsApp recusou — 401/403 é pareamento inválido,
+          // 440 é sessão substituída, 428 é conexão fechada. Sem ele, "fechou antes de abrir"
+          // não distingue "tente de novo" de "não adianta insistir".
+          const erro = u.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
+          const codigo = erro?.output?.statusCode
+          const detalhe = u.lastDisconnect?.error?.message ?? 'sem detalhe'
+          reject(
+            new Error(
+              `a conexão fechou antes de abrir (statusCode=${codigo ?? 'nenhum'}: ${detalhe})`,
+            ),
+          )
+        }
       })
     }),
     45_000,
@@ -203,13 +341,16 @@ async function abrirSocket(rotulo: string): Promise<{ sock: Socket; fechar: () =
 }
 
 async function enviar(sock: Socket, rotulo: string): Promise<string> {
+  // No controle cada envio leva um id NOVO — é isso que testa a entrega, não a deduplicação.
+  const idDoEnvio = modoControle ? generateMessageID() : idRepetido
+  const corpo = modoControle ? `${texto} [controle ${rotulo}]` : texto
   const r = await comLimite(
-    sock.sendMessage(jid, { text: texto }, { messageId: idRepetido }),
+    sock.sendMessage(jid, { text: corpo }, { messageId: idDoEnvio }),
     30_000,
     `enviar (${rotulo})`,
   )
   const id = (r as { key?: { id?: string } } | undefined)?.key?.id
-  console.log(`   ${rotulo}: key.id = ${id ?? '(vazio)'} ${id === idRepetido ? '✅' : '❌'}`)
+  console.log(`   ${rotulo}: key.id = ${id ?? '(vazio)'} ${id === idDoEnvio ? '✅' : '❌'}`)
   return id ?? ''
 }
 
@@ -237,8 +378,12 @@ for (const sinal of ['SIGINT', 'SIGTERM'] as const) {
 console.log('\n── SPIKE: messageId repetido no Baileys ──')
 console.log(`empresa:  ${sessao.tenant.slug}`)
 console.log(`sessão:   ${sessionId}`)
-console.log(`destino:  ${to.slice(0, 4)}***${to.slice(-4)} (mascarado)`)
-console.log(`id:       ${idRepetido}\n`)
+console.log(`declarado: ${to.slice(0, 4)}***${to.slice(-4)} (telefone; o envio usa o @lid)`)
+console.log(
+  modoControle
+    ? 'MODO CONTROLE: três ids DIFERENTES — testa ENTREGA, não deduplicação\n'
+    : `id:       ${idRepetido}\n`,
+)
 
 let id1 = ''
 let id2 = ''
@@ -269,6 +414,15 @@ try {
 }
 
 // ── Veredito do terminal (metade da resposta) ──────────────────────────────
+if (modoControle) {
+  console.log('\n── CONTROLE: o que esperar ──')
+  console.log('  • 3 bolhas → a entrega é confiável. A bolha única do outro modo foi DEDUPLICAÇÃO.')
+  console.log('  • menos de 3 → a entrega NÃO é confiável, e o resultado anterior não prova dedup.')
+  console.log('\nProcure por "[controle" nas mensagens.\n')
+  await limpar()
+  process.exit(0)
+}
+
 console.log('\n── O QUE O TERMINAL DIZ ──')
 if (id1 !== idRepetido) {
   console.log('❌ A biblioteca IGNOROU o id logo no 1º envio. A hipótese cai aqui.')

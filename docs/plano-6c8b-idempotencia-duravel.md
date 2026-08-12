@@ -114,20 +114,23 @@ retorno é.
 | | Baileys (QR — o canal padrão) | Meta (oficial) |
 |---|---|---|
 | Comprovante devolvido | `key.id` | `wamid` (só se a resposta chegou) |
-| Reenvio seguro | **hipótese** — ver abaixo | ❌ nada equivalente |
-| Ambíguo é resolvível? | a verificar | **não — só por olho humano** |
+| Reenvio seguro | ✅ **verificado** — ver T2 | ❌ nada equivalente |
+| Ambíguo é resolvível? | **sim, com o mesmo id** | **não — só por olho humano** |
 
-> ### ⚠️ Hipótese não verificada: `messageId` customizado no Baileys
+> ### ✅ Verificado em 2026-08-12 — `docs/spike-baileys-messageid.md`
 >
-> A leitura dos tipos indica que `sendMessage` aceita `options.messageId`, o que **seria** uma
-> chave de idempotência real. **Isso não foi testado.** Não sabemos se a biblioteca respeita o id
-> em todos os caminhos, se o WhatsApp trata o reenvio como a mesma mensagem, ou se o
-> comportamento muda entre versões.
+> O Baileys respeita o `messageId` que passamos, e o WhatsApp **deduplica**: três envios com o
+> mesmo id chegaram como **uma** mensagem — inclusive na fase com o **socket recriado**, que é o
+> cenário do nosso problema (o processo cai, outro assume, tenta de novo).
 >
-> **Antes de qualquer linha que dependa disso, um spike autorizado:** enviar duas vezes com o
-> mesmo id para um número de teste e observar o que o aparelho recebe. Se a hipótese cair, o
-> Baileys passa a ter a mesma garantia da Meta — ambiguidade irredutível — e o passo 3 sai do
-> plano.
+> O controle negativo é o que dá valor ao resultado: três envios com ids **diferentes** chegaram
+> como **três** mensagens. Sem ele, "uma bolha" também poderia significar "duas se perderam" — e
+> isso não era hipotético: uma execução anterior teve três `key.id` devolvidos e **zero**
+> entregas.
+>
+> **Escopo da observação:** `7.0.0-rc13`, WA Web `2.3000.104502…`, mensagem de texto,
+> destinatário `@lid`, recriação **controlada** da conexão. É uma observação datada, não garantia
+> permanente do servidor — se a versão mudar, refazer.
 
 A metade Meta é irredutível de qualquer forma, e é ela que **justifica** a política fail-closed.
 
@@ -196,6 +199,11 @@ reprocessamento quebraria em vez de deduplicar.
 ⚠️ **A fala do cliente é gravada em três lugares** (caminho principal, ramo "humano já
 conduzia", transação do billing) com garantias diferentes — um checkpoint só no principal deixa
 dois buracos.
+
+**7b. `sent` não significa "entregue"** — significa "o provedor aceitou e deu recibo". O spike
+provou: três `key.id` devolvidos, zero entregas (endereço errado). O recibo existe até para
+mensagem que vai para o vácuo. Confirmação de ENTREGA é outra coisa, e nenhum canal dá isso hoje
+(decisão C).
 
 **8. Ambíguo** — nunca repetido automaticamente. Vale para o envio ao cliente, para o cérebro e
 **também para os alarmes**, que são efeitos externos.
@@ -302,7 +310,7 @@ type SendResult =
 **Checkpoint:** os cinco verdes; mutação "tratar `ambiguous` como `not_sent`" derruba os REDs 1 e
 4; `npm test`, `typecheck`, `lint`, `build` limpos.
 
-## T2 — spike do Baileys (**precisa de autorização**)
+## T2 — spike do Baileys ✅ **FEITO** (hipótese confirmada)
 
 **Não é código de produção.** Enviar duas vezes com o mesmo `messageId` para um número de teste e
 observar o aparelho.
@@ -310,9 +318,9 @@ observar o aparelho.
 **Checkpoint:** resultado escrito neste documento. Se a hipótese cair, T3 é removida e o Baileys
 passa a ter a mesma garantia da Meta.
 
-## T3 — reenvio idempotente no Baileys (**condicional a T2**)
+## T3 — reenvio idempotente no Baileys ✅ **LIBERADO** (T2 confirmou)
 
-Só existe se o spike confirmar. **RED:** dois envios com o mesmo id → o aparelho mostra **uma**
+O `sendText` passa a aceitar um id derivado do `WebhookEvent.messageId`. **RED:** dois envios com o mesmo id → o aparelho mostra **uma**
 mensagem.
 
 ## T4 — migration aditiva + estágios

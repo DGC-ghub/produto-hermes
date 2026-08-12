@@ -1,7 +1,8 @@
 # Spike — o Baileys respeita um `messageId` que a gente escolhe?
 
-> **T2 do plano da 6C.8B.** Experimento, não implementação. Envia mensagem **real**.
-> Rev. 2 — dez bloqueios corrigidos sobre a rev. 1. Execução ainda **não autorizada**.
+> **T2 do plano da 6C.8B.** ✅ **EXECUTADO em 2026-08-12 — hipótese CONFIRMADA.**
+> Ver "Resultado", no fim. O roteiro fica registrado para quem precisar repetir a observação
+> quando a versão do Baileys ou do WA Web mudar.
 
 ---
 
@@ -30,7 +31,10 @@ próprio script** — ver §"O que mudou".
 
 ## 5. Estado
 
-Roteiro pronto. Aguardando sua autorização para rodar.
+✅ Executado. Quatro tentativas até acertar o procedimento — as três primeiras falharam por
+defeitos MEUS, não do experimento: serviço "parado" cuja flag mudou antes do processo morrer;
+versão do WA Web omitida (o produto busca, o spike não buscava → `405`); e envio para os dígitos
+reconstruídos em vez do `@lid`, que mandou as três mensagens para o vácuo.
 
 ---
 
@@ -140,57 +144,103 @@ Esperado: `active`, `health:200`, e **`adv-gac` como `conectado`**.
 
 ---
 
-# Forma B — bloqueada
+# Sobre a sessão usada
 
-Usar a sessão do `adv-gac` **não é mais uma opção com ressalva: o script recusa**. Dois motivos:
+A execução acabou usando a sessão do `adv-gac` — que o dono esclareceu ser o **tenant pessoal de
+teste dele**, com o WhatsApp reserva pareado, e não cliente pagante. A evidência bate: assinatura
+`provider: none` em trial vencido, zero documentos de base, e as conversas existentes são os
+próprios testes.
 
-1. abrir uma segunda conexão com as credenciais dela pode derrubar o atendimento;
-2. no fim, o estado `desconectado` **não é retomado no boot** — o cliente ficaria mudo até alguém
-   parear de novo, e a descoberta viria pelo cliente reclamando.
+A lista de bloqueio por empresa virou **confirmação nominal**: `SPIKE_ACEITO_RISCO_TENANT` tem
+que nomear a empresa da sessão e `SPIKE_EXPECTED_SESSION_ID` tem que bater com o id — errar de
+sessão exige errar duas vezes. Um `=sim` genérico continua recusado.
 
-Se um dia for inevitável, isso vira uma tarefa própria, com janela combinada e plano de volta.
+O pareamento sobreviveu às quatro execuções: o script usa `end()` no socket, nunca o
+`disconnect()` do produto, que gravaria `desconectado` — estado que o boot não retoma sozinho.
 
 ---
 
 # Resultado
 
-> Preencher depois de rodar.
+**Executado em 2026-08-12. Hipótese CONFIRMADA — com o controle negativo que a valida.**
 
 | | |
 |---|---|
-| Data | |
-| Empresa / sessão | |
-| Versão do Baileys | `7.0.0-rc13` |
-| `key.id` — 1º envio (fase 1) | |
-| `key.id` — 2º envio (fase 1) | |
-| `key.id` — 3º envio (fase 2, socket recriado) | |
-| **Bolhas no aparelho** | |
-| **Veredito** | |
+| Sessão / empresa | `cmsdoyvpg…ekun` / `adv-gac` (tenant pessoal de teste do dono) |
+| Emissor | WhatsApp reserva pareado na sessão |
+| Destino | `@lid` do inbound autorizado — **não** os dígitos reconstruídos |
+| Baileys | `7.0.0-rc13` |
+| WA Web | `2.3000.1045021694` (experimento) · `2.3000.1045028006` (controle) |
+| Tipo | mensagem de texto |
 
-### Se a FASE 2 também deduplicou (1 bolha)
+### Experimento — mesmo `messageId` nas três chamadas
 
-**T3 entra no plano.** O `sendText` passa a aceitar um id derivado do `WebhookEvent.messageId`, e
-o canal QR ganha reenvio seguro.
+| | |
+|---|---|
+| Fase 1 (mesmo socket), 1º envio | `key.id` = id pedido ✅ |
+| Fase 1, 2º envio (≈3 s depois) | `key.id` = id pedido ✅ |
+| Fase 2 (**socket recriado**), 3º envio | `key.id` = id pedido ✅ |
+| **Bolhas no aparelho** | **1** |
 
-Com uma ressalva que vai junto no plano: **isto foi observado na versão `7.0.0-rc13`, para
-mensagem de texto, com recriação controlada da conexão.** Não é garantia permanente do servidor
-do WhatsApp — é uma observação datada, e a caracterização de versão vale como para o driver do
-banco (`driver-sincrono.test.ts`).
+### Controle negativo — três `messageId` DIFERENTES
 
-### Se só a FASE 1 deduplicou (2 bolhas)
+| | |
+|---|---|
+| Três envios, mesma sequência e intervalos | três `key.id` distintos ✅ |
+| **Bolhas no aparelho** | **3** |
 
-A dedução é **da instância**, não do servidor — e não sobrevive ao restart, que é exatamente o
-nosso caso. **T3 sai do plano** do mesmo jeito.
+### Por que o controle era indispensável
 
-### Se não deduplicou (3 bolhas)
+Sozinho, "três envios → uma bolha" tem duas leituras opostas: o WhatsApp deduplicou, **ou** só
+uma das três chegou. E a segunda não é hipotética — uma execução anterior deste mesmo spike teve
+os **três `key.id` devolvidos e ZERO entregas** (endereço errado, ver abaixo).
 
-**T3 sai.** E o plano principal muda em dois pontos:
+O controle separa as duas: com ids diferentes chegaram **três**. Logo a entrega é confiável, e a
+bolha única do experimento foi **deduplicação**, não perda.
 
-1. a tabela "os dois canais têm garantias diferentes" passa a dizer que **nenhum** canal tem
-   reenvio seguro;
-2. a política fail-closed deixa de ser "por causa da Meta" e passa a valer para o produto
-   inteiro — o que **aumenta** o peso da reconciliação humana e vira argumento para reavaliar o
-   `decision_prepared` (T7), hoje marcado como opcional.
+### Conclusão, com o escopo que ela tem
 
-Não existe desfecho ruim aqui. Existe desfecho que muda o plano — e é para isso que o spike
-serve.
+O WhatsApp deduplica pelo `messageId` escolhido pelo cliente, **e a deduplicação sobreviveu à
+recriação da conexão** — que é o cenário do nosso problema: o processo cai, outro assume, e
+tenta de novo.
+
+**Isto é uma observação datada, não uma garantia do servidor.** Vale para: `7.0.0-rc13`, WA Web
+`2.3000.104502…`, mensagem de texto, destinatário `@lid`, um remetente, recriação **controlada**
+da conexão (não um crash real), intervalos de segundos. Se qualquer um desses mudar, a
+observação precisa ser refeita — a mesma disciplina de `driver-sincrono.test.ts`.
+
+### O que isso libera
+
+**T3 entra no plano.** No canal do QR — que é o padrão do produto — um envio ambíguo pode ser
+repetido com o mesmo id derivado do `WebhookEvent.messageId`, sem entregar duas vezes ao
+cliente. O fail-closed continua valendo para a Meta, onde a ambiguidade é irredutível.
+
+---
+
+## Dois achados que vieram de graça
+
+### 1. Comprovante do provedor NÃO é prova de entrega
+
+Na execução com endereço errado: **três `key.id` devolvidos, zero mensagens entregues**.
+
+O `SendResult` do T1 trata `sent` + `providerMessageId` como sucesso. É verdade que o provedor
+aceitou e deu recibo — e **falso** que o cliente recebeu. O recibo existe até para mensagem que
+vai para o vácuo. Isso não invalida o T1 (a distinção `not_sent`/`ambiguous`/`sent` continua
+necessária), mas o significado de `sent` precisa ser mais modesto no plano, e reforça a decisão
+C: confirmação de entrega é outra coisa, e nenhum canal dá isso hoje.
+
+### 2. `@lid`: o `contactId` do canal QR não é telefone — **hipótese, investigar à parte**
+
+Os inbounds recentes da sessão chegam como `@lid` (número oculto), e o `contactId` derivado tem
+14–15 dígitos — não é um telefone e não dá para converter. No histórico dá para ver a virada: em
+12/07 vinham como `@s.whatsapp.net`; de 03/08 em diante, todos `@lid`.
+
+**Não está concluído que o Hermes seja incapaz de conhecer o telefone.** Antes de afirmar isso é
+preciso verificar: (a) o Baileys oferece mapeamento oficial LID ↔ número? (b) o auth state guarda
+esse vínculo? (c) ele sobrevive a restart? Investigação separada, fora da 6C.8B.
+
+
+
+
+
+
