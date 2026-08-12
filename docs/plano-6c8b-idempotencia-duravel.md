@@ -100,8 +100,9 @@ Isso produz **dois** caminhos de duplicação que não precisam de crash nenhum:
 O segundo é o mais insidioso: não há bug, não há log, e a pessoa que duplicou fez exatamente o
 que a tela mandou.
 
-Ambos os canais **devolvem comprovante** — o `wamid` da Meta, o `key.id` do Baileys — e o código
-descarta os dois: só `response.ok` é lido.
+Ambos os canais **devolvem um identificador** — o `wamid` da Meta, o `key.id` do Baileys — e o
+código descarta os dois: só `response.ok` é lido. Identificador é o que ele é, e nada além:
+**não prova aceitação remota nem entrega** (ver a tabela abaixo e §7b).
 
 **Consequência para o plano:** `outbound_sending`/`outbound_sent` não têm como ser *decididos*
 enquanto o envio devolver booleano. A máquina de estados não é o primeiro passo; o tipo de
@@ -113,7 +114,7 @@ retorno é.
 
 | | Baileys (QR — o canal padrão) | Meta (oficial) |
 |---|---|---|
-| Comprovante devolvido | `key.id` | `wamid` (só se a resposta chegou) |
+| Identificador devolvido | `key.id` — identificador da mensagem devolvido por uma chamada Baileys concluída. **Não prova aceitação remota nem entrega** | `wamid` — devolvido no corpo de uma resposta HTTP recebida. **Não prova entrega** |
 | Reenvio seguro | ✅ **verificado** — ver T2 | ❌ nada equivalente |
 | Ambíguo é resolvível? | **sim, com o mesmo id** | **não — só por olho humano** |
 
@@ -200,10 +201,11 @@ reprocessamento quebraria em vez de deduplicar.
 conduzia", transação do billing) com garantias diferentes — um checkpoint só no principal deixa
 dois buracos.
 
-**7b. `sent` não significa "entregue"** — significa "o provedor aceitou e deu recibo". O spike
-provou: três `key.id` devolvidos, zero entregas (endereço errado). O recibo existe até para
-mensagem que vai para o vácuo. Confirmação de ENTREGA é outra coisa, e nenhum canal dá isso hoje
-(decisão C).
+**7b. `sent` não significa "entregue"** — e também não significa "aceito do outro lado".
+Significa apenas: **a chamada de envio terminou e devolveu um identificador de mensagem**. O
+spike mostrou o limite disso na prática: três `key.id` devolvidos e **zero** entregas (endereço
+errado). O identificador existe até para mensagem que vai para o vácuo. Confirmação de ENTREGA é
+outra coisa, e nenhum canal dá isso hoje (decisão C).
 
 **8. Ambíguo** — nunca repetido automaticamente. Vale para o envio ao cliente, para o cérebro e
 **também para os alarmes**, que são efeitos externos.
@@ -283,19 +285,47 @@ ancorar.
 > depois de o RED 10 existir: um caminho sem prova própria não fica protegido por estar perto
 > de outro que tem.
 
+> ### Revisão independente — 2026-08-12
+>
+> **Comportamento: nenhum defeito.** Os dez desfechos (Meta, Baileys, fila, Central) estão
+> classificados como o plano manda, e os dois únicos consumidores do envio leem `status` — não a
+> verdade do objeto.
+>
+> **Prova: seis lacunas**, todas no mesmo formato — comportamento certo, sem teste que o
+> defenda. Três no Baileys (`sem_comprovante`, socket lançando, teto por contato), duas no
+> caminho até o operador (a `action` da Central e a cor do aviso na tela) e uma no alarme
+> (nada garantia o silêncio no caminho feliz). A pior era o `catch` do Baileys: mutá-lo para
+> `not_sent` retentável faz a fila reenviar sobre um socket que pode ter transmitido — a
+> duplicação que o T1 inteiro existe para eliminar — e a suíte permanecia verde.
+>
+> É a mesma lição do RED 10, repetida: *um caminho sem prova própria não fica protegido por
+> estar perto de outro que tem.* Fechadas no commit seguinte a este (7 provas novas, 6 mutações
+> mortas). O `sendText` também anunciava `boolean` no próprio JSDoc.
+
 **Sem migration.** É a única coisa que o passo 1 faz: **discriminar** e **parar de reenviar o
-ambíguo**. Persistir o comprovante fica para T4 — hoje não há coluna onde guardá-lo.
+ambíguo**. Persistir o identificador fica para T4 — hoje não há coluna onde guardá-lo.
 
 **Arquivos:** `app/lib/channels/types.ts`, `dispatch.server.ts`, `whatsapp.server.ts`,
 `baileys.server.ts`, `whatsapp-queue.server.ts`, `operator-reply.server.ts`.
 
-**Contrato novo:**
+**Contrato (o implementado — este bloco estava obsoleto até 2026-08-12):**
 ```ts
 type SendResult =
-  | { status: 'sent'; providerMessageId: string | null }
-  | { status: 'not_sent'; reason: string }   // sem token, sessão caída, 4xx → seguro reenviar
-  | { status: 'ambiguous'; reason: string }  // timeout, socket derrubado → PROIBIDO reenviar
+  | { status: 'sent'; providerMessageId: string }
+  | { status: 'not_sent'; retryable: boolean; reason: string }
+  | { status: 'ambiguous'; reason: string }
 ```
+
+Duas exigências do tipo, e o motivo de cada uma:
+
+- **`providerMessageId` é obrigatório em `sent`, nunca `string | null`.** Um envio "com
+  sucesso" sem identificador não é confirmado — é exatamente o caso ambíguo, e deixá-lo entrar
+  como `sent` com id nulo recriaria dentro do tipo a ambiguidade que ele existe para eliminar.
+- **`not_sent` sem `retryable` não é aceito.** Sem esse campo, 429 (melhora esperando) e 401
+  (não melhora nunca) voltam a ser o mesmo valor, e o retry perde o critério.
+
+E o que `sent` significa, dito com a modéstia que ele tem: **a chamada de envio terminou e
+devolveu um identificador**. Não é aceitação remota, não é entrega (§7b).
 
 **REDs (todos falham hoje):**
 1. timeout de rede no envio → resultado `ambiguous`, e `sendWithRetry` **não tenta de novo**;
@@ -318,12 +348,59 @@ observar o aparelho.
 **Checkpoint:** resultado escrito neste documento. Se a hipótese cair, T3 é removida e o Baileys
 passa a ter a mesma garantia da Meta.
 
-## T3 — reenvio idempotente no Baileys ✅ **LIBERADO** (T2 confirmou)
+## T3 — dividida em T3a → T4 → T3b (2026-08-12)
 
-O `sendText` passa a aceitar um id derivado do `WebhookEvent.messageId`. **RED:** dois envios com o mesmo id → o aparelho mostra **uma**
-mensagem.
+O T3 original misturava duas coisas de custo e risco muito diferentes: **passar um id adiante**
+(sem schema, sem migration) e **repetir um envio ambíguo** (que só faz sentido com o id
+persistido, ou seja, depois da migration). Juntas, elas não podiam ser autorizadas
+separadamente. Separadas, cada uma tem o seu próprio portão.
 
-## T4 — migration aditiva + estágios
+E o RED antigo era **impossível de automatizar**: "dois envios com o mesmo id → o aparelho
+mostra **uma** mensagem" depende de um celular e de um olho humano. Isso é caracterização
+manual, e já foi feito **uma vez** no T2. Não vira teste de suíte, e um checkpoint que a suíte
+não consegue verificar não protege nada no dia seguinte.
+
+> **Onde mora a prova de deduplicação externa:** exclusivamente no T2
+> (`docs/spike-baileys-messageid.md`), como observação manual e datada. Nenhuma tarefa abaixo
+> tenta reproduzi-la em teste automatizado.
+
+### T3a — plumbing do id, sem schema
+
+O caminho interno passa a poder **fornecer** o `outboundMessageId`, e o adapter Baileys
+encaminha **exatamente esse id** ao provedor.
+
+- o adapter repassa o id como `MiscMessageGenerationOptions.messageId`;
+- **não** ativa retry durável;
+- **não** altera schema, **não** cria migration.
+
+**REDs (automatizáveis, e é esse o ponto):**
+1. todas as tentativas do **mesmo** outbound recebem **exatamente o mesmo** `outboundMessageId`;
+2. o adapter Baileys encaminha esse id como `MiscMessageGenerationOptions.messageId` — provado
+   no argumento recebido pelo `sendMessage`, não no retorno;
+3. uma tentativa de **outro** outbound recebe **outro** id.
+
+O terceiro é o que dá valor aos dois primeiros: sem ele, "id sempre igual" também seria
+satisfeito por uma constante — e uma constante colaria mensagens diferentes numa só.
+
+### T4 — migration e checkpoints ⛔ **exige autorização específica antes de começar**
+
+- migration **aditiva e nullable**;
+- `stage`, `stageAt`, `providerMessageId` e os ponteiros necessários;
+- `brain_running` e `outbound_sending` **obrigatórios**;
+- recuperação de órfãos lendo o estágio;
+- rollback semântico (§"Rollback semântico").
+
+Detalhes e REDs: continuam abaixo, na seção que era "T4".
+
+### T3b — retry durável do Baileys
+
+**Depois do T4**, nunca antes: ele reutiliza o id **persistido** (ou derivado de forma estável),
+e sem a coluna não há o que reutilizar.
+
+- somente o **Baileys** pode repetir um resultado `ambiguous`, e **com o mesmo id**;
+- a **Meta continua fail-closed** em `ambiguous` — lá não há nada equivalente.
+
+## T4 (detalhe) — migration aditiva + estágios
 
 **Primeira migration.** `stage String?`, `stageAt DateTime?`, `providerMessageId String?`,
 ponteiros. Nullable por medição (§9).

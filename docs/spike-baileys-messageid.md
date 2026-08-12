@@ -211,23 +211,37 @@ observação precisa ser refeita — a mesma disciplina de `driver-sincrono.test
 
 ### O que isso libera
 
-**T3 entra no plano.** No canal do QR — que é o padrão do produto — um envio ambíguo pode ser
-repetido com o mesmo id derivado do `WebhookEvent.messageId`, sem entregar duas vezes ao
-cliente. O fail-closed continua valendo para a Meta, onde a ambiguidade é irredutível.
+**O reenvio idempotente entra no plano** — dividido em duas tarefas com portões diferentes
+(`docs/plano-6c8b-idempotencia-duravel.md`): **T3a** só encaminha o id escolhido (sem schema), e
+**T3b** só depois do T4 usa esse id para repetir um envio `ambiguous`. No canal do QR — o padrão
+do produto — repetir com o mesmo id não entrega duas vezes ao cliente. O fail-closed continua
+valendo para a Meta, onde a ambiguidade é irredutível.
+
+> **Esta observação é a única prova de deduplicação externa que existe, e ela é manual.** Nenhum
+> teste automatizado do T3a/T3b tenta reproduzi-la: contar bolhas exige um aparelho e um olho
+> humano. O que a suíte prova é outra coisa — que o **mesmo id chega ao adapter** —, e as duas
+> juntas é que sustentam a conclusão.
 
 ---
 
 ## Dois achados que vieram de graça
 
-### 1. Comprovante do provedor NÃO é prova de entrega
+### 1. O `key.id` não prova aceitação remota nem entrega
 
 Na execução com endereço errado: **três `key.id` devolvidos, zero mensagens entregues**.
 
-O `SendResult` do T1 trata `sent` + `providerMessageId` como sucesso. É verdade que o provedor
-aceitou e deu recibo — e **falso** que o cliente recebeu. O recibo existe até para mensagem que
-vai para o vácuo. Isso não invalida o T1 (a distinção `not_sent`/`ambiguous`/`sent` continua
-necessária), mas o significado de `sent` precisa ser mais modesto no plano, e reforça a decisão
-C: confirmação de entrega é outra coisa, e nenhum canal dá isso hoje.
+Dito com precisão:
+
+> `key.id` é o identificador da mensagem retornado por uma chamada Baileys concluída. **Não
+> prova aceitação remota nem entrega.**
+
+O `SendResult` do T1 trata `sent` + `providerMessageId` como o melhor desfecho disponível — e é
+mesmo, porque o alternativo é não saber nada. Mas ele **não** autoriza dizer "o provedor
+aceitou", muito menos "o cliente recebeu": o identificador existe até para mensagem que vai para
+o vácuo. Isso não invalida o T1 (a distinção `not_sent`/`ambiguous`/`sent` continua necessária),
+mas o significado de `sent` precisa ser modesto — **a chamada terminou e devolveu um
+identificador** — e reforça a decisão C: confirmação de entrega é outra coisa, e nenhum canal dá
+isso hoje.
 
 ### 2. `@lid`: o `contactId` do canal QR não é telefone — **hipótese, investigar à parte**
 
