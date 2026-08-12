@@ -248,6 +248,48 @@ describe('gerente Baileys (ciclo de vida)', () => {
     expect(fake.sendMessage).not.toHaveBeenCalled()
   })
 
+  // O ID DO ENVIO ESCOLHIDO POR NÓS (6C.8B T3a).
+  //
+  // Quem escolhia o identificador era a biblioteca, e nós só ficávamos sabendo DEPOIS. Aqui o
+  // caminho interno passa a poder fornecê-lo. Sozinho isso não muda nada visível — é o
+  // encanamento de que o T3b vai precisar para repetir um envio em dúvida sem o cliente receber
+  // duas vezes. A prova tem que estar no ARGUMENTO que chega ao `sendMessage`: o retorno não
+  // distingue "encaminhou o id" de "aceitou o id e ignorou".
+
+  it('20. o id fornecido é encaminhado ao `sendMessage` como `messageId`', async () => {
+    await startPairing('s13')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    // O valor é o que `deriveOutboundMessageId('evt_t3a_golden', 'reply')` produz — aqui ele é
+    // literal de propósito: este teste prova o ENCAMINHAMENTO, não a derivação (que tem prova
+    // própria em outbound-id.test.ts).
+    const id = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+    await sendText('s13', '5511988887777', 'pronto', { outboundMessageId: id })
+
+    expect(fake.sendMessage).toHaveBeenCalledWith(
+      '5511988887777@s.whatsapp.net',
+      { text: 'pronto' },
+      { messageId: id },
+    )
+  })
+
+  it('21. SEM id fornecido o envio segue como hoje — a biblioteca escolhe', async () => {
+    // O T3a não pode tornar o parâmetro obrigatório: o operator-reply continua chamando sem id
+    // (ação do operador, sem `WebhookEvent` de origem), e um terceiro argumento `undefined` aqui
+    // seria uma mudança de contrato sem necessidade.
+    await startPairing('s14')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    const r = await sendText('s14', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('sent')
+    expect(fake.sendMessage).toHaveBeenCalledWith('5511988887777@s.whatsapp.net', {
+      text: 'pronto',
+    })
+  })
+
   it('responde ao remoteJid @lid original, não aos dígitos reconstruídos', async () => {
     // O WhatsApp novo entrega de um jid @lid (número oculto). Se responder aos dígitos
     // reconstruídos (<lid>@s.whatsapp.net), a resposta vai pro vácuo. Deve responder ao

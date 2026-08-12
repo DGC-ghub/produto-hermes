@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
+import { deriveOutboundMessageId } from './channels/outbound-id.server'
 import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
@@ -135,6 +136,51 @@ describe('drainPending', () => {
     // ...mas o motor rodou UMA vez só (não duplicou): uma conversa.
     const convs = await db.conversation.findMany({ where: { contactId: TEST_CONTACT_ID } })
     expect(convs.length).toBe(1)
+  })
+
+  // O IDENTIFICADOR DO ENVIO É ESCOLHIDO POR NÓS, E É O MESMO NAS TRÊS TENTATIVAS (6C.8B T3a).
+  //
+  // Isto é encanamento: nada visível muda hoje. O que ele garante é a propriedade da qual o T3b
+  // vai depender — se as tentativas de um mesmo outbound usassem identificadores diferentes,
+  // repetir um envio em dúvida entregaria uma segunda cópia ao cliente, que é exatamente o que
+  // esse trabalho existe para impedir. A mutação natural (derivar o id DENTRO do laço de retry)
+  // some com a estabilidade sem quebrar mais nada.
+  it('T3a. as três tentativas do MESMO outbound recebem exatamente o mesmo identificador', async () => {
+    // Nunca conclui, e de forma retentável: `sendWithRetry` gasta as três tentativas.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'not_sent', retryable: true, reason: 'http_429' })
+    await persistInbound([inbound('wamid.test-id-estavel')])
+    await drainPending()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid.test-id-estavel' },
+    })
+    const chamadas = vi.mocked(sendReply).mock.calls
+    expect(chamadas.length).toBe(3)
+    const ids = chamadas.map(
+      (c) => (c[3] as { outboundMessageId?: string } | undefined)?.outboundMessageId,
+    )
+    expect(new Set(ids).size).toBe(1)
+    // E é o id DERIVADO do evento — não uma constante, que colaria mensagens diferentes numa só.
+    expect(ids[0]).toBe(deriveOutboundMessageId(evento.id, 'reply'))
+  })
+
+  it('T3a. a cortesia de mídia usa o propósito dela, não o do motor', async () => {
+    // Os dois envios de um evento são mutuamente exclusivos hoje (a cortesia dá `return` antes do
+    // motor), então um id por evento bastaria. O discriminante existe para o dia em que deixarem
+    // de ser — e sem esta prova ele sumiria da chave sem nada ficar vermelho.
+    await persistInbound([inbound('wamid.test-id-cortesia', { kind: 'unsupported' })])
+    await drainPending()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid.test-id-cortesia' },
+    })
+    const opcoes = vi.mocked(sendReply).mock.calls[0]?.[3] as
+      | { outboundMessageId?: string }
+      | undefined
+    expect(opcoes?.outboundMessageId).toBe(deriveOutboundMessageId(evento.id, 'media_courtesy'))
+    expect(opcoes?.outboundMessageId).not.toBe(deriveOutboundMessageId(evento.id, 'reply'))
   })
 
   // Áudio/mídia: cortesia sem motor — marca done e NÃO cria conversa (o conteúdo

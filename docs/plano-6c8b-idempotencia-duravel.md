@@ -364,7 +364,7 @@ não consegue verificar não protege nada no dia seguinte.
 > (`docs/spike-baileys-messageid.md`), como observação manual e datada. Nenhuma tarefa abaixo
 > tenta reproduzi-la em teste automatizado.
 
-### T3a — plumbing do id, sem schema
+### T3a — plumbing do id, sem schema ✅ **FEITO (2026-08-12)**
 
 O caminho interno passa a poder **fornecer** o `outboundMessageId`, e o adapter Baileys
 encaminha **exatamente esse id** ao provedor.
@@ -373,14 +373,43 @@ encaminha **exatamente esse id** ao provedor.
 - **não** ativa retry durável;
 - **não** altera schema, **não** cria migration.
 
+**Âncora = `WebhookEvent.id`**, não o `messageId`. É a chave de linha que o T5 já vai usar como
+`sourceEventId`, e duas âncoras diferentes para o mesmo evento viram dívida no dia seguinte. É
+reversível enquanto nada for persistido — que é exatamente o estado do T3a.
+
+**A chave inclui um propósito**: `(eventId, purpose)`, com `purpose = 'reply' | 'media_courtesy'`.
+Hoje os dois envios de um evento são mutuamente exclusivos (a cortesia de mídia dá `return` antes
+do motor), então um id por evento bastaria; o discriminante existe para o dia em que deixarem de
+ser — mesmo desenho do `(sourceEventId, sourceEventKind)` do ponto 7.
+
+> **O formato é herdado da medição, não escolhido.** O T2 validou ids no formato da biblioteca —
+> o spike usou `generateMessageID()` do próprio Baileys tanto no experimento quanto no controle
+> negativo, e um id de formato arbitrário **nunca** foi testado contra o provedor. A derivação
+> preserva esse formato de propósito: `'3EB0' + 36 hex MAIÚSCULOS`
+> (`node_modules/@whiskeysockets/baileys/lib/Utils/generics.js:150`). Sair dele é abandonar a
+> única evidência que temos, e o erro só apareceria em produção.
+
 **REDs (automatizáveis, e é esse o ponto):**
 1. todas as tentativas do **mesmo** outbound recebem **exatamente o mesmo** `outboundMessageId`;
 2. o adapter Baileys encaminha esse id como `MiscMessageGenerationOptions.messageId` — provado
    no argumento recebido pelo `sendMessage`, não no retorno;
-3. uma tentativa de **outro** outbound recebe **outro** id.
+3. uma tentativa de **outro** outbound recebe **outro** id;
+4. mesmo evento com propósito diferente (`reply` × `media_courtesy`) → ids diferentes;
+5. determinismo entre execuções, contra um valor **fixo** escrito no teste (golden) — trocar o
+   algoritmo depois do T3b em produção quebraria a idempotência em silêncio, e o golden obriga a
+   decisão a ser consciente;
+6. o id casa com `/^3EB0[0-9A-F]{36}$/`, o único formato que o T2 observou;
+7. **sem** id fornecido, o envio segue como hoje e a biblioteca escolhe — o T3a não pode tornar o
+   parâmetro obrigatório (o operator-reply é ação do operador e não tem evento de origem).
 
 O terceiro é o que dá valor aos dois primeiros: sem ele, "id sempre igual" também seria
 satisfeito por uma constante — e uma constante colaria mensagens diferentes numa só.
+
+**O canal Meta ignora o id.** A Meta gera o `wamid` dela e não há campo para propor um: o
+parâmetro atravessa `sendReply` e não é usado no ramo `meta`.
+
+Onde ficou: `app/lib/channels/outbound-id.server.ts` (função pura), `types.ts` (`SendOptions`),
+`dispatch.server.ts`, `baileys.server.ts`, `whatsapp-queue.server.ts`.
 
 ### T4 — migration e checkpoints ⛔ **exige autorização específica antes de começar**
 

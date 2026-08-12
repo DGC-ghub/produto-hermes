@@ -9,7 +9,14 @@
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
-import { type ChannelRef, type InboundEvent, metaRef, type SendResult } from './channels/types'
+import { deriveOutboundMessageId } from './channels/outbound-id.server'
+import {
+  type ChannelRef,
+  type InboundEvent,
+  metaRef,
+  type SendOptions,
+  type SendResult,
+} from './channels/types'
 import { processIncomingMessage } from './conversation.server'
 import { type InboundMessage, resolveTenantSlugByPhoneNumber } from './whatsapp.server'
 
@@ -111,10 +118,17 @@ const SEND_RETRIES = 3
  * fica SEMPRE verdadeiro, e o retry silenciosamente acharia que todo envio deu certo. A
  * condição tem que olhar o `status`, nunca a verdade do valor.
  */
-async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise<SendResult> {
+async function sendWithRetry(
+  ref: ChannelRef,
+  to: string,
+  text: string,
+  options?: SendOptions,
+): Promise<SendResult> {
   let ultimo: SendResult = { status: 'not_sent', retryable: true, reason: 'nao_tentado' }
   for (let i = 0; i < SEND_RETRIES; i++) {
-    ultimo = await sendReply(ref, to, text)
+    // `options` vem PRONTO de fora e é o MESMO nas três tentativas. Derivar o identificador aqui
+    // dentro daria um valor por tentativa e mataria a única propriedade que o T3a entrega.
+    ultimo = await sendReply(ref, to, text, options)
     // Repete apenas o não-enviado que melhora esperando. `sent` não precisa; `ambiguous` não
     // pode; `not_sent` permanente não muda.
     if (!(ultimo.status === 'not_sent' && ultimo.retryable)) {
@@ -248,7 +262,11 @@ async function processEvent(event: {
     if (!(await autorizarCortesiaDeMidia({ tenantSlug, contactId: event.contactId }))) {
       return
     }
-    alarmarDesfechoDoEnvio(await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY))
+    alarmarDesfechoDoEnvio(
+      await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY, {
+        outboundMessageId: deriveOutboundMessageId(event.id, 'media_courtesy'),
+      }),
+    )
     return
   }
 
@@ -263,7 +281,13 @@ async function processEvent(event: {
   if (result.reply.trim().length > 0) {
     // Falha de ENVIO (após os retries) não marca o evento como falho: a mensagem FOI
     // processada (reprocessar duplicaria chamado/lead). Alarma e segue.
-    alarmarDesfechoDoEnvio(await sendWithRetry(ref, replyTo, result.reply))
+    alarmarDesfechoDoEnvio(
+      await sendWithRetry(ref, replyTo, result.reply, {
+        // Derivado UMA vez, do evento — âncora `WebhookEvent.id`, a mesma chave de linha que o T5
+        // vai usar como `sourceEventId`. As três tentativas do retry recebem este mesmo valor.
+        outboundMessageId: deriveOutboundMessageId(event.id, 'reply'),
+      }),
+    )
   }
 }
 

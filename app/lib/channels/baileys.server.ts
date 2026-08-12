@@ -9,7 +9,7 @@ import { db } from '../../db.server'
 import { reportDegradation } from '../alarm.server'
 import { type DbAuthState, useDbAuthState } from './baileys-auth.server'
 import { installLibsignalLogGuard } from './libsignal-log-guard.server'
-import type { InboundEvent, SendResult } from './types'
+import type { InboundEvent, SendOptions, SendResult } from './types'
 
 // `libsignal` escreve a sessão criptográfica inteira direto no console, ignorando o logger
 // silencioso do socket. Instalar antes de qualquer conexão evita chaves privadas no log.
@@ -456,9 +456,19 @@ export function getSessionView(sessionId: string): { status: string; qr: string 
  * aceitação remota nem entrega (o spike do T2 teve três `key.id` e zero entregas). É só o que
  * permite, mais tarde, falar sobre esta mensagem em vez de sobre "alguma".
  *
+ * `options.outboundMessageId`, quando vem, é o identificador que NÓS escolhemos, e é encaminhado
+ * ao provedor como `MiscMessageGenerationOptions.messageId` (6C.8B T3a). Sem ele o envio segue
+ * como sempre foi — a biblioteca escolhe. O parâmetro é opcional de propósito: o operator-reply
+ * não tem evento de origem do qual derivar um.
+ *
  * Ritmo humano (anti-ban): presence 'composing' + atraso proporcional ao tamanho.
  */
-export async function sendText(sessionId: string, to: string, text: string): Promise<SendResult> {
+export async function sendText(
+  sessionId: string,
+  to: string,
+  text: string,
+  options?: SendOptions,
+): Promise<SendResult> {
   const entry = sessions.get(sessionId)
   if (entry?.status !== 'conectado') {
     console.warn(`[baileys] envio ignorado — sessão ${sessionId} não conectada`)
@@ -485,7 +495,14 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     const delay = Math.min(PACE_MIN_MS + text.length * PACE_PER_CHAR_MS, PACE_MAX_MS)
     await new Promise((r) => setTimeout(r, delay))
     // O identificador do Baileys é o `key.id` da mensagem devolvida. Ele era descartado.
-    const enviada = await entry.sock.sendMessage(jid, { text })
+    //
+    // Quando o caminho interno FORNECE o identificador, ele vai adiante no terceiro argumento e o
+    // Baileys o respeita (medido no T2). Sem identificador fornecido a chamada continua com DOIS
+    // argumentos, exatamente como antes — passar `undefined` ali seria mudança de contrato sem
+    // necessidade, e o `sendMessage` é a fronteira com a biblioteca.
+    const enviada = options?.outboundMessageId
+      ? await entry.sock.sendMessage(jid, { text }, { messageId: options.outboundMessageId })
+      : await entry.sock.sendMessage(jid, { text })
 
     // A presença ("digitando…"/"parou") é COSMÉTICA e roda DEPOIS de `sendMessage` já ter
     // concluído com identificador. O `.catch` já existia, e a razão dele fica registrada: uma

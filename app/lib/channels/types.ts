@@ -43,6 +43,22 @@ export type SendResult =
   | { status: 'not_sent'; retryable: boolean; reason: string }
   | { status: 'ambiguous'; reason: string }
 
+/**
+ * Opções de UM envio — o que o caminho interno pode PROPOR ao canal (6C.8B T3a).
+ *
+ * `outboundMessageId` é o identificador escolhido por nós em vez de pela biblioteca. Ele é
+ * **opcional por contrato**, e isso não é frouxidão: o operator-reply é ação do operador, não tem
+ * `WebhookEvent` de origem e portanto não tem de onde derivar um identificador — continua
+ * enviando sem ele, e aí quem escolhe é a biblioteca, como sempre foi. Torná-lo obrigatório
+ * quebraria quem não tem o que fornecer.
+ *
+ * Nem todo canal usa: **a Meta ignora**. Lá o `wamid` é gerado do lado do provedor e não há campo
+ * para propor um — o parâmetro atravessa o dispatcher e simplesmente não é usado no ramo `meta`.
+ */
+export type SendOptions = {
+  outboundMessageId?: string
+}
+
 // Helper do canal oficial da Meta (preserva o fallback pro env quando sem número).
 export function metaRef(phoneNumberId?: string): ChannelRef {
   return { kind: 'meta', phoneNumberId }
