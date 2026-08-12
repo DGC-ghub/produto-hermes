@@ -364,7 +364,11 @@ não consegue verificar não protege nada no dia seguinte.
 > (`docs/spike-baileys-messageid.md`), como observação manual e datada. Nenhuma tarefa abaixo
 > tenta reproduzi-la em teste automatizado.
 
-### T3a — plumbing do id, sem schema ✅ **FEITO (2026-08-12)**
+### T3a — plumbing do id, sem schema ✅ **FEITO e APROVADO (2026-08-12)**
+
+> Commits `f01c983` (plumbing) e `403a095` (corretivo P1: exige identidade devolvida). Revisão
+> independente aprovada — a lacuna do primeiro commit era o adapter provar que o id SAI e aceitar
+> qualquer `key.id` de volta; o corretivo fechou. Encerrado.
 
 O caminho interno passa a poder **fornecer** o `outboundMessageId`, e o adapter Baileys
 encaminha **exatamente esse id** ao provedor.
