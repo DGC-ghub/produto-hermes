@@ -22,27 +22,41 @@ function safeFallback(reason: string): AttendantOutput {
 export type ProviderName = 'claude_cli' | 'anthropic_api' | 'mock'
 
 /**
- * Traduz o env no nome do provider ativo. Pura — existe para que a telemetria
- * possa rotular a medição sem reimplementar (e sem sair de sincronia com) a
- * escolha feita em `resolveProvider`, que é quem a consome.
+ * Traduz o env no nome do provider ativo. Valor explícito desconhecido nunca vira
+ * mock. Em dev/test, ausência preserva o mock conveniente; em produção, ausência
+ * também é erro de configuração.
  */
-export function providerNameFromEnv(value: string | undefined): ProviderName {
-  if (value === 'claude_cli' || value === 'anthropic_api') {
+export function providerNameFromEnv(
+  value: string | undefined,
+  nodeEnv = process.env.NODE_ENV,
+): ProviderName {
+  if (value === 'claude_cli' || value === 'anthropic_api' || value === 'mock') {
     return value
   }
-  return 'mock'
+  if (!value) {
+    if (nodeEnv !== 'production') {
+      return 'mock'
+    }
+    throw new Error('ATTENDANT_PROVIDER é obrigatório em produção')
+  }
+  throw new Error(`ATTENDANT_PROVIDER desconhecido: ${value}`)
 }
 
-/** Nome do provider que `resolveProvider` usaria agora. Barato: não carrega o módulo. */
-export function activeProviderName(): ProviderName {
-  return providerNameFromEnv(process.env.ATTENDANT_PROVIDER)
+/** Nome barato para telemetria; configuração ruim é rotulada, não derruba o trace. */
+export function activeProviderName(): ProviderName | 'invalid' {
+  try {
+    return providerNameFromEnv(process.env.ATTENDANT_PROVIDER)
+  } catch {
+    return 'invalid'
+  }
 }
 
 // Escolhe o provider por env (ATTENDANT_PROVIDER). O provider de IA real é
 // carregado sob demanda para não trazer dependências de servidor (child_process)
 // quando se usa só o mock.
 export async function resolveProvider(): Promise<AttendantProvider> {
-  switch (activeProviderName()) {
+  const providerName = providerNameFromEnv(process.env.ATTENDANT_PROVIDER)
+  switch (providerName) {
     // Motor via assinatura pessoal do Claude (CLI logado na máquina).
     case 'claude_cli': {
       const { claudeCliProvider } = await import('./providers/claude-cli.server')
@@ -53,7 +67,7 @@ export async function resolveProvider(): Promise<AttendantProvider> {
       const { anthropicApiProvider } = await import('./providers/anthropic-api.server')
       return anthropicApiProvider
     }
-    default:
+    case 'mock':
       return mockProvider
   }
 }
@@ -67,10 +81,9 @@ export async function generateAttendantReply(
   input: AttendantInput,
   opts: { provider?: AttendantProvider; policy?: TenantPolicy } = {},
 ): Promise<AttendantOutput> {
-  const active = opts.provider ?? (await resolveProvider())
-
   let raw: AttendantOutput
   try {
+    const active = opts.provider ?? (await resolveProvider())
     raw = await active.generate(input)
   } catch (error) {
     console.error(

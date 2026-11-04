@@ -37,8 +37,21 @@ function makeFakeSock() {
     _emit: (event: string, arg: unknown) => handlers[event]?.(arg),
     ev: { on: (event: string, cb: (arg: unknown) => void) => (handlers[event] = cb) },
     user: { id: '5511988887777:12@s.whatsapp.net' },
-    sendMessage: vi.fn(async () => ({})),
-    sendPresenceUpdate: vi.fn(async () => {}),
+    // O dublê devolve o `key.id` como o Baileys real: é o IDENTIFICADOR de uma chamada
+    // concluída — não prova aceitação remota nem entrega —, e sem ele o resultado é ambíguo
+    // (por desenho, não por bug do teste).
+    //
+    // E ele ECOA o `messageId` recebido, porque é o que a biblioteca instalada faz:
+    // `messages-send.js:1086` monta `{ messageId: generateMessageIDV2(...), ...options }`, e o
+    // espalhamento vem DEPOIS — um id fornecido prevalece. Um dublê que ignorasse o id pedido
+    // deixaria o adapter livre para aceitar qualquer identificador de volta, que é exatamente a
+    // divergência provada logo abaixo (caso 22).
+    sendMessage: vi.fn(
+      async (_jid: string, _content: unknown, options?: { messageId?: string }) => ({
+        key: { id: options?.messageId ?? 'BAE5F1A2B3C4D5E6' },
+      }),
+    ),
+    sendPresenceUpdate: vi.fn(async (_estado: string, _jid?: string) => {}),
     presenceSubscribe: vi.fn(async () => {}),
     end: vi.fn(),
     logout: vi.fn(async () => {}),
@@ -78,7 +91,9 @@ describe('normalizeInbound (filtros defensivos)', () => {
     const m = textMsg('5511988887777', 'antiga', old)
     expect(normalizeInbound('s1', m as never, Date.now())).toBeNull()
   })
-  it('texto vira InboundEvent com contactId em MSISDN e o remoteJid original', () => {
+  // Aqui o jid é `@s.whatsapp.net`, e só AÍ os dígitos do `contactId` são mesmo um telefone.
+  // Em `@lid` o mesmo campo é identificador opaco — ver o teste do `@lid` mais abaixo.
+  it('texto vira InboundEvent com os dígitos do jid @s.whatsapp.net e o remoteJid original', () => {
     const e = normalizeInbound('s1', textMsg('5511988887777', 'geladeira parou') as never, null)
     expect(e).toMatchObject({
       channelSessionId: 's1',
@@ -152,13 +167,177 @@ describe('gerente Baileys (ciclo de vida)', () => {
 
   it('sendText só envia quando conectado, com o jid certo', async () => {
     await startPairing('s2')
-    // ainda não conectou → false
-    expect(await sendText('s2', '5511988887777', 'oi')).toBe(false)
+    // ainda não conectou → não enviado, e nada saiu (seguro tentar depois)
+    expect((await sendText('s2', '5511988887777', 'oi')).status).toBe('not_sent')
 
     fake._emit('connection.update', { connection: 'open' })
     await tick()
-    const ok = await sendText('s2', '5511988887777', 'pronto')
-    expect(ok).toBe(true)
+    const r = await sendText('s2', '5511988887777', 'pronto')
+    expect(r.status).toBe('sent')
+    expect(r.status === 'sent' && r.providerMessageId).toBe('BAE5F1A2B3C4D5E6')
+    expect(fake.sendMessage).toHaveBeenCalledWith('5511988887777@s.whatsapp.net', {
+      text: 'pronto',
+    })
+  })
+
+  it('10. falha só na presença NÃO apaga um envio já confirmado', async () => {
+    // `sendPresenceUpdate('paused')` é cosmético e roda DEPOIS do envio. Se uma falha ali
+    // virasse `ambiguous`, o sistema pararia e pediria reconciliação humana por causa de um
+    // indicador de "digitando…" — sobre uma mensagem que o cliente já recebeu.
+    await startPairing('s9')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    fake.sendPresenceUpdate.mockImplementation(async (estado: string, _jid?: string) => {
+      if (estado === 'paused') {
+        throw new Error('socket ocupado')
+      }
+    })
+
+    const r = await sendText('s9', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('sent')
+    expect(fake.sendMessage).toHaveBeenCalled()
+  })
+
+  // OS DESFECHOS DO BAILEYS QUE NÃO TINHAM PROVA PRÓPRIA.
+  //
+  // O T1 implementou os três corretamente, e nenhum era verificado: a suíte só exercitava o
+  // caminho feliz e a sessão desconectada. É exatamente a lição registrada no próprio T1 — um
+  // caminho sem prova própria não fica protegido por estar perto de outro que tem.
+  //
+  // O `catch` é o mais caro dos três. Mutá-lo para `not_sent` retentável faria o retry da fila
+  // reenviar sobre um socket que PODE ter transmitido — a duplicação no cliente que o T1
+  // inteiro existe para eliminar — e, até estes testes, a suíte permanecia verde.
+
+  it('17. `sendMessage` sem `key.id` é AMBÍGUO, não enviado-com-sucesso', async () => {
+    // Simétrico ao caso 6 do canal Meta (200 sem `wamid`). Sem identificador não há como saber
+    // depois o que aconteceu com esta mensagem, e `sent` sem id recriaria dentro do tipo a
+    // ambiguidade que ele elimina.
+    await startPairing('s10')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    fake.sendMessage.mockResolvedValueOnce({} as never)
+
+    const r = await sendText('s10', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('ambiguous')
+  })
+
+  it('18. `sendMessage` lançando é AMBÍGUO — o socket pode ter transmitido antes de cair', async () => {
+    await startPairing('s11')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    fake.sendMessage.mockRejectedValueOnce(new Error('Connection Closed'))
+
+    const r = await sendText('s11', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('ambiguous')
+    // E não `not_sent`: sob `not_sent` retentável a fila reenviaria, e o cliente receberia duas.
+    expect(r.status === 'not_sent').toBe(false)
+  })
+
+  it('19. teto por contato é NÃO ENVIADO definitivo — e nada chega ao socket', async () => {
+    // O teto é decidido AQUI, antes do socket: nada saiu, então reenviar depois é seguro — mas
+    // não adianta insistir agora, e por isso `retryable: false`. O teste anterior exercitava só
+    // a função pura `overContactCap`; o desfecho de `sendText` não tinha prova.
+    await startPairing('s12')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const numero = '5511900000019'
+    // CONTACT_CAP = 12 envios na janela; o 13º é suprimido.
+    for (let i = 0; i < 12; i++) {
+      await sendText('s12', numero, `msg ${i}`)
+    }
+    fake.sendMessage.mockClear()
+
+    const r = await sendText('s12', numero, 'a que estoura o teto')
+
+    expect(r.status).toBe('not_sent')
+    expect(r.status === 'not_sent' && r.retryable).toBe(false)
+    expect(fake.sendMessage).not.toHaveBeenCalled()
+  })
+
+  // O ID DO ENVIO ESCOLHIDO POR NÓS (6C.8B T3a).
+  //
+  // Quem escolhia o identificador era a biblioteca, e nós só ficávamos sabendo DEPOIS. Aqui o
+  // caminho interno passa a poder fornecê-lo. Sozinho isso não muda nada visível — é o
+  // encanamento de que o T3b vai precisar para repetir um envio em dúvida sem o cliente receber
+  // duas vezes. A prova tem que estar no ARGUMENTO que chega ao `sendMessage`: o retorno não
+  // distingue "encaminhou o id" de "aceitou o id e ignorou".
+
+  it('20. o id fornecido é encaminhado ao `sendMessage` como `messageId`', async () => {
+    await startPairing('s13')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    // O valor é o que `deriveOutboundMessageId('evt_t3a_golden', 'reply')` produz — aqui ele é
+    // literal de propósito: este teste prova o ENCAMINHAMENTO, não a derivação (que tem prova
+    // própria em outbound-id.test.ts).
+    const id = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+    await sendText('s13', '5511988887777', 'pronto', { outboundMessageId: id })
+
+    expect(fake.sendMessage).toHaveBeenCalledWith(
+      '5511988887777@s.whatsapp.net',
+      { text: 'pronto' },
+      { messageId: id },
+    )
+  })
+
+  it('22. identificador DEVOLVIDO diferente do solicitado é AMBÍGUO, não sucesso', async () => {
+    // A lacuna que a revisão achou: o adapter provava que o id SAI no terceiro argumento, e
+    // aceitava de volta qualquer `key.id`. Ficava possível concluir com `sent(Y)` uma chamada
+    // feita com X — e o T3b, que vai reusar o identificador para repetir um envio depois de um
+    // crash, estaria falando de uma mensagem que não é a que existe do outro lado.
+    //
+    // Na biblioteca instalada (`messages-send.js:1086`) um `messageId` fornecido PREVALECE.
+    // Divergir dali é comportamento inesperado, não sucesso seguro — e como o socket já foi
+    // chamado, o desfecho externo é incerto: `ambiguous`, nunca `not_sent`.
+    await startPairing('s15')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const solicitado = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+    fake.sendMessage.mockResolvedValueOnce({
+      key: { id: '3EB0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' },
+    } as never)
+
+    const r = await sendText('s15', '5511988887777', 'pronto', {
+      outboundMessageId: solicitado,
+    })
+
+    expect(r.status).toBe('ambiguous')
+    expect(r.status === 'ambiguous' && r.reason).toBe('identificador_divergente')
+    // E o identificador solicitado NÃO pode ser devolvido como se fosse o do provedor: a
+    // divergência tem que ficar visível, não maquiada.
+    expect(r.status === 'sent').toBe(false)
+  })
+
+  it('23. par positivo — identificador devolvido IGUAL ao solicitado conclui com ele', async () => {
+    // Sem este par, recusar tudo passaria no caso 22 e o canal QR nunca mais concluiria um envio.
+    await startPairing('s16')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+    const solicitado = '3EB0A24914DB390B1E3284A44DF34E62313E91AE'
+
+    const r = await sendText('s16', '5511988887777', 'pronto', {
+      outboundMessageId: solicitado,
+    })
+
+    expect(r.status).toBe('sent')
+    expect(r.status === 'sent' && r.providerMessageId).toBe(solicitado)
+  })
+
+  it('21. SEM id fornecido o envio segue como hoje — a biblioteca escolhe', async () => {
+    // O T3a não pode tornar o parâmetro obrigatório: o operator-reply continua chamando sem id
+    // (ação do operador, sem `WebhookEvent` de origem), e um terceiro argumento `undefined` aqui
+    // seria uma mudança de contrato sem necessidade.
+    await startPairing('s14')
+    fake._emit('connection.update', { connection: 'open' })
+    await tick()
+
+    const r = await sendText('s14', '5511988887777', 'pronto')
+
+    expect(r.status).toBe('sent')
     expect(fake.sendMessage).toHaveBeenCalledWith('5511988887777@s.whatsapp.net', {
       text: 'pronto',
     })
@@ -188,8 +367,8 @@ describe('gerente Baileys (ciclo de vida)', () => {
     expect(inbound.mock.calls[0][0]).toMatchObject({ contactId: lid, remoteJid: `${lid}@lid` })
 
     // o motor responde passando o contactId (só dígitos) → deve sair pro @lid original
-    const ok = await sendText('s5', lid, 'pronto')
-    expect(ok).toBe(true)
+    const r = await sendText('s5', lid, 'pronto')
+    expect(r.status).toBe('sent')
     expect(fake.sendMessage).toHaveBeenCalledWith(`${lid}@lid`, { text: 'pronto' })
   })
 

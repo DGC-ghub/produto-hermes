@@ -7,7 +7,12 @@ import {
   UNSAFE_RouteContext,
 } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
-import Canais, { confirmDisconnect, formatLastConn, resolveDisplayStatus } from './canais'
+import Canais, {
+  confirmDisconnect,
+  formatLastConn,
+  resolveDisplayStatus,
+  shouldPollSessions,
+} from './canais'
 
 // Duas garantias desta tela: (1) "Desconectar" derruba o WhatsApp da empresa e não pode sair
 // num toque só; (2) o status nunca pode dizer "Conectado" quando o servidor não sabe se está.
@@ -65,6 +70,16 @@ function render(sessions: Session[]): string {
     </MemoryRouter>,
   )
 }
+
+describe('shouldPollSessions — estados transitórios não congelam a tela', () => {
+  it.each(['pareando', 'verificando', 'reconectando'])('mantém polling em %s', (status) => {
+    expect(shouldPollSessions([{ status }])).toBe(true)
+  })
+
+  it.each(['conectado', 'desconectado', 'derrubado'])('para polling em %s', (status) => {
+    expect(shouldPollSessions([{ status }])).toBe(false)
+  })
+})
 
 describe('resolveDisplayStatus — o status não pode mentir', () => {
   it('usa o estado ao vivo do gerente quando ele conhece a sessão', () => {

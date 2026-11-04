@@ -11,6 +11,7 @@ vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 const input: AttendantInput = {
   tenant: { slug: 'assistencia-tecnica-demo', name: 'ResolveTech' },
   companyRules: ['não prometa preço fechado'],
+  enabledTools: ['abrir_chamado'],
   knowledge: [{ title: 'Bairros', snippet: 'Atendemos Centro e Jardim América' }],
   history: [{ role: 'user', content: 'oi' }],
   lead: { name: null, phone: null, neighborhood: 'Centro', need: null, urgency: null },
@@ -29,6 +30,37 @@ describe('buildPrompt', () => {
 
   it('delimita a mensagem do cliente como dados', () => {
     expect(buildPrompt(input)).toContain('"""minha geladeira parou"""')
+  })
+
+  it('COM a ferramenta: ensina a propor E o formato admite o objeto da action', () => {
+    const prompt = buildPrompt(input)
+    expect(prompt).toContain('a action abrir_chamado vem NESSE MESMO JSON')
+    expect(prompt).toContain('"action": {"type":"abrir_chamado"')
+  })
+
+  // Sem a ferramenta nada é registrável: o prompt não pode pedir a action nem
+  // deixar espaço pra "já registrei" (tenant novo nasce sem tool nenhuma).
+  it('sem ferramenta, manda usar action null e não afirmar registro', () => {
+    const prompt = buildPrompt({ ...input, enabledTools: [] })
+    expect(prompt).toContain('não registra chamados')
+    expect(prompt).toContain('NUNCA')
+    expect(prompt).not.toContain('a action abrir_chamado vem NESSE MESMO JSON')
+  })
+
+  // DISCRIMINANTE. A versão anterior deste teste era `toContain('abrir_chamado')` no
+  // ramo COM ferramenta — e passava nos DOIS ramos, porque o nome da tool aparecia na
+  // linha do FORMATO, que era incondicional. Um teste que não distingue os ramos não
+  // prova que o prompt é capability-aware; prova só que a string existe em algum lugar.
+  it('SEM a ferramenta: abrir_chamado não aparece em lugar nenhum do prompt', () => {
+    expect(buildPrompt({ ...input, enabledTools: [] })).not.toContain('abrir_chamado')
+  })
+
+  it('SEM a ferramenta: o formato aceito admite SOMENTE "action": null', () => {
+    // Anunciar o objeto da action no formato é um convite: o modelo preenche o que o
+    // schema mostra. Sem a tool, o balcão descarta — e a frase "já registrei" nasce aí.
+    const prompt = buildPrompt({ ...input, enabledTools: [] })
+    expect(prompt).toContain('"action": null')
+    expect(prompt).not.toContain('"subject": string')
   })
 })
 

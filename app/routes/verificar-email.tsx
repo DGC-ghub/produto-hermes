@@ -1,6 +1,7 @@
 import { Form, Link, useActionData, useNavigation } from 'react-router'
 import { Logo, WingMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
+import { appUrlFor } from '../lib/app-url.server'
 import { getOperator } from '../lib/auth.server'
 import { confirmEmailVerification } from '../lib/email-verification.server'
 import { resendVerification } from '../lib/signup.server'
@@ -55,7 +56,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   const result = await resendVerification(
     { id: operator.accountId, email: operator.username },
-    new URL(request.url).origin,
+    appUrlFor(request),
   )
   if (!result.ok) {
     return {

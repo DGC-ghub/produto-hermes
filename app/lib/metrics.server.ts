@@ -16,13 +16,30 @@ import {
 } from './metrics'
 
 /** Desfecho da mensagem — o "porquê" por trás de uma latência. */
+/**
+ * O desfecho de uma mensagem.
+ *
+ * `human_handling` cobria três fenômenos diferentes e caros de confundir: o humano que JÁ
+ * conduzia quando a mensagem chegou (o motor nem gastou cérebro), o que assumiu no meio do
+ * raciocínio (uma resposta de dezenas de segundos jogada fora) e — depois que o CAS virou
+ * allowlist — a conversa encerrada ou apagada, onde humano nenhum assumiu coisa alguma.
+ *
+ * A taxonomia é deliberadamente curta: em vez de multiplicar `fase × estado`, a FASE sai de
+ * `brainMs`. O número caro fica a uma consulta de distância:
+ *
+ *   WHERE outcome = 'human_took_over' AND brainMs IS NOT NULL
+ */
 export type TraceOutcome =
-  | 'ok' //              respondida pelo cérebro
-  | 'fallback' //        cérebro falhou/foi recusado, cliente recebeu a resposta genérica
-  | 'guard_handoff' //   guard-rail curto-circuitou antes do LLM (barato de propósito)
-  | 'billing_blocked' // assinatura inativa
-  | 'human_handling' //  humano assumiu, Hermes calado
-  | 'erro' //            exceção no meio do fluxo
+  | 'ok' //                     respondida pelo cérebro
+  | 'fallback' //               cérebro falhou/foi recusado, cliente recebeu a resposta genérica
+  | 'guard_handoff' //          guard-rail curto-circuitou antes do LLM (barato de propósito)
+  | 'billing_blocked' //        assinatura inativa
+  | 'human_at_entry' //         humano já conduzia quando a mensagem chegou
+  | 'human_took_over' //        humano assumiu durante o processamento (veja `brainMs`)
+  | 'conversation_closed' //    encerrada durante o processamento
+  | 'conversation_missing' //   apagada durante o processamento
+  | 'authority_lost_unknown' // status desconhecido: silêncio fail-closed
+  | 'erro' //                   exceção no meio do fluxo
 
 export type RecordTraceInput = {
   tenantId: string

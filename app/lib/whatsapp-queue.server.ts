@@ -9,7 +9,14 @@
 import { db } from '../db.server'
 import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
-import { type ChannelRef, type InboundEvent, metaRef } from './channels/types'
+import { deriveOutboundMessageId } from './channels/outbound-id.server'
+import {
+  type ChannelRef,
+  type InboundEvent,
+  metaRef,
+  type SendOptions,
+  type SendResult,
+} from './channels/types'
 import { processIncomingMessage } from './conversation.server'
 import { type InboundMessage, resolveTenantSlugByPhoneNumber } from './whatsapp.server'
 
@@ -100,16 +107,123 @@ const UNSUPPORTED_MEDIA_REPLY =
 // Chamado/lead). Falha persistente (token errado) ainda cai no alarme; o "guardar e
 // reentregar" completo pra persistente é follow-up (decisão de at-least-once do dono).
 const SEND_RETRIES = 3
-async function sendWithRetry(ref: ChannelRef, to: string, text: string): Promise<boolean> {
+/**
+ * Tenta enviar, repetindo SÓ o que se sabe que não saiu.
+ *
+ * A versão anterior era `if (await sendReply(...)) return true` — e repetia qualquer `false`.
+ * Como `false` também significava "a requisição saiu e a resposta se perdeu", o retry
+ * entregava uma segunda cópia ao cliente sem que nada tivesse dado errado no sistema.
+ *
+ * ⚠️ Cuidado que o compilador NÃO pega: com o retorno virando objeto, `if (await sendReply(...))`
+ * fica SEMPRE verdadeiro, e o retry silenciosamente acharia que todo envio deu certo. A
+ * condição tem que olhar o `status`, nunca a verdade do valor.
+ */
+async function sendWithRetry(
+  ref: ChannelRef,
+  to: string,
+  text: string,
+  options?: SendOptions,
+): Promise<SendResult> {
+  let ultimo: SendResult = { status: 'not_sent', retryable: true, reason: 'nao_tentado' }
   for (let i = 0; i < SEND_RETRIES; i++) {
-    if (await sendReply(ref, to, text)) {
-      return true
+    // `options` vem PRONTO de fora e é o MESMO nas três tentativas. Derivar o identificador aqui
+    // dentro daria um valor por tentativa e mataria a única propriedade que o T3a entrega.
+    ultimo = await sendReply(ref, to, text, options)
+    // Repete apenas o não-enviado que melhora esperando. `sent` não precisa; `ambiguous` não
+    // pode; `not_sent` permanente não muda.
+    if (!(ultimo.status === 'not_sent' && ultimo.retryable)) {
+      return ultimo
     }
     if (i < SEND_RETRIES - 1) {
       await new Promise((r) => setTimeout(r, 400 * (i + 1)))
     }
   }
-  return false
+  return ultimo
+}
+
+/**
+ * O alarme do envio, por desfecho. `ambiguous` é o caso que precisa de olho humano: a mensagem
+ * pode ter chegado, e o sistema não vai reenviar por decisão de projeto.
+ */
+function alarmarDesfechoDoEnvio(resultado: SendResult): void {
+  if (resultado.status === 'sent') {
+    return
+  }
+  if (resultado.status === 'ambiguous') {
+    console.error(`[fila] envio AMBÍGUO (${resultado.reason}) — não será reenviado`)
+    void reportDegradation('envio_whatsapp_ambiguo')
+    return
+  }
+  void reportDegradation('envio_whatsapp_falhou')
+}
+
+/** O tenant do evento: Baileys pela sessão, Meta pelo número. */
+async function resolveTenantSlugFromEvent(event: {
+  phoneNumberId: string
+  channelSessionId: string | null
+}): Promise<string | null> {
+  return event.channelSessionId
+    ? ((
+        await db.channelSession.findUnique({
+          where: { id: event.channelSessionId },
+          select: { tenant: { select: { slug: true } } },
+        })
+      )?.tenant.slug ?? null)
+    : await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
+}
+
+/**
+ * A cortesia de mídia pode ser enviada?
+ *
+ * O ramo de áudio responde sem passar pelo motor, e portanto sem passar pelo CAS que protege
+ * todos os outros caminhos. Esta função é o CAS dele — com as três propriedades que a versão
+ * anterior não tinha:
+ *
+ * 1. ISOLAMENTO POR TENANT. A primeira versão buscava só por `contactId` e `status: 'human'`.
+ *    O mesmo telefone pode falar com duas empresas, e um atendimento humano na empresa A
+ *    silenciava a empresa B — o oposto do isolamento que o motor já garante por
+ *    tenant + canal + contato.
+ *
+ * 2. LINEARIZAÇÃO, não leitura. Uma leitura só encurta a janela: entre o `find` e o envio, o
+ *    operador ainda assume e a cortesia escapa. O `updateMany` condicional É a escrita que
+ *    estabelece a ordem, exatamente como `casDaTomada` faz no motor.
+ *
+ * 3. FAIL-CLOSED. A versão anterior tinha `catch { return false }`, e o chamador lê `false`
+ *    como "pode falar" — ou seja, banco indisponível AUTORIZAVA o robô a falar sem que
+ *    ninguém tivesse verificado a autoridade. Agora o erro sobe: a fila devolve o evento para
+ *    `pending` e tenta de novo. O cliente não fica sem resposta, fica com resposta adiada.
+ *
+ * `closed` fica fora da busca de propósito: conversa encerrada não é reutilizada pela
+ * resolução por identidade, então áudio depois do encerramento é atendimento novo e merece a
+ * cortesia.
+ */
+async function autorizarCortesiaDeMidia(input: {
+  tenantSlug: string
+  contactId: string
+}): Promise<boolean> {
+  const ativa = await db.conversation.findFirst({
+    where: {
+      tenant: { slug: input.tenantSlug },
+      contactId: input.contactId,
+      channel: 'whatsapp',
+      status: { not: 'closed' },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { id: true },
+  })
+
+  // Nenhuma conversa ativa: é atendimento novo, e não há autoridade a respeitar.
+  if (!ativa) {
+    return true
+  }
+
+  // O ponto de linearização com a tomada humana. Mesma allowlist do motor: `human`, `closed`
+  // e qualquer status que ninguém previu perdem — fail-closed por construção.
+  const autorizada = await db.conversation.updateMany({
+    where: { id: ativa.id, status: { in: ['open', 'needs_human'] } },
+    data: { updatedAt: new Date() },
+  })
+  return autorizada.count === 1
 }
 
 async function processEvent(event: {
@@ -128,25 +242,9 @@ async function processEvent(event: {
   // sendo a IDENTIDADE (o motor usa ele); só o destino do envio muda.
   const replyTo = ref.kind === 'baileys' ? (event.remoteJid ?? event.contactId) : event.contactId
 
-  // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) —
-  // o conteúdo real a gente ainda não lê, então não há o que registrar.
-  if (event.kind === 'unsupported') {
-    const sent = await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY)
-    if (!sent) {
-      void reportDegradation('envio_whatsapp_falhou')
-    }
-    return
-  }
-
-  // Resolve o tenant pela origem: Baileys → pela sessão; Meta → pelo número.
-  const tenantSlug = event.channelSessionId
-    ? ((
-        await db.channelSession.findUnique({
-          where: { id: event.channelSessionId },
-          select: { tenant: { select: { slug: true } } },
-        })
-      )?.tenant.slug ?? null)
-    : await resolveTenantSlugByPhoneNumber(event.phoneNumberId)
+  // O tenant vem ANTES de qualquer resposta, inclusive a de mídia: sem ele não dá para saber
+  // de quem é a conversa, e responder sem saber é o que quebrava o isolamento.
+  const tenantSlug = await resolveTenantSlugFromEvent(event)
   if (!tenantSlug) {
     throw new Error(
       event.channelSessionId
@@ -155,20 +253,41 @@ async function processEvent(event: {
     )
   }
 
+  // Áudio/mídia: responde a cortesia SEM rodar o motor (nem criar conversa) — o conteúdo real
+  // a gente ainda não lê, então não há o que registrar.
+  //
+  // Mas a cortesia É a IA falando com o cliente, e por isso passa pelo mesmo tipo de
+  // autorização que o motor usa. Ver `autorizarCortesiaDeMidia`.
+  if (event.kind === 'unsupported') {
+    if (!(await autorizarCortesiaDeMidia({ tenantSlug, contactId: event.contactId }))) {
+      return
+    }
+    alarmarDesfechoDoEnvio(
+      await sendWithRetry(ref, replyTo, UNSUPPORTED_MEDIA_REPLY, {
+        outboundMessageId: deriveOutboundMessageId(event.id, 'media_courtesy'),
+      }),
+    )
+    return
+  }
+
   const result = await processIncomingMessage({
     tenantSlug,
     message: event.text,
     contactId: event.contactId,
-    channel: 'whatsapp',
+    // O único modo com efeitos operacionais: aqui há um cliente de verdade do outro lado.
+    mode: 'whatsapp',
   })
   // Só responde se o Hermes gerou texto (em atendimento humano ele fica em silêncio).
   if (result.reply.trim().length > 0) {
-    const sent = await sendWithRetry(ref, replyTo, result.reply)
     // Falha de ENVIO (após os retries) não marca o evento como falho: a mensagem FOI
     // processada (reprocessar duplicaria chamado/lead). Alarma e segue.
-    if (!sent) {
-      void reportDegradation('envio_whatsapp_falhou')
-    }
+    alarmarDesfechoDoEnvio(
+      await sendWithRetry(ref, replyTo, result.reply, {
+        // Derivado UMA vez, do evento — âncora `WebhookEvent.id`, a mesma chave de linha que o T5
+        // vai usar como `sourceEventId`. As três tentativas do retry recebem este mesmo valor.
+        outboundMessageId: deriveOutboundMessageId(event.id, 'reply'),
+      }),
+    )
   }
 }
 

@@ -1,12 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
+import { reportDegradation } from './alarm.server'
 import { sendReply } from './channels/dispatch.server'
+import { deriveOutboundMessageId } from './channels/outbound-id.server'
 import { ensureInitialTenants } from './tenants.server'
 import { registerWhatsappNumber } from './whatsapp.server'
 import { drainPending, persistBaileysInbound, persistInbound } from './whatsapp-queue.server'
 
-// Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. Default = entregue.
-vi.mock('./channels/dispatch.server', () => ({ sendReply: vi.fn(async () => true) }))
+// Mocka o envio: os testes exercitam a FILA/MOTOR, não o transporte. O default é o desfecho
+// `sent` — chamada concluída com identificador —, que não é o mesmo que "entregue ao aparelho".
+vi.mock('./alarm.server', () => ({
+  reportDegradation: vi.fn(),
+  reportSensitiveHandoff: vi.fn(),
+}))
+
+vi.mock('./channels/dispatch.server', () => ({
+  sendReply: vi.fn(async () => ({ status: 'sent', providerMessageId: 'wamid.teste' })),
+}))
 
 const TEST_CONTACT_ID = 'test-queue-5511999990000'
 const TEST_PHONE_ID = 'test-queue-phone-id'
@@ -32,10 +42,19 @@ beforeEach(async () => {
   await ensureInitialTenants()
   // Mapeia o número de teste pro tenant dgc (o caminho REAL de resolução).
   await registerWhatsappNumber(TEST_PHONE_ID, 'dgc')
-  vi.mocked(sendReply).mockReset().mockResolvedValue(true) // default: envio entregue
+  // default: envio concluído localmente, com identificador
+  vi.mocked(sendReply)
+    .mockReset()
+    .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.teste' })
 })
 
 afterEach(async () => {
+  // `MessageTrace.conversationId` não tem FK: apagar a conversa não leva o trace junto, e
+  // estes testes agora atravessam o motor.
+  const idsDeConversa = (
+    await db.conversation.findMany({ where: { contactId: TEST_CONTACT_ID }, select: { id: true } })
+  ).map((c) => c.id)
+  await db.messageTrace.deleteMany({ where: { conversationId: { in: idsDeConversa } } })
   await db.webhookEvent.deleteMany({ where: { contactId: TEST_CONTACT_ID } })
   await db.whatsappNumber.deleteMany({ where: { phoneNumberId: TEST_PHONE_ID } })
   await db.ticket.deleteMany({ where: { contactId: TEST_CONTACT_ID } })
@@ -100,7 +119,11 @@ describe('drainPending', () => {
 
   it('reenvia o envio ao falhar (blip) sem reprocessar o motor, e completa (#8)', async () => {
     // 1ª tentativa de envio falha; sendWithRetry reenvia e entrega na 2ª.
-    vi.mocked(sendReply).mockReset().mockResolvedValueOnce(false).mockResolvedValue(true)
+    // Primeira tentativa falha de forma RETENTÁVEL; a segunda entrega.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValueOnce({ status: 'not_sent', retryable: true, reason: 'http_429' })
+      .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.teste' })
     await persistInbound([inbound('wamid.test-send-retry')])
     await drainPending()
 
@@ -113,6 +136,51 @@ describe('drainPending', () => {
     // ...mas o motor rodou UMA vez só (não duplicou): uma conversa.
     const convs = await db.conversation.findMany({ where: { contactId: TEST_CONTACT_ID } })
     expect(convs.length).toBe(1)
+  })
+
+  // O IDENTIFICADOR DO ENVIO É ESCOLHIDO POR NÓS, E É O MESMO NAS TRÊS TENTATIVAS (6C.8B T3a).
+  //
+  // Isto é encanamento: nada visível muda hoje. O que ele garante é a propriedade da qual o T3b
+  // vai depender — se as tentativas de um mesmo outbound usassem identificadores diferentes,
+  // repetir um envio em dúvida entregaria uma segunda cópia ao cliente, que é exatamente o que
+  // esse trabalho existe para impedir. A mutação natural (derivar o id DENTRO do laço de retry)
+  // some com a estabilidade sem quebrar mais nada.
+  it('T3a. as três tentativas do MESMO outbound recebem exatamente o mesmo identificador', async () => {
+    // Nunca conclui, e de forma retentável: `sendWithRetry` gasta as três tentativas.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'not_sent', retryable: true, reason: 'http_429' })
+    await persistInbound([inbound('wamid.test-id-estavel')])
+    await drainPending()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid.test-id-estavel' },
+    })
+    const chamadas = vi.mocked(sendReply).mock.calls
+    expect(chamadas.length).toBe(3)
+    const ids = chamadas.map(
+      (c) => (c[3] as { outboundMessageId?: string } | undefined)?.outboundMessageId,
+    )
+    expect(new Set(ids).size).toBe(1)
+    // E é o id DERIVADO do evento — não uma constante, que colaria mensagens diferentes numa só.
+    expect(ids[0]).toBe(deriveOutboundMessageId(evento.id, 'reply'))
+  })
+
+  it('T3a. a cortesia de mídia usa o propósito dela, não o do motor', async () => {
+    // Os dois envios de um evento são mutuamente exclusivos hoje (a cortesia dá `return` antes do
+    // motor), então um id por evento bastaria. O discriminante existe para o dia em que deixarem
+    // de ser — e sem esta prova ele sumiria da chave sem nada ficar vermelho.
+    await persistInbound([inbound('wamid.test-id-cortesia', { kind: 'unsupported' })])
+    await drainPending()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid.test-id-cortesia' },
+    })
+    const opcoes = vi.mocked(sendReply).mock.calls[0]?.[3] as
+      | { outboundMessageId?: string }
+      | undefined
+    expect(opcoes?.outboundMessageId).toBe(deriveOutboundMessageId(evento.id, 'media_courtesy'))
+    expect(opcoes?.outboundMessageId).not.toBe(deriveOutboundMessageId(evento.id, 'reply'))
   })
 
   // Áudio/mídia: cortesia sem motor — marca done e NÃO cria conversa (o conteúdo
@@ -194,5 +262,211 @@ describe('persistBaileysInbound (canal QR)', () => {
     }
     expect(await persistBaileysInbound(event)).toBe(1)
     expect(await persistBaileysInbound(event)).toBe(0)
+  })
+})
+
+describe('o silêncio da 6C chega até o fio', () => {
+  // O ÚLTIMO METRO. Os cinco desfechos que a 6C criou — humano na entrada, humano assumiu,
+  // conversa encerrada, apagada, status desconhecido — todos devolvem `reply: ''`, e essa
+  // string atravessa exatamente UMA linha antes de virar (ou não) mensagem no WhatsApp do
+  // cliente. Toda a garantia estava provada no BANCO e nenhuma vez no FIO, que é o único
+  // lugar onde ela é visível para quem está do outro lado.
+  //
+  // Não há segunda barreira: nem `sendReply` nem o Baileys recusam texto vazio. No canal da
+  // Meta um `text.body: ""` volta 400, o retry tenta três vezes e alarma `envio_whatsapp_falhou`
+  // a CADA mensagem recebida durante atendimento humano — alarme falso que o operador aprende
+  // a ignorar. No Baileys, uma bolha em branco dentro da conversa que ele está conduzindo.
+
+  async function conversaEmAtendimentoHumano() {
+    const tenant = await db.tenant.findUniqueOrThrow({ where: { slug: 'dgc' } })
+    return db.conversation.create({
+      data: {
+        tenantId: tenant.id,
+        contactId: TEST_CONTACT_ID,
+        channel: 'whatsapp',
+        status: 'human',
+      },
+    })
+  }
+
+  it('com humano conduzindo, NADA é enviado ao cliente', async () => {
+    const conversa = await conversaEmAtendimentoHumano()
+
+    await persistInbound([inbound('wamid-silencio-humano')])
+    await drainPending()
+
+    // O Hermes se cala — e calar significa não mandar nada, não mandar vazio.
+    expect(sendReply).not.toHaveBeenCalled()
+
+    // A fala do cliente foi registrada para o atendente ver, e o evento concluiu: silêncio
+    // não é falha, e reprocessar duplicaria a mensagem dele na tela.
+    const mensagens = await db.message.findMany({
+      where: { conversationId: conversa.id },
+      select: { role: true },
+    })
+    expect(mensagens.map((m) => m.role)).toEqual(['user'])
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid-silencio-humano' },
+    })
+    expect(evento.status).toBe('done')
+  })
+
+  it('áudio durante atendimento humano não recebe nem a cortesia', async () => {
+    // A cortesia é a IA falando com o cliente, e ela não passa pelo motor — logo não passa
+    // pelo CAS. Era o único ponto do produto que falava sem perguntar de quem é a conversa,
+    // e como essa fala não vira `Message`, o operador nem descobria o que o cliente ouviu.
+    await conversaEmAtendimentoHumano()
+
+    await persistInbound([inbound('wamid-audio-humano', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+  })
+
+  it('áudio SEM humano conduzindo recebe a cortesia — o par positivo', async () => {
+    // Sem este, calar sempre no ramo de mídia ficaria verde acima e o cliente que manda áudio
+    // voltaria ao vácuo que esta cortesia existe para eliminar.
+    await persistInbound([inbound('wamid-audio-sozinho', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+    // O destino importa: no Baileys responder aos dígitos reconstruídos em vez do jid original
+    // vai para o vácuo — é para isso que a coluna `remoteJid` existe.
+    expect(vi.mocked(sendReply).mock.calls[0]?.[1]).toBe(TEST_CONTACT_ID)
+    expect(String(vi.mocked(sendReply).mock.calls[0]?.[2])).toContain('áudio')
+  })
+})
+
+describe('a cortesia de mídia passa pela mesma autorização do motor', () => {
+  async function conversaDoTenant(slug: string, status: string) {
+    const tenant = await db.tenant.findUniqueOrThrow({ where: { slug } })
+    return db.conversation.create({
+      data: { tenantId: tenant.id, contactId: TEST_CONTACT_ID, channel: 'whatsapp', status },
+    })
+  }
+
+  it('humano em OUTRA empresa não silencia esta', async () => {
+    // O mesmo telefone fala com duas empresas. Um atendimento humano na empresa A não pode
+    // calar a empresa B — é o mesmo isolamento por tenant + canal + contato que o motor já
+    // garante, e que a primeira versão desta autorização não tinha.
+    await conversaDoTenant('assistencia-tecnica-demo', 'human')
+
+    await persistInbound([inbound('wamid-audio-outro-tenant', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('conversa ENCERRADA não silencia um atendimento novo', async () => {
+    // Áudio depois do encerramento é atendimento novo — a resolução por identidade ignora as
+    // encerradas, e a cortesia acompanha essa decisão.
+    await conversaDoTenant('dgc', 'closed')
+
+    await persistInbound([inbound('wamid-audio-encerrada', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('tomada humana ENTRE a resolução e a autorização: silêncio', async () => {
+    // A janela real. Uma leitura só a encurta: entre o `find` e o envio o operador ainda
+    // assume. O spy troca o status DETERMINISTICAMENTE no instante entre a resolução da
+    // conversa e o compare-and-swap — sem `setTimeout`, sem depender de tempo.
+    const conversa = await conversaDoTenant('dgc', 'open')
+    const updateManyReal = db.conversation.updateMany.bind(db.conversation)
+    vi.spyOn(db.conversation, 'updateMany').mockImplementationOnce((async (args: unknown) => {
+      await db.conversation.update({ where: { id: conversa.id }, data: { status: 'human' } })
+      return updateManyReal(args as Parameters<typeof updateManyReal>[0])
+    }) as typeof db.conversation.updateMany)
+
+    await persistInbound([inbound('wamid-audio-tomada', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
+  it('falha ao verificar a autoridade NÃO autoriza o envio', async () => {
+    // Fail-closed. A versão anterior tinha `catch { return false }`, e o chamador lê `false`
+    // como "pode falar": banco indisponível AUTORIZAVA o robô a falar sem ninguém ter
+    // verificado a autoridade. Agora o erro sobe, o evento volta para a fila e é retentado —
+    // o cliente não fica sem resposta, fica com resposta adiada.
+    vi.spyOn(db.conversation, 'findFirst').mockRejectedValueOnce(
+      new Error('SQLITE_BUSY: database is locked'),
+    )
+
+    await persistInbound([inbound('wamid-audio-erro', { kind: 'unsupported' })])
+    await drainPending()
+
+    expect(sendReply).not.toHaveBeenCalled()
+
+    const evento = await db.webhookEvent.findFirstOrThrow({
+      where: { messageId: 'wamid-audio-erro' },
+    })
+    expect(evento.status).toBe('pending')
+    expect(evento.attempts).toBe(1)
+    vi.restoreAllMocks()
+  })
+})
+
+describe('a fila reage ao desfecho do envio, não a um booleano', () => {
+  // O dublê do alarme é de módulo e ACUMULA entre os testes do arquivo. Contar chamadas sem
+  // zerar aqui mediria o que os testes anteriores fizeram, não este.
+  beforeEach(() => {
+    vi.mocked(reportDegradation).mockClear()
+  })
+
+  it('11. ambíguo: uma tentativa só, sem retry, e alarme', async () => {
+    // Reenviar sobre a dúvida entrega uma segunda cópia ao cliente. O sistema para e alarma.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'ambiguous', reason: 'falha_de_rede' })
+
+    await persistInbound([inbound('wamid-envio-ambiguo')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBe(1)
+    // UMA vez, e não uma por tentativa: alarme repetido é alarme que o dono aprende a ignorar.
+    expect(
+      vi.mocked(reportDegradation).mock.calls.filter((c) => c[0] === 'envio_whatsapp_ambiguo'),
+    ).toHaveLength(1)
+  })
+
+  it('11b. `sent`: nenhum alarme de envio — o silêncio é o sinal de que deu certo', async () => {
+    // O par positivo dos casos 11 e 13. Sem ele, um alarme disparado também no caminho feliz
+    // passaria despercebido: os dois testes de falha continuariam verdes, e o dono receberia
+    // `envio_whatsapp_falhou` no celular a cada mensagem respondida com sucesso.
+    await persistInbound([inbound('wamid-envio-ok-sem-alarme')])
+    await drainPending()
+
+    const alarmesDeEnvio = vi
+      .mocked(reportDegradation)
+      .mock.calls.filter((c) => String(c[0]).startsWith('envio_whatsapp'))
+    expect(alarmesDeEnvio).toEqual([])
+  })
+
+  it('12. não enviado e retentável: o retry acontece', async () => {
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValueOnce({ status: 'not_sent', retryable: true, reason: 'http_429' })
+      .mockResolvedValue({ status: 'sent', providerMessageId: 'wamid.ok' })
+
+    await persistInbound([inbound('wamid-envio-429')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('13. não enviado e definitivo: uma tentativa só, e alarme de falha', async () => {
+    // 401 não melhora esperando. Insistir só atrasa o alarme que o dono precisa ver.
+    vi.mocked(sendReply)
+      .mockReset()
+      .mockResolvedValue({ status: 'not_sent', retryable: false, reason: 'http_401' })
+
+    await persistInbound([inbound('wamid-envio-401')])
+    await drainPending()
+
+    expect(vi.mocked(sendReply).mock.calls.length).toBe(1)
+    expect(reportDegradation).toHaveBeenCalledWith('envio_whatsapp_falhou')
   })
 })

@@ -4,11 +4,31 @@
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails'
 
+// Remetente de teste do Resend. Ele ACEITA o envio e responde sucesso, mas só entrega
+// para o dono da conta Resend — para qualquer outro destinatário o e-mail simplesmente
+// não chega, sem erro nenhum. É o motivo de confirmação de cadastro e redefinição de
+// senha não funcionarem para cliente de verdade. Sai daqui assim que houver domínio
+// próprio verificado no Resend: basta definir EMAIL_FROM.
+const RESEND_TEST_FROM = 'Hermes <onboarding@resend.dev>'
+
 export type SendEmailInput = { to: string; subject: string; html: string }
+
+/** `true` enquanto o remetente for o de teste — só entrega para o dono da conta. */
+export function isTestSender(from: string): boolean {
+  return from.includes('@resend.dev')
+}
 
 export async function sendEmail(input: SendEmailInput): Promise<{ sent: boolean }> {
   const apiKey = process.env.RESEND_API_KEY
-  const from = process.env.EMAIL_FROM ?? 'Hermes <onboarding@resend.dev>'
+  const from = process.env.EMAIL_FROM ?? RESEND_TEST_FROM
+
+  if (isTestSender(from)) {
+    // Avisa a cada envio de propósito: o silêncio é exatamente o problema — sem isto,
+    // "enviado com sucesso" no log convive com o cliente jurando que nada chegou.
+    console.warn(
+      `[email] remetente de teste (${from}) — "${input.subject}" só será entregue ao dono da conta Resend. Defina EMAIL_FROM com domínio próprio verificado.`,
+    )
+  }
 
   if (!apiKey) {
     console.warn(

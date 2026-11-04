@@ -34,6 +34,34 @@ let demoRateState: RateState = { windowStart: 0, count: 0 }
 // Orçamento por visitante (chave = id do cookie). Vive no processo, como os outros tetos.
 const visitorRates = new Map<string, RateState>()
 
+/** Nome do parâmetro que leva o aviso de "precisa de humano" através do redirect. */
+const PARAM_HUMANO = 'humano'
+
+/**
+ * Monta o destino do redirect depois de processar uma mensagem.
+ *
+ * O aviso viaja na URL porque a action REDIRECIONA, e o retorno do motor morre aí. Antes
+ * a tela lia `needsHuman` do STATUS PERSISTIDO da conversa — e isso deixou de funcionar
+ * quando a demo passou a `public_demo` (§7.3): sem efeitos operacionais o status fica
+ * `open`, e o aviso desapareceria em silêncio, sem nenhum teste acusando. Puro.
+ */
+export function demoRedirectPath(result: {
+  tenantSlug: string
+  conversationId: string
+  needsHuman: boolean
+}): string {
+  const aviso = result.needsHuman ? `&${PARAM_HUMANO}=1` : ''
+  return `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}${aviso}`
+}
+
+/**
+ * Lê o aviso da URL. Só `1` conta — ausente, vazio ou qualquer outra coisa é `false`, para
+ * o parâmetro não virar um jeito de forçar o aviso na tela. Puro.
+ */
+export function demoNeedsHuman(url: URL): boolean {
+  return url.searchParams.get(PARAM_HUMANO) === '1'
+}
+
 function resolveTenantSlug(value: string | null): string {
   return value && ALLOWED_SLUGS.includes(value) ? value : DEFAULT_SLUG
 }
@@ -76,7 +104,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           ...(conversationId ? { id: conversationId } : {}),
         },
         orderBy: { updatedAt: 'desc' },
-        select: { id: true, status: true },
+        select: { id: true },
       })
     : null
 
@@ -93,7 +121,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       tenantSlug,
       tenants: DEMO_TENANTS.map((t) => ({ slug: t.slug, name: t.name })),
       selectedConversationId: selected?.id ?? null,
-      selectedStatus: selected?.status ?? null,
+      // Do parâmetro da última resposta, não do status: ver `demoRedirectPath`.
+      needsHuman: demoNeedsHuman(url),
       messages: messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -189,11 +218,14 @@ export async function action({ request }: Route.ActionArgs) {
       message,
       conversationId: ownConversationId,
       contactId,
+      // Visitante anônimo: nada de lead, chamado, handoff ou alarme (§7.3). Antes o modo era
+      // omitido e o motor caía no default de efeitos LIGADOS — a Central recebia visitante.
+      mode: 'public_demo',
     })
-    return redirect(
-      `/demo/chat?tenant=${result.tenantSlug}&conversationId=${result.conversationId}`,
-      { headers },
-    )
+    // §7.3: o aviso vem do RETORNO do motor, não do status persistido — ver
+    // `demoRedirectPath`. Um `needsHuman: false` NÃO carrega o parâmetro adiante, então o
+    // aviso da rodada anterior não fica colado na tela.
+    return redirect(demoRedirectPath(result), { headers })
   } catch (error) {
     console.error('[demo.chat] erro ao processar mensagem', error)
     return fail('Não consegui processar a mensagem agora. Tente de novo em instantes.')
@@ -218,10 +250,9 @@ function AiAvatar() {
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
-  const { tenantSlug, tenants, selectedConversationId, selectedStatus, messages } = loaderData
+  const { tenantSlug, tenants, selectedConversationId, needsHuman, messages } = loaderData
   const navigation = useNavigation()
   const actionData = useActionData<typeof action>()
-  const needsHuman = selectedStatus === 'needs_human'
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 

@@ -258,15 +258,14 @@ export function validateAttendantOutput(raw: unknown, policy?: TenantPolicy): Va
 
   const validatedAction = validateAction(action, policy?.tools, policy?.outOfScope)
 
-  // A IA não pode AFIRMAR que registrou/abriu chamado sem propor a action: o
+  // A IA não pode AFIRMAR que registrou/abriu chamado sem uma action VÁLIDA: o
   // cliente acharia que está registrado e não está (visto ao vivo na prova de
-  // 2026-07-03 — "Já registrei sua solicitação" com action null). Só vale quando
-  // o tenant TEM a tool abrir_chamado; rejeitar aqui degrada pro fallback honesto.
-  const canOpenTicket = policy?.tools?.some((tool) => tool.name === 'abrir_chamado') ?? false
-  if (canOpenTicket && validatedAction?.type !== 'abrir_chamado') {
-    if (CLAIMS_TICKET_OPENED.test(normalizedReply)) {
-      return { ok: false, reason: 'reply_afirma_registro_sem_action' }
-    }
+  // 2026-07-03 — "Já registrei sua solicitação" com action null). Vale SEMPRE, e
+  // não só quando o tenant tem a tool: sem a tool nada pode ser registrado, então
+  // a frase é mentira certa (tenant novo do /signup nasce com `tools: []`).
+  // Rejeitar aqui degrada pro fallback honesto, que escala para humano.
+  if (validatedAction?.type !== 'abrir_chamado' && CLAIMS_TICKET_OPENED.test(normalizedReply)) {
+    return { ok: false, reason: 'reply_afirma_registro_sem_action' }
   }
 
   return {

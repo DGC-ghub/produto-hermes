@@ -33,6 +33,7 @@ try {
   const first = await processIncomingMessage({
     tenantSlug: 'csmed',
     contactId: CONTACT,
+    mode: 'whatsapp',
     message:
       'Boa tarde, sou a coordenadora de enfermagem do Hospital São Lucas, em Guarulhos. ' +
       'Precisamos de 2 médicos clínicos pra cobrir o plantão noturno do próximo fim de semana. ' +
@@ -45,6 +46,7 @@ try {
   const second = await processIncomingMessage({
     tenantSlug: 'csmed',
     contactId: CONTACT,
+    mode: 'whatsapp',
     message: 'Sim, pode registrar por favor.',
   })
   console.log(`[prova] turno 2 (${Date.now() - t1}ms):`)
@@ -59,6 +61,7 @@ try {
     const third = await processIncomingMessage({
       tenantSlug: 'csmed',
       contactId: CONTACT,
+      mode: 'whatsapp',
       message: 'É para o pronto-atendimento. Pode registrar.',
     })
     console.log(`[prova] turno 3 (${Date.now() - t2}ms):`)

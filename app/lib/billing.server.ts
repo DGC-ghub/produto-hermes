@@ -55,9 +55,17 @@ export async function syncSubscriptionFromMp(preapprovalId: string): Promise<boo
   if (!sub) {
     return false // preapproval que não conhecemos — ignora
   }
+  const nextPayment = preapproval.nextPaymentDate ? new Date(preapproval.nextPaymentDate) : null
+  const validPeriodEnd = nextPayment && Number.isFinite(nextPayment.getTime()) ? nextPayment : null
   await db.subscription.update({
     where: { id: sub.id },
-    data: { status: mapMpStatus(preapproval.status) },
+    data: {
+      status: mapMpStatus(preapproval.status),
+      // O MP define next_payment_date como a próxima cobrança recorrente. Se o campo
+      // vier ausente/inválido, preservamos o período já conhecido em vez de inventar
+      // uma data ou apagar uma assinatura válida.
+      ...(validPeriodEnd ? { currentPeriodEnd: validPeriodEnd } : {}),
+    },
   })
   return true
 }

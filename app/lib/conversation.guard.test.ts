@@ -49,6 +49,7 @@ describe('curto-circuito do guard determinístico', () => {
       tenantSlug: 'dgc',
       message: 'Quero falar com um humano agora, e pode abrir um chamado disso',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     // O LLM não foi pago: a resposta já estava decidida pelo guard.
@@ -89,6 +90,7 @@ describe('curto-circuito do guard determinístico', () => {
       tenantSlug: 'dgc',
       message: 'Quais serviços vocês oferecem?',
       contactId: TEST_CONTACT_ID,
+      mode: 'whatsapp',
     })
 
     expect(generateAttendantReply).toHaveBeenCalledTimes(1)

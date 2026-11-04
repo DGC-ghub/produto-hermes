@@ -80,6 +80,10 @@ export async function action({ request }: Route.ActionArgs) {
     }),
     guardrails: {
       neverPromise: lines('neverPromise'),
+      // outOfScope é guard-rail DETERMINÍSTICO (o validador descarta a action que cita um
+      // destes itens, e o prompt orienta a recusar) e a tela não o edita — sem preservar,
+      // um clique em "Salvar" apagava o escopo negativo da empresa em silêncio.
+      ...(current.guardrails.outOfScope ? { outOfScope: current.guardrails.outOfScope } : {}),
       ...(current.guardrails.forbiddenTopics
         ? { forbiddenTopics: current.guardrails.forbiddenTopics }
         : {}),

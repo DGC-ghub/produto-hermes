@@ -13,8 +13,16 @@ type Operator = {
 export const NAV = [
   { to: '/atendente', label: 'Central' },
   { to: '/dashboard', label: 'Dashboard' },
+  // Primeiro passo de um cliente novo: responder o questionário. Vem antes de
+  // Configurações e Conhecimento de propósito — a ordem conta a história (responder →
+  // testar → conectar), e é o oposto de largar a pessoa num campo em branco.
+  { to: '/preparar-ia', label: 'Preparar minha IA' },
   { to: '/configuracoes', label: 'Configurações' },
   { to: '/conhecimento', label: 'Conhecimento' },
+  // Logo depois de Conhecimento: a ordem conta a história — ensine a IA, teste, então ligue
+  // no WhatsApp. Testar antes de conectar é o que evita o cliente descobrir os buracos da
+  // base no número real da empresa.
+  { to: '/testar-ia', label: 'Testar minha IA' },
   { to: '/canais', label: 'Conectar WhatsApp' },
   { to: '/assinar', label: 'Assinatura' },
 ]

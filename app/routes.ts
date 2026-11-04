@@ -7,6 +7,8 @@ export default [
   route('atendente', 'routes/atendente.tsx'),
   route('configuracoes', 'routes/configuracoes.tsx'),
   route('conhecimento', 'routes/conhecimento.tsx'),
+  route('preparar-ia', 'routes/preparar-ia.tsx'),
+  route('testar-ia', 'routes/testar-ia.tsx'),
   route('conectar-whatsapp', 'routes/conectar-whatsapp.tsx'),
   route('canais', 'routes/canais.tsx'),
   route('login', 'routes/login.tsx'),
@@ -19,6 +21,7 @@ export default [
   route('privacidade', 'routes/privacidade.tsx'),
   route('assinar', 'routes/assinar.tsx'),
   route('metrics', 'routes/metrics.tsx'),
+  route('health', 'routes/health.tsx'),
   route('webhook/mercadopago', 'routes/webhook.mercadopago.tsx'),
   route('webhook/whatsapp', 'routes/webhook.whatsapp.tsx'),
 ] satisfies RouteConfig

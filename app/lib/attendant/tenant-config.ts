@@ -5,12 +5,22 @@ import { join } from 'node:path'
 // (código) único; o que muda entre clientes é só este dado + a knowledge base.
 // O cliente nunca escreve comportamento — preenche campos e sobe documentos.
 
-export type TenantObjective =
-  | 'tirar_duvidas'
-  | 'qualificar_lead'
-  | 'agendar'
-  | 'abrir_chamado'
-  | 'vender'
+/**
+ * Os objetivos que uma empresa pode ter. Lista fechada, disponível em RUNTIME.
+ *
+ * O tipo é derivado dela de propósito: quem valida configuração candidata precisa
+ * conferir contra a lista de verdade, e um `as const` separado do tipo garantiria que os
+ * dois divergissem na primeira vez que alguém acrescentasse um objetivo.
+ */
+export const TENANT_OBJECTIVES = [
+  'tirar_duvidas',
+  'qualificar_lead',
+  'agendar',
+  'abrir_chamado',
+  'vender',
+] as const
+
+export type TenantObjective = (typeof TENANT_OBJECTIVES)[number]
 
 export type ToolName = 'abrir_chamado' | 'consultar_chamados' | 'pedir_agendamento'
 

@@ -8,7 +8,12 @@ import makeWASocket, {
 import { db } from '../../db.server'
 import { reportDegradation } from '../alarm.server'
 import { type DbAuthState, useDbAuthState } from './baileys-auth.server'
-import type { InboundEvent } from './types'
+import { installLibsignalLogGuard } from './libsignal-log-guard.server'
+import type { InboundEvent, SendOptions, SendResult } from './types'
+
+// `libsignal` escreve a sessão criptográfica inteira direto no console, ignorando o logger
+// silencioso do socket. Instalar antes de qualquer conexão evita chaves privadas no log.
+installLibsignalLogGuard()
 
 // Gerente dos sockets Baileys (canal WhatsApp NÃO-oficial / QR). Um socket
 // PERSISTENTE por sessão, vivendo no processo (como o sweeper da fila). Resolve os
@@ -166,7 +171,13 @@ const silentLogger: any = {
   error: () => {},
 }
 
-// Só dígitos do jid (5511...:12@s.whatsapp.net → 5511...) — casa com o wa_id da Meta.
+// Só os dígitos do jid (5511…:12@s.whatsapp.net → 5511…).
+//
+// ⚠️ O NOME PROMETE MAIS DO QUE A FUNÇÃO ENTREGA, e o T2 mediu isso: num jid `@lid` (número
+// oculto) os dígitos extraídos NÃO são um telefone — são um identificador opaco de 14–15
+// dígitos, e não há conversão daqui para o número. Só em `@s.whatsapp.net` o resultado casa com
+// o `wa_id` da Meta. Isto é identidade normalizada do contato no canal, não MSISDN garantido.
+// (Renomear é refatoração própria; mapear LID ↔ telefone é frente separada, fora da 6C.8B.)
 function jidToMsisdn(jid: string): string {
   return jid.split('@')[0]?.split(':')[0]?.replace(/\D/g, '') ?? ''
 }
@@ -437,20 +448,37 @@ export function getSessionView(sessionId: string): { status: string; qr: string 
 }
 
 /**
- * Envia texto por uma sessão Baileys. Best-effort → boolean (contrato do dispatcher).
+ * Envia texto por uma sessão Baileys. Nunca lança → devolve `SendResult` (contrato do
+ * dispatcher): o retorno deixou de ser `boolean` no T1 da 6C.8B, e este comentário ainda
+ * anunciava o contrato antigo.
+ *
+ * `key.id` é o identificador da mensagem devolvido por uma chamada concluída — ele NÃO prova
+ * aceitação remota nem entrega (o spike do T2 teve três `key.id` e zero entregas). É só o que
+ * permite, mais tarde, falar sobre esta mensagem em vez de sobre "alguma".
+ *
+ * `options.outboundMessageId`, quando vem, é o identificador que NÓS escolhemos, e é encaminhado
+ * ao provedor como `MiscMessageGenerationOptions.messageId` (6C.8B T3a). Sem ele o envio segue
+ * como sempre foi — a biblioteca escolhe. O parâmetro é opcional de propósito: o operator-reply
+ * não tem evento de origem do qual derivar um.
+ *
  * Ritmo humano (anti-ban): presence 'composing' + atraso proporcional ao tamanho.
  */
-export async function sendText(sessionId: string, to: string, text: string): Promise<boolean> {
+export async function sendText(
+  sessionId: string,
+  to: string,
+  text: string,
+  options?: SendOptions,
+): Promise<SendResult> {
   const entry = sessions.get(sessionId)
-  if (!entry || entry.status !== 'conectado') {
+  if (entry?.status !== 'conectado') {
     console.warn(`[baileys] envio ignorado — sessão ${sessionId} não conectada`)
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'sessao_desconectada' }
   }
   const jid = resolveReplyJid(sessionId, to)
   if (overContactCap(jid)) {
     console.warn(`[baileys] teto por contato atingido — envio suprimido p/ ${jid}`)
     void reportDegradation('baileys_ping_pong_suprimido')
-    return false
+    return { status: 'not_sent', retryable: false, reason: 'teto_por_contato' }
   }
   try {
     // Teto diário SOFT: só avisa (bloquear deixaria o cliente sem resposta).
@@ -466,15 +494,55 @@ export async function sendText(sessionId: string, to: string, text: string): Pro
     await entry.sock.sendPresenceUpdate('composing', jid).catch(() => {})
     const delay = Math.min(PACE_MIN_MS + text.length * PACE_PER_CHAR_MS, PACE_MAX_MS)
     await new Promise((r) => setTimeout(r, delay))
-    await entry.sock.sendMessage(jid, { text })
+    // O identificador do Baileys é o `key.id` da mensagem devolvida. Ele era descartado.
+    //
+    // Quando o caminho interno FORNECE o identificador, ele vai adiante no terceiro argumento e o
+    // Baileys o respeita (medido no T2). Sem identificador fornecido a chamada continua com DOIS
+    // argumentos, exatamente como antes — passar `undefined` ali seria mudança de contrato sem
+    // necessidade, e o `sendMessage` é a fronteira com a biblioteca.
+    const enviada = options?.outboundMessageId
+      ? await entry.sock.sendMessage(jid, { text }, { messageId: options.outboundMessageId })
+      : await entry.sock.sendMessage(jid, { text })
+
+    // A presença ("digitando…"/"parou") é COSMÉTICA e roda DEPOIS de `sendMessage` já ter
+    // concluído com identificador. O `.catch` já existia, e a razão dele fica registrada: uma
+    // falha aqui não pode apagar aquele desfecho nem transformá-lo em ambíguo — isso levaria o
+    // sistema a parar e pedir reconciliação humana por causa de um indicador de digitação.
     await entry.sock.sendPresenceUpdate('paused', jid).catch(() => {})
-    return true
+
+    const id = (enviada as { key?: { id?: unknown } } | null | undefined)?.key?.id
+    if (typeof id !== 'string' || id.length === 0) {
+      console.error('[baileys] envio sem identificador (key.id) — tratando como ambíguo')
+      // `reason` é identidade interna e não muda aqui (ver a mesma nota em whatsapp.server.ts).
+      return { status: 'ambiguous', reason: 'sem_comprovante' }
+    }
+    // O IDENTIFICADOR DEVOLVIDO TEM QUE SER O SOLICITADO.
+    //
+    // Encaminhar o id no terceiro argumento não basta: sem esta conferência, uma chamada feita
+    // com X podia concluir como `sent(Y)`, e o T3b — que vai reusar o identificador para repetir
+    // um envio depois de um crash — estaria falando de uma mensagem que não é a que existe do
+    // outro lado. Na biblioteca instalada um `messageId` fornecido PREVALECE
+    // (`Socket/messages-send.js:1086`: `{ messageId: generateMessageIDV2(...), ...options }`),
+    // então divergir dali é comportamento inesperado, não sucesso seguro.
+    //
+    // `ambiguous` e não `not_sent`: o socket JÁ foi chamado, e o que aconteceu do lado de fora é
+    // incerto — reenviar sobre isso é a duplicação que a 6C.8B existe para eliminar. E o id
+    // solicitado NÃO vira `providerMessageId`: maquiar a divergência esconderia justamente o
+    // desencontro que precisa ficar visível.
+    if (options?.outboundMessageId && id !== options.outboundMessageId) {
+      console.error(
+        '[baileys] identificador retornado diverge do solicitado — tratando como ambíguo',
+      )
+      return { status: 'ambiguous', reason: 'identificador_divergente' }
+    }
+    return { status: 'sent', providerMessageId: id }
   } catch (error) {
+    // O socket pode ter transmitido antes de cair. Do lado de cá é indistinguível.
     console.error(
       `[baileys] erro no envio (${sessionId}):`,
       error instanceof Error ? error.message : error,
     )
-    return false
+    return { status: 'ambiguous', reason: 'falha_no_socket' }
   }
 }
 

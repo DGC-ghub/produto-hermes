@@ -75,15 +75,45 @@ describe('syncSubscriptionFromMp (M3)', () => {
         status: 'trialing',
       },
     })
+    const nextPaymentDate = '2026-09-03T20:00:00.000-03:00'
     vi.mocked(getPreapproval).mockResolvedValue({
       id: 'pa_999',
       status: 'authorized',
       externalReference: t.id,
+      nextPaymentDate,
     })
 
     expect(await syncSubscriptionFromMp('pa_999')).toBe(true)
     const sub = await db.subscription.findUnique({ where: { providerSubId: 'pa_999' } })
     expect(sub?.status).toBe('active')
+    expect(sub?.currentPeriodEnd?.toISOString()).toBe(new Date(nextPaymentDate).toISOString())
+  })
+
+  it('preserva o período conhecido quando o MP omite ou devolve data inválida', async () => {
+    const t = await makeTenant()
+    const existingPeriodEnd = new Date('2026-09-15T12:00:00.000Z')
+    await db.subscription.create({
+      data: {
+        tenantId: t.id,
+        provider: 'mercadopago',
+        providerSubId: 'pa_invalid_date',
+        status: 'trialing',
+        currentPeriodEnd: existingPeriodEnd,
+      },
+    })
+    vi.mocked(getPreapproval).mockResolvedValue({
+      id: 'pa_invalid_date',
+      status: 'authorized',
+      externalReference: t.id,
+      nextPaymentDate: 'data-invalida',
+    })
+
+    expect(await syncSubscriptionFromMp('pa_invalid_date')).toBe(true)
+    const sub = await db.subscription.findUnique({
+      where: { providerSubId: 'pa_invalid_date' },
+    })
+    expect(sub?.status).toBe('active')
+    expect(sub?.currentPeriodEnd?.toISOString()).toBe(existingPeriodEnd.toISOString())
   })
 
   it('preapproval que não conhecemos → false', async () => {
@@ -91,6 +121,7 @@ describe('syncSubscriptionFromMp (M3)', () => {
       id: 'pa_x',
       status: 'authorized',
       externalReference: null,
+      nextPaymentDate: null,
     })
     expect(await syncSubscriptionFromMp('pa_x')).toBe(false)
   })

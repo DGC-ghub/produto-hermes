@@ -6,7 +6,9 @@ import { ensureTenant } from './tenants.server'
 
 // Mocka o dispatcher pra capturar PRA ONDE o operador respondeu (canal + jid) sem socket
 // real; retorna sucesso. vi.mock é hoisted, então vale pra todos os testes do arquivo.
-vi.mock('./channels/dispatch.server', () => ({ sendReply: vi.fn(async () => true) }))
+vi.mock('./channels/dispatch.server', () => ({
+  sendReply: vi.fn(async () => ({ status: 'sent', providerMessageId: 'wamid.op' })),
+}))
 
 const T = 'zzz-test-opreply'
 const ORIGINAL = { ...process.env }
@@ -113,5 +115,69 @@ describe('sendOperatorReply (handoff — Tier 2)', () => {
       '183709@lid',
       'resposta do humano',
     )
+  })
+})
+
+describe('o operador não é induzido a reenviar sobre a dúvida', () => {
+  async function conversaComContato(contactId: string) {
+    return db.conversation.create({
+      data: { tenantId, contactId, channel: 'whatsapp', status: 'needs_human' },
+    })
+  }
+
+  it('14. ambíguo: a tela NÃO diz que falhou, e pede conferência', async () => {
+    // O caminho de duplicação que não precisa de crash: a tela dizia "o envio falhou", o
+    // operador clicava de novo, e o cliente recebia duas vezes. Sem erro, sem log, fazendo
+    // exatamente o que a tela mandou.
+    const contato = '5511900000014'
+    const conversa = await conversaComContato(contato)
+    vi.mocked(sendReply).mockResolvedValueOnce({ status: 'ambiguous', reason: 'falha_de_rede' })
+
+    const r = await sendOperatorReply({ tenantId, tenantSlug: T, contactId: contato, text: 'ok' })
+
+    expect(r.ok).toBe(false)
+    expect(r.ambiguous).toBe(true)
+    expect(r.error).not.toMatch(/falhou/i)
+    expect(r.error).toMatch(/pode ter sido/i)
+    expect(r.error).toMatch(/confira/i)
+
+    // A fala do operador fica registrada nos dois casos — o histórico não mente.
+    const mensagens = await db.message.findMany({ where: { conversationId: conversa.id } })
+    expect(mensagens).toHaveLength(1)
+
+    await db.message.deleteMany({ where: { conversationId: conversa.id } })
+    await db.conversation.delete({ where: { id: conversa.id } })
+  })
+
+  it('15. não enviado definitivo: a mensagem de falha de hoje, preservada', async () => {
+    const contato = '5511900000015'
+    const conversa = await conversaComContato(contato)
+    vi.mocked(sendReply).mockResolvedValueOnce({
+      status: 'not_sent',
+      retryable: false,
+      reason: 'sem_token',
+    })
+
+    const r = await sendOperatorReply({ tenantId, tenantSlug: T, contactId: contato, text: 'ok' })
+
+    expect(r.ok).toBe(false)
+    expect(r.ambiguous).toBeUndefined()
+    expect(r.error).toMatch(/falhou/i)
+
+    await db.message.deleteMany({ where: { conversationId: conversa.id } })
+    await db.conversation.delete({ where: { id: conversa.id } })
+  })
+
+  it('16. enviado: sucesso, sem aviso nenhum', async () => {
+    const contato = '5511900000016'
+    const conversa = await conversaComContato(contato)
+
+    const r = await sendOperatorReply({ tenantId, tenantSlug: T, contactId: contato, text: 'ok' })
+
+    expect(r.ok).toBe(true)
+    expect(r.error).toBeUndefined()
+
+    await db.message.deleteMany({ where: { conversationId: conversa.id } })
+    await db.conversation.delete({ where: { id: conversa.id } })
   })
 })

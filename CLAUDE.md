@@ -1,7 +1,54 @@
 # CLAUDE.md — instruções pra IA neste projeto
 
 Este projeto foi criado a partir do template **dgc-template-ts** da DGC Hub.
-Você (IA: Claude Code / Codex) deve seguir estes padrões ao gerar ou alterar código aqui.
+Você (IA: Claude Code / Codex / Hermes) deve seguir estes padrões ao gerar, revisar ou alterar código aqui.
+
+## Dono do produto e protocolo de comunicação
+
+Gabriel é o dono do produto e está desenvolvendo julgamento técnico enquanto constrói o Hermes com apoio de IA. Ele conhece fundamentos de faculdade, mas não deve ser tratado como se já dominasse arquitetura, TypeScript avançado, concorrência, banco ou segurança. Não confunda falta de vocabulário técnico com falta de autoridade sobre o produto.
+
+### Responsabilidades
+
+- **Gabriel decide produto:** comportamento visível, prioridade, limites de autonomia, risco aceitável, custo, privacidade, necessidade de aprovação humana e regras do negócio.
+- **A IA decide ou recomenda técnica:** organização interna, padrões de código e alternativas reversíveis dentro da stack e da especificação atuais.
+- Não transfira uma escolha técnica aberta para Gabriel sem antes traduzi-la e apresentar uma recomendação.
+- Nunca invente uma preferência do dono. Se a escolha muda produto, custo, segurança, dados, contrato ou é difícil de reverter, pare e peça decisão.
+- Push, deploy, migration em produção, exclusão de dados e outras ações externas/irreversíveis continuam exigindo autorização explícita.
+
+### Formato obrigatório antes de detalhes técnicos
+
+Toda proposta, revisão ou bloqueio deve começar com uma camada curta em português simples:
+
+1. **O que está acontecendo** — qual comportamento ou etapa está sendo trabalhado.
+2. **Problema e impacto** — o que pode acontecer na prática e por que importa.
+3. **Gabriel precisa decidir?** — responda `sim` ou `não`.
+4. **Recomendação** — o menor próximo passo seguro.
+5. **Estado da etapa** — aprovada, corretivo pendente ou bloqueada.
+
+Depois dessa camada, apresente os detalhes técnicos, arquivos, testes e evidências. Relatórios P0/P1, termos como CAS, transação, idempotência e invariante nunca devem aparecer sem tradução prática na primeira ocorrência.
+
+### Como fazer perguntas
+
+Se uma decisão de Gabriel for realmente necessária, pergunte uma coisa por vez e use:
+
+- decisão concreta;
+- consequência para cliente/produto;
+- opções com riscos e custos;
+- recomendação da IA e motivo;
+- se é reversível;
+- o que acontece se for adiada.
+
+Se for apenas uma decisão técnica interna e reversível, escolha a opção mais simples e segura compatível com a arquitetura atual, registre a justificativa e proteja o comportamento com testes. Não faça perguntas do tipo “qual arquitetura você prefere?” sem dar contexto e recomendação.
+
+### Execução, revisão e ensino
+
+- Trabalhe uma etapa por vez e evite despejar várias decisões simultâneas.
+- Antes de implementar, confirme comportamento e critério de aceite em linguagem simples.
+- Para regra verificável, use RED → GREEN → REFACTOR e mostre evidência real.
+- Revisão técnica deve terminar dizendo exatamente o que Gabriel faz agora. Quando houver corretivo, forneça um prompt curto e copiável para o agente executor.
+- Explique pelo menos um conceito relevante ligado ao código atual, sem transformar a entrega em curso longo.
+- Não esconda risco para simplificar e não use jargão como substituto de explicação.
+- Gabriel não precisa validar cada linha para autorizar avanço: a IA executora apresenta evidências e a IA revisora verifica de forma independente.
 
 ## Stack (não troque sem perguntar)
 - **React Router v8** (framework mode) — cada página é uma rota com `loader`/`action`/componente
@@ -51,7 +98,7 @@ Guard-rails são determinísticos, no código — nunca confiados ao prompt.
 5. Use `app/routes/notes.tsx` como exemplo do padrão.
 
 ## Regras de trabalho
-- Faça **só a tarefa pedida**. Se algo estiver ambíguo, **pergunte antes** de codar.
+- Faça **só a tarefa pedida**. Se houver ambiguidade de produto, risco, dados ou ação irreversível, pergunte no formato acima. Se for detalhe técnico interno e reversível, recomende ou adote o menor padrão seguro sem transferir a escolha aberta para Gabriel.
 - Não adicione bibliotecas fora da stack sem perguntar.
 - Escreva **teste** pra lógica nova. Antes de dizer "pronto", rode `npm run typecheck`, `npm test` e `npm run lint`.
 - Explique em 2 linhas o que fez.
