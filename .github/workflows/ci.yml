@@ -1,0 +1,79 @@
+# Rede de segurança do Hermes (marco M0): nenhum código quebrado entra na branch.
+# Roda os MESMOS checks que o CLAUDE.md exige — typecheck, testes e lint — em toda
+# push e todo pull_request. Antes disto não havia CI: em 2026-07-06 o baseline
+# revelou 5 erros de lint que entraram na branch sem ninguém ver.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancela a rodada antiga da mesma branch quando chega um push novo.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Procura segredo (chave, token, senha) no codigo e no historico. Gratuito.
+  # Usa o binario do gitleaks (a action oficial exige licenca em org).
+  secrets:
+    name: secrets · gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # historico completo: segredo antigo tambem conta
+
+      - name: Instala o gitleaks
+        env:
+          GITLEAKS_VERSION: '8.21.2'
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          mkdir -p /tmp/gitleaks-bin
+          tar -xzf /tmp/gitleaks.tgz -C /tmp/gitleaks-bin gitleaks
+
+      # --redact: o log nunca mostra o valor do segredo, so arquivo e linha.
+      - name: Procura segredos
+        run: /tmp/gitleaks-bin/gitleaks detect --source . --redact --no-banner --verbose
+
+  check:
+    name: typecheck · test · lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # espelha o Pi (v22.x)
+          cache: npm
+
+      # O global-setup dos testes chama o binário `sqlite3` (PRAGMA WAL no .test.db).
+      # No ubuntu-latest ele já existe, mas garantimos para não quebrar em silêncio.
+      - name: Garante o sqlite3 CLI
+        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
+
+      # npm ci roda o postinstall (prisma generate) → client em generated/prisma.
+      - name: Instala dependências
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # vitest injeta um DATABASE_URL próprio (.test.db) e cria/derruba o schema
+      # sozinho (vitest.global-setup.ts) — não precisa de .env nem do banco de produção.
+      - name: Testes
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      # Nao bloqueia no comeco (continue-on-error): serve para ver o quadro.
+      # Quando a lista de achados estiver limpa, tirar o continue-on-error.
+      - name: Auditoria de dependencias (nao bloqueia)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
