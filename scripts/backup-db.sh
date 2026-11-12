@@ -8,24 +8,39 @@ set -euo pipefail
 
 DEFAULT_DB="/home/pi/projects/produto-hermes/dev.db"
 # O .env é só LIDO, para achar o caminho do banco (DATABASE_URL). Nunca é copiado nem impresso.
-ENV_FILE="${HERMES_ENV_FILE:-/home/pi/projects/produto-hermes/.env}"
+# Padrão = o .env do release em uso (o serviço roda de hermes-deploy/current, deploy/hermes.service);
+# se não existir, cai para o da working tree.
+RELEASE_ENV="/home/pi/hermes-deploy/current/.env"
+TREE_ENV="/home/pi/projects/produto-hermes/.env"
+if [ -n "${HERMES_ENV_FILE:-}" ]; then
+  ENV_FILE="$HERMES_ENV_FILE"
+elif [ -e "$RELEASE_ENV" ]; then
+  ENV_FILE="$RELEASE_ENV"
+else
+  ENV_FILE="$TREE_ENV"
+fi
 DEST="${HERMES_BACKUP_DEST:-/home/pi/backups/hermes}"
 KEEP=14
 RETENTION_DAYS="${HERMES_BACKUP_RETENTION_DAYS:-90}"
+rc=0
 
 # Caminho do banco = o mesmo do DATABASE_URL do serviço (evita backup do arquivo errado).
-DB="${HERMES_DB:-}"
+# Falha fechado: DATABASE_URL presente mas não absoluto (file:/...) aborta, sem cair no padrão.
+DB="${HERMES_DB:-}"; DB_SRC="HERMES_DB"
 if [ -z "$DB" ]; then
-  url="${DATABASE_URL:-}"
+  url="${DATABASE_URL:-}"; DB_SRC="DATABASE_URL do ambiente"
   if [ -z "$url" ] && [ -r "$ENV_FILE" ]; then
     url="$(grep -E '^[[:space:]]*DATABASE_URL=' "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d "\"'" || true)"
+    DB_SRC="DATABASE_URL de $ENV_FILE"
   fi
   case "$url" in
     file:/*) DB="${url#file:}"; DB="${DB%%\?*}" ;;
-    *)       DB="$DEFAULT_DB" ;;
+    "")      DB="$DEFAULT_DB"; DB_SRC="caminho padrão (sem DATABASE_URL)" ;;
+    *)       echo "[backup-hermes] FALHOU: DATABASE_URL não é um caminho absoluto (file:/...); não vou adivinhar o banco" >&2; exit 1 ;;
   esac
 fi
-[ -f "$DB" ] || { echo "[backup-hermes] banco não encontrado: $DB" >&2; exit 1; }
+[ -f "$DB" ] || { echo "[backup-hermes] banco não encontrado: $DB (origem: $DB_SRC)" >&2; exit 1; }
+echo "[backup-hermes] banco: $DB (origem: $DB_SRC)"
 
 mkdir -p "$DEST"
 chmod 700 "$DEST"
@@ -68,7 +83,8 @@ if command -v rclone >/dev/null 2>&1 && grep -qx "${REMOTE%%:*}:" <<<"$remotes";
     if rclone delete "$REMOTE" --min-age "${RETENTION_DAYS}d" --include 'dev-*.db' --include 'env-*.bak'; then
       echo "[backup-hermes] off-site retenção ok: removidos backups com mais de ${RETENTION_DAYS} dias"
     else
-      echo "[backup-hermes] off-site retenção FALHOU (rclone delete)" >&2
+      echo "[backup-hermes] off-site retenção FALHOU (rclone delete) — prazo de 90 dias NÃO aplicado" >&2
+      rc=1
     fi
   else
     echo "[backup-hermes] off-site FALHOU (rclone copy) — backup local preservado" >&2
@@ -78,3 +94,4 @@ else
 fi
 
 echo "[backup-hermes] ok: $out ($(stat -c%s "$out") bytes, integrity ok)"
+exit "$rc"
