@@ -45,6 +45,8 @@ export type AttendantInput = {
   history: AttendantHistoryTurn[]
   lead: AttendantLeadSnapshot | null
   myTickets: AttendantTicketSummary[]
+  // Horários livres (ISO, fuso -03:00) que o balcão aceita. Só vem se o tenant tem agenda.
+  agenda?: { freeSlots: string[] }
   message: string
 }
 
@@ -54,12 +56,22 @@ export type LeadPatchKey = (typeof LEAD_PATCH_KEYS)[number]
 export type AttendantLeadPatch = Partial<Record<LeadPatchKey, string>>
 
 // Ação que o atendente PROPÕE; o balcão valida e executa (a IA não toca o banco).
-export type AttendantAction = {
+export type AbrirChamadoAction = {
   type: 'abrir_chamado'
   subject: string
   description: string
   category?: string
 }
+
+// Agenda: a IA só pede; o balcão confere o horário e marca (app/lib/agenda/pedido.ts).
+export type PedirAgendamentoAction = {
+  type: 'pedir_agendamento'
+  operation: 'agendar' | 'remarcar' | 'cancelar'
+  service?: string
+  start?: string
+}
+
+export type AttendantAction = AbrirChamadoAction | PedirAgendamentoAction
 
 export type AttendantOutput = {
   reply: string

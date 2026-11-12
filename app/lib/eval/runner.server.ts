@@ -87,7 +87,7 @@ export async function runScenario(s: Scenario): Promise<ScenarioReport> {
       // O guard curto-circuita a ação também — chamado proposto ali nunca é executado.
       checks: avaliarCenario(s.espera, {
         needsHumanFinal,
-        abriuChamado: !guardForcesSafe && decision.action !== null,
+        abriuChamado: !guardForcesSafe && decision.action?.type === 'abrir_chamado',
         replyFinal,
       }),
       latencyMs: ms,
@@ -103,7 +103,13 @@ export function renderCard(r: ScenarioReport): string {
     r.retrieved.length > 0
       ? r.retrieved.map((c) => `${c.fileName}(${c.score})`).join(', ')
       : '(nenhum trecho recuperado)'
-  const action = r.decision.action ? `abrir_chamado — "${r.decision.action.subject}"` : '(nenhuma)'
+  const act = r.decision.action
+  const action =
+    act?.type === 'abrir_chamado'
+      ? `abrir_chamado — "${act.subject}"`
+      : act
+        ? `pedir_agendamento — ${act.operation}`
+        : '(nenhuma)'
   const lead = r.decision.leadPatch ? JSON.stringify(r.decision.leadPatch) : '(nenhum)'
   return [
     `### [${s.id}] ${s.titulo}  ·  ${r.ms}ms${r.fellToFallback ? '  ⚠️ FALLBACK' : ''}`,

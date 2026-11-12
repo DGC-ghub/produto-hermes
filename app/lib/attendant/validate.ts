@@ -1,3 +1,4 @@
+import { parsePedido } from '../agenda/pedido'
 import {
   type AttendantAction,
   type AttendantLeadPatch,
@@ -124,6 +125,28 @@ function clampConfidence(value: unknown): number {
   return Math.min(1, Math.max(0, value))
 }
 
+// Pedido de agenda: tool habilitada + formato válido + serviço dentro do escopo. A checagem
+// do horário (livre, sem dupla marcação) é do balcão, na hora de executar.
+function validatePedidoAgenda(
+  raw: unknown,
+  tools?: ToolPolicy[],
+  outOfScope?: string[],
+): AttendantAction | null {
+  if (!tools?.some((tool) => tool.name === 'pedir_agendamento')) {
+    return null
+  }
+  const pedido = parsePedido(raw)
+  if (!pedido) {
+    return null
+  }
+  const collapse = (value: string) => normalize(value).replace(/[\s-]+/g, '')
+  const servico = collapse(pedido.service ?? '')
+  if (outOfScope?.some((term) => collapse(term).length > 0 && servico.includes(collapse(term)))) {
+    return null
+  }
+  return { type: 'pedir_agendamento', ...pedido }
+}
+
 // Ação inválida, ausente, de tool não habilitada, ou que viola os limites da tool
 // (allowedCategories / requiredFields) vira null (descartada) — nunca invalida a
 // resposta inteira. A IA propõe; o balcão honra o contrato declarado no config.
@@ -132,6 +155,9 @@ function validateAction(
   tools?: ToolPolicy[],
   outOfScope?: string[],
 ): AttendantAction | null {
+  if (isPlainObject(raw) && raw.type === 'pedir_agendamento') {
+    return validatePedidoAgenda(raw, tools, outOfScope)
+  }
   if (!isPlainObject(raw) || raw.type !== 'abrir_chamado') {
     return null
   }

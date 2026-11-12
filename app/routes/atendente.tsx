@@ -9,6 +9,8 @@ import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Tag } from '../components/ui/Tag'
 import { db } from '../db.server'
+import { enviarConfirmacoesDeAmanha } from '../lib/agenda/confirmacoes.server'
+import { agendaDoTenant } from '../lib/agenda/registro'
 import { requireOperator } from '../lib/auth.server'
 import { isConversationAction, nextConversationStatus } from '../lib/conversation-status'
 import {
@@ -35,10 +37,18 @@ export async function loader({ request }: Route.LoaderArgs) {
   const dossier = contactId ? await getContactDossier(operator.tenantSlug, contactId) : null
   const onboarding = await getOnboardingStatus(operator.tenantSlug)
 
+  const sent = Number(url.searchParams.get('confirmacoes'))
+  const failed = Number(url.searchParams.get('falhas'))
   return {
     queue,
     dossier,
     onboarding,
+    // Botão de confirmações só aparece em quem tem agenda (hoje: a demo da clínica).
+    agendaAtiva: agendaDoTenant(operator.tenantSlug) !== null,
+    confirmacoes:
+      url.searchParams.has('confirmacoes') && Number.isInteger(sent) && Number.isInteger(failed)
+        ? { enviadas: sent, falhas: failed }
+        : null,
     operator: { username: operator.username, tenantSlug: operator.tenantSlug },
     selected: { contactId },
   }
@@ -48,6 +58,20 @@ export async function action({ request }: Route.ActionArgs) {
   const operator = await requireOperator(request)
   const formData = await request.formData()
   const contactId = String(formData.get('contactId') ?? '')
+
+  // Ação de CONFIRMAÇÕES: 1 mensagem por consulta de amanhã, disparada pelo operador.
+  if (String(formData.get('intent') ?? '') === 'confirmacoes') {
+    const tenant = await db.tenant.findUnique({
+      where: { id: operator.tenantId },
+      select: { name: true },
+    })
+    const r = await enviarConfirmacoesDeAmanha({
+      tenantId: operator.tenantId,
+      tenantSlug: operator.tenantSlug,
+      tenantName: tenant?.name ?? operator.tenantSlug,
+    })
+    return redirect(`/atendente?confirmacoes=${r.enviadas}&falhas=${r.falhas}`)
+  }
 
   // Ação de RESUMO: gera/atualiza o resumo da conversa ativa do contato (IA + fallback).
   if (String(formData.get('intent') ?? '') === 'summary') {
@@ -414,7 +438,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
 }
 
 export default function Atendente({ loaderData }: Route.ComponentProps) {
-  const { queue, dossier, onboarding, operator, selected } = loaderData
+  const { queue, dossier, onboarding, operator, selected, agendaAtiva, confirmacoes } = loaderData
   const actionData = useActionData<typeof action>()
   const needsCount = queue.filter((item) => item.status === 'needs_human').length
 
@@ -451,6 +475,20 @@ export default function Atendente({ loaderData }: Route.ComponentProps) {
 
         <div className="grid gap-5 md:grid-cols-[300px_1fr]">
           <aside>
+            {agendaAtiva && (
+              <Form method="post" className="mb-4">
+                <input type="hidden" name="intent" value="confirmacoes" />
+                <Button type="submit" variant="secondary">
+                  Enviar confirmações de amanhã
+                </Button>
+                {confirmacoes && (
+                  <p className="mt-2 text-xs text-ink-soft" role="status">
+                    {confirmacoes.enviadas} enviada(s)
+                    {confirmacoes.falhas > 0 ? `, ${confirmacoes.falhas} com falha` : ''}.
+                  </p>
+                )}
+              </Form>
+            )}
             <h2 className="mb-3 text-sm font-medium text-ink">Fila ({queue.length})</h2>
             {queue.length === 0 ? (
               <EmptyState image="/brand/empty-caught-up.svg">

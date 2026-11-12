@@ -1,4 +1,6 @@
 import { db } from '../db.server'
+import { executarPedido, horariosParaOferecer } from './agenda/pedido'
+import { agendaDoTenant, tratarRespostaConfirmacao } from './agenda/registro'
 import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
 import { activeProviderName, generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
@@ -720,8 +722,28 @@ async function runIncomingMessage(
     }),
   )
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
-  if (guardForcesSafe) {
-    const reply = configEfetiva.escalationPolicy.humanMessage
+
+  // Agenda: só com efeitos operacionais (WhatsApp). Preview e demo pública não mexem em agenda.
+  const agenda = operationalEffects ? agendaDoTenant(tenant.slug) : null
+
+  // Resposta 1/2/3 a uma confirmação pendente: decidida no balcão, sem gastar o cérebro. O que
+  // não for 1/2/3 vai para a recepção. O guard vem antes: dor/remédio escala mesmo na confirmação.
+  const confirmacao =
+    agenda && !guardForcesSafe
+      ? await timer.step('confirmacao', () =>
+          tratarRespostaConfirmacao(tenant.slug, contactId, message),
+        )
+      : null
+  const humanMessage = configEfetiva.escalationPolicy.humanMessage
+  const atalho: { reply: string; needsHuman: boolean; reason: string } | null = guardForcesSafe
+    ? { reply: humanMessage, needsHuman: true, reason: guard.reason ?? 'unknown' }
+    : confirmacao?.kind === 'humano'
+      ? { reply: humanMessage, needsHuman: true, reason: 'confirmacao_fora_do_padrao' }
+      : confirmacao?.kind === 'resposta'
+        ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
+        : null
+  if (atalho) {
+    const reply = atalho.reply
     // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
     // o cérebro), mas o invariante é o mesmo — nenhuma mensagem de assistente entra numa
     // conversa que um humano conduz — e um invariante protegido em um caminho só vira bug no
@@ -747,13 +769,13 @@ async function runIncomingMessage(
               sourcesJson: JSON.stringify([]),
             },
           })
-          if (operationalEffects) {
+          if (operationalEffects && atalho.needsHuman) {
             await tx.conversation.update({
               where: { id: conversationId },
               data: { status: 'needs_human' },
             })
             await tx.handoffEvent.create({
-              data: { conversationId, reason: guard.reason ?? 'unknown', message },
+              data: { conversationId, reason: atalho.reason, message },
             })
           }
           return { tipo: 'ok', assistantMessageId: created.id }
@@ -779,15 +801,15 @@ async function runIncomingMessage(
     if (guard.reason === 'sensitive_topic' && operationalEffects) {
       void reportSensitiveHandoff(input.tenantSlug)
     }
-    ctx.outcome = 'guard_handoff'
+    ctx.outcome = atalho.needsHuman ? 'guard_handoff' : 'ok'
     return {
       conversationId,
       tenantSlug: input.tenantSlug,
       userMessageId: userMessage.id,
       assistantMessageId: finalizacao.assistantMessageId,
       reply,
-      needsHuman: true,
-      handoffReason: guard.reason,
+      needsHuman: atalho.needsHuman,
+      handoffReason: atalho.needsHuman ? atalho.reason : undefined,
       confidence: 0,
       sources: [],
     }
@@ -826,6 +848,12 @@ async function runIncomingMessage(
   // pós-cérebro continuar dizendo qual provider foi consumido.
   ctx.provider = activeProviderName()
   ctx.brainStarted = true
+  const horariosLivres =
+    agenda && enabledTools.some((tool) => tool.name === 'pedir_agendamento')
+      ? await timer.step('agenda_slots', () =>
+          horariosParaOferecer(agenda, new Date().toISOString()),
+        )
+      : null
   const decision = await timer.step('brain', () =>
     generateAttendantReply(
       {
@@ -844,6 +872,7 @@ async function runIncomingMessage(
             }
           : null,
         myTickets,
+        agenda: horariosLivres ? { freeSlots: horariosLivres } : undefined,
         message,
       },
       {
@@ -869,7 +898,16 @@ async function runIncomingMessage(
   // casos forçados): a decisão de escalar é do cérebro validado.
   const needsHuman = decision.needsHuman
   const handoffReason = needsHuman ? (decision.handoffReason ?? 'unknown') : undefined
-  const reply = decision.reply
+  // Pedido de agenda: o balcão confere e marca; o texto ao paciente sai do RESULTADO real
+  // (a IA não consegue dizer "marquei" se a agenda recusou). Antes da transação: a agenda é
+  // externa ao banco. Se o operador assumir nesse meio-tempo, a resposta é descartada, mas a
+  // consulta marcada continua valendo (o paciente confirmou o horário).
+  const pedidoAgenda = decision.action?.type === 'pedir_agendamento' ? decision.action : null
+  const resultadoAgenda =
+    pedidoAgenda && agenda && operationalEffects
+      ? await timer.step('agenda', () => executarPedido(agenda, contactId, pedidoAgenda))
+      : null
+  const reply = resultadoAgenda?.reply ?? decision.reply
   const confidence = decision.confidence
   const sources: ProcessIncomingMessageSource[] = retrieved.map((chunk) => ({
     fileName: chunk.fileName,

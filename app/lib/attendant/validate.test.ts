@@ -323,7 +323,7 @@ describe('validateAttendantOutput', () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value.action?.type).toBe('abrir_chamado')
-      expect(result.value.action?.category).toBeUndefined()
+      expect((result.value.action as { category?: string } | null)?.category).toBeUndefined()
     }
   })
 
@@ -352,7 +352,7 @@ describe('validateAttendantOutput', () => {
     const result = validateAttendantOutput({ ...good, action }, policy)
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.value.action?.category).toBe('guia')
+      expect((result.value.action as { category?: string } | null)?.category).toBe('guia')
     }
   })
 
@@ -366,5 +366,35 @@ describe('validateAttendantOutput', () => {
     if (result.ok) {
       expect(result.value.action).toBeNull()
     }
+  })
+})
+
+describe('action pedir_agendamento', () => {
+  const pedido = {
+    type: 'pedir_agendamento',
+    operation: 'agendar',
+    service: 'Limpeza',
+    start: '2026-11-18T08:00:00-03:00',
+  }
+  const policy = { tools: [{ name: 'pedir_agendamento' as const }] }
+
+  it('passa quando a tool está habilitada', () => {
+    const r = validateAttendantOutput({ ...good, action: pedido }, policy)
+    expect(r.ok && r.value.action).toEqual(pedido)
+  })
+  it('é descartada sem a tool habilitada', () => {
+    const r = validateAttendantOutput({ ...good, action: pedido }, { tools: [] })
+    expect(r.ok && r.value.action).toBeNull()
+  })
+  it('é descartada se malformada (horário não ISO)', () => {
+    const r = validateAttendantOutput({ ...good, action: { ...pedido, start: 'amanhã' } }, policy)
+    expect(r.ok && r.value.action).toBeNull()
+  })
+  it('serviço fora do escopo derruba a ação', () => {
+    const r = validateAttendantOutput(
+      { ...good, action: { ...pedido, service: 'ortodontia infantil' } },
+      { ...policy, outOfScope: ['ortodontia infantil'] },
+    )
+    expect(r.ok && r.value.action).toBeNull()
   })
 })
