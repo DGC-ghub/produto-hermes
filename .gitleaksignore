@@ -1,0 +1,2 @@
+# Falso positivo conhecido: senha falsa de teste (DGC-88)
+03423fd61fe4da6f8387817d574641d44d64555a:app/lib/password-reset.test.ts:generic-api-key:108

@@ -14,7 +14,7 @@ permissions:
 # Cancela a rodada antiga da mesma branch quando chega um push novo.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Procura segredo (chave, token, senha) no codigo e no historico. Gratuito.
@@ -75,5 +75,6 @@ jobs:
       # Nao bloqueia no comeco (continue-on-error): serve para ver o quadro.
       # Quando a lista de achados estiver limpa, tirar o continue-on-error.
       - name: Auditoria de dependencias (nao bloqueia)
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: npm audit --omit=dev --audit-level=high
