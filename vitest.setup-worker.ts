@@ -7,12 +7,14 @@
 import { copyFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { threadId } from 'node:worker_threads'
-import { TEST_TEMPLATE_PATH } from './vitest.global-setup'
+import { testDbDir, testTemplatePath } from './vitest.global-setup'
 import { nomeDoBancoDoWorker } from './vitest.worker-db'
 
 // `pid` E `threadId`: o primeiro distingue no pool `forks` (default), o segundo no pool
 // `threads`, onde todas as threads compartilham o pid. Ver vitest.worker-db.ts.
-const bancoDoWorker = path.join(process.cwd(), nomeDoBancoDoWorker(process.pid, threadId))
+const bancoDoWorker = path.join(testDbDir(), nomeDoBancoDoWorker(process.pid, threadId))
+
+const TEST_TEMPLATE_PATH = testTemplatePath()
 
 if (!existsSync(TEST_TEMPLATE_PATH)) {
   // Se o molde não está lá, algo quebrou no global setup. Parar aqui é obrigatório: seguir
