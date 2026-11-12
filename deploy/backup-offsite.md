@@ -1,6 +1,6 @@
 # Backup off-site cifrado (marco M0.4)
 
-O `scripts/backup-db.sh` já faz um snapshot local do banco + `.env` com
+O `scripts/backup-db.sh` já faz um snapshot local do banco (sem o `.env`) com
 `integrity_check` e rotação — mas **no mesmo disco do Pi**. Falha de disco, roubo ou
 perda do Pi levaria o banco E os backups juntos. Este passo manda uma cópia **cifrada**
 pra fora, via `rclone`.
@@ -63,3 +63,11 @@ rm -rf /tmp/restore-test
 ## Trocar o destino
 O script lê `HERMES_BACKUP_REMOTE` (default `hermes-crypt:`). Pra usar outro nome de remote,
 exporte a variável no cron ou no ambiente do `backup-db.sh`.
+
+## Prazo de guarda (LGPD, termo 5.3) e `.env`
+- Depois de cada `rclone copy` bem-sucedido, o script roda `rclone delete --min-age 90d` no remote,
+  só para `dev-*.db` e `env-*.bak` (legado). Mude o prazo com `HERMES_BACKUP_RETENTION_DAYS`.
+- O remote do Hermes deve apontar para uma pasta só dele (nunca a raiz de um bucket compartilhado).
+- O `.env` **não** entra mais no backup; as senhas ficam no cofre dos sócios. O script só lê o
+  `DATABASE_URL` (do ambiente ou de `HERMES_ENV_FILE`) para achar o banco.
+- Teste: `scripts/backup-db.test.sh` (remote local, dados fictícios).
