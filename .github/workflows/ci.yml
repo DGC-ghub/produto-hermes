@@ -64,8 +64,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # vitest injeta um DATABASE_URL próprio (.test.db) e cria/derruba o schema
-      # sozinho (vitest.global-setup.ts) — não precisa de .env nem do banco de produção.
+      # Esta base (main) ainda não tem o global-setup dos testes: criamos o banco de
+      # teste aplicando as migrations num arquivo descartável (sem dado real).
+      - name: Cria o banco de teste
+        run: |
+          echo "DATABASE_URL=file:${RUNNER_TEMP}/hermes-ci.db" >> "$GITHUB_ENV"
+          DATABASE_URL="file:${RUNNER_TEMP}/hermes-ci.db" npx prisma migrate deploy
+
       - name: Testes
         run: npm test
 
