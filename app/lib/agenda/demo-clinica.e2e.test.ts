@@ -150,13 +150,19 @@ describe('demo de clínica — isolamento entre contatos e empresas', () => {
     expect(new Set(convs.map((c) => c.tenantId)).size).toBe(2)
   })
 
-  it('agendamento na clínica não aparece na agenda de outra empresa', async () => {
+  it('cada empresa recebe só o próprio agendamento (isolamento entre agendas)', async () => {
     const outraAgenda = novaAgenda()
     definirAgenda(OUTRO, outraAgenda)
+
     pedirLimpeza(SLOT)
     await falar(MARIA, 'marca dia 18 às 8h')
-    expect(await agenda.list()).toHaveLength(1)
-    expect(await outraAgenda.list()).toHaveLength(0)
+    pedirLimpeza('2026-11-18T09:00:00-03:00')
+    await falar(JOAO, 'marca dia 18 às 9h', OUTRO)
+
+    const daClinica = await agenda.list()
+    const daOutra = await outraAgenda.list()
+    expect(daClinica.map((a) => a.patientRef)).toEqual([MARIA])
+    expect(daOutra.map((a) => a.patientRef)).toEqual([JOAO])
   })
 
   it('demo pública nunca grava na agenda', async () => {

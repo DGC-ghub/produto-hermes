@@ -4,10 +4,11 @@ Tarefa DGC-87. Dados fictícios; provider de IA simulado; sem WhatsApp real.
 
 ## 1. Resultado da suíte (`npx vitest run`)
 - Cópia isolada, com a suíte nova: **122 arquivos, 1519 testes, todos verdes** (~3 min).
-- Rodada no diretório compartilhado `/home/dgc/projects/produto-hermes`: **vermelho intermitente** (de 10 falhas a 50 arquivos
-  caídos). Causa: `vitest.global-setup.ts` apaga o molde `.test-template.db` no diretório do projeto; duas rodadas ao mesmo
-  tempo (ou resto de rodada anterior) derrubam uma à outra ("Molde de teste ausente"). Não é bug de produto: é do ambiente
-  (DevOps / quem mantém o harness). Contorno usado: rodar numa cópia privada.
+- Problema do `.test-template.db`: na pasta antiga `/home/dgc/projects/produto-hermes`, o `vitest.global-setup.ts` apagava o
+  molde no diretório do projeto, e duas rodadas ao mesmo tempo se derrubavam ("Molde de teste ausente"). Foi observado
+  em rodadas paralelas nessa pasta; não guardei a saída, então **não cito número de falhas**. Já foi corrigido no
+  commit `c2c05b6` (mkdtemp por rodada) e só acontecia na pasta antiga. Não é bug de produto. Contorno usado na época:
+  cópia privada.
 - Atenção: a cópia em `/tmp` falha 3 testes (`setup/banco.server.test.ts` x2, `setup-processar.subprocesso.test.ts`) porque
   eles checam "banco fora do /tmp não é descartável"; rodar fora de `/tmp`.
 
