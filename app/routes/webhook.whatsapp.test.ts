@@ -65,7 +65,11 @@ afterEach(async () => {
 describe('webhook WhatsApp — GET (handshake)', () => {
   async function get(qs: string) {
     const { loader } = await rota()
-    return await loader({ request: new Request(`${URL_WH}?${qs}`), params: {}, context: {} } as never)
+    return await loader({
+      request: new Request(`${URL_WH}?${qs}`),
+      params: {},
+      context: {},
+    } as never)
   }
 
   it('devolve o challenge com o verify_token certo', async () => {
@@ -157,7 +161,13 @@ describe('webhook WhatsApp — POST', () => {
   })
 
   it('payload assinado sem mensagem de texto (ex.: status): 200 e nada gravado', async () => {
-    const body = JSON.stringify({ entry: [{ changes: [{ value: { metadata: { phone_number_id: PHONE_A }, statuses: [{ id: 'x' }] } }] }] })
+    const body = JSON.stringify({
+      entry: [
+        {
+          changes: [{ value: { metadata: { phone_number_id: PHONE_A }, statuses: [{ id: 'x' }] } }],
+        },
+      ],
+    })
     const res = await callAction(post(body, { 'x-hub-signature-256': sign(body) }))
     expect(res.status).toBe(200)
     expect(await db.webhookEvent.count({ where: { contactId: CONTACT } })).toBe(0)
