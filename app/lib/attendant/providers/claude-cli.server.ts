@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AttendantInput, AttendantOutput, AttendantProvider } from '../types'
@@ -218,8 +218,19 @@ export function parseClaudeJson(stdout: string): unknown {
 //    WHATSAPP_APP_SECRET, token do Mercado Pago, DATABASE_URL...) nunca passam.
 const CLAUDE_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'CLAUDE_CODE_OAUTH_TOKEN'] as const
 
+/**
+ * Pasta vazia, nova e privada (mkdtemp cria com modo 0700) para cada chamada.
+ * Um caminho fixo em /tmp deixaria outro usuário local plantar hooks/configs.
+ */
+export function createClaudeWorkdir(): string {
+  return mkdtempSync(join(tmpdir(), 'hermes-claude-cli-'))
+}
+
 /** Argumentos e opções do spawn do `claude`. Função pura (testável sem executar o CLI). */
-export function buildClaudeSpawn(sourceEnv: NodeJS.ProcessEnv = process.env): {
+export function buildClaudeSpawn(
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+  cwd: string = createClaudeWorkdir(),
+): {
   args: string[]
   options: { cwd: string; timeout: number; env: Record<string, string> }
 } {
@@ -242,14 +253,14 @@ export function buildClaudeSpawn(sourceEnv: NodeJS.ProcessEnv = process.env): {
       '--output-format',
       'text',
     ],
-    options: { cwd: join(tmpdir(), 'hermes-claude-cli'), timeout: TIMEOUT_MS, env },
+    options: { cwd, timeout: TIMEOUT_MS, env },
   }
 }
 
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const { args, options } = buildClaudeSpawn()
-    mkdirSync(options.cwd, { recursive: true })
+    const cleanup = () => rmSync(options.cwd, { recursive: true, force: true })
     const child = spawn('claude', args, options)
     let stdout = ''
     let stderr = ''
@@ -259,8 +270,12 @@ function runClaude(prompt: string): Promise<string> {
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString()
     })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      cleanup()
+      reject(err)
+    })
     child.on('close', (code) => {
+      cleanup()
       if (code === 0) {
         resolve(stdout)
       } else {

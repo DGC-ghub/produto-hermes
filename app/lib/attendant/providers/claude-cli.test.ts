@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import { readdirSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AttendantInput } from '../types'
 import {
@@ -248,7 +250,7 @@ describe('buildClaudeSpawn (coleira de segurança)', () => {
   }
 
   it('desliga TODAS as ferramentas com --tools "" (--allowedTools não desliga nada)', () => {
-    const { args } = buildClaudeSpawn(fakeEnv)
+    const { args } = buildClaudeSpawn(fakeEnv, '/nao-usado')
     const i = args.indexOf('--tools')
     expect(i).toBeGreaterThanOrEqual(0)
     expect(args[i + 1]).toBe('')
@@ -256,13 +258,13 @@ describe('buildClaudeSpawn (coleira de segurança)', () => {
   })
 
   it('ignora MCP do usuário (--strict-mcp-config sem --mcp-config)', () => {
-    const { args } = buildClaudeSpawn(fakeEnv)
+    const { args } = buildClaudeSpawn(fakeEnv, '/nao-usado')
     expect(args).toContain('--strict-mcp-config')
     expect(args).not.toContain('--mcp-config')
   })
 
   it('restringe as fontes de configuração e desliga skills/comandos', () => {
-    const { args } = buildClaudeSpawn(fakeEnv)
+    const { args } = buildClaudeSpawn(fakeEnv, '/nao-usado')
     const i = args.indexOf('--setting-sources')
     expect(i).toBeGreaterThanOrEqual(0)
     expect(args[i + 1]).toBe('project')
@@ -270,7 +272,7 @@ describe('buildClaudeSpawn (coleira de segurança)', () => {
   })
 
   it('env mínimo: nenhum segredo do serviço chega ao processo filho', () => {
-    const { options } = buildClaudeSpawn(fakeEnv)
+    const { options } = buildClaudeSpawn(fakeEnv, '/nao-usado')
     const env = options.env as Record<string, string>
     expect(Object.keys(env).sort()).toEqual(
       ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'LANG', 'PATH'].sort(),
@@ -280,8 +282,17 @@ describe('buildClaudeSpawn (coleira de segurança)', () => {
     expect(dump).not.toContain('postgres://')
   })
 
-  it('roda numa pasta dedicada e vazia, não no tmpdir compartilhado', () => {
-    const { options } = buildClaudeSpawn(fakeEnv)
-    expect(String(options.cwd)).toMatch(/hermes-claude-cli/)
+  it('roda numa pasta dedicada, vazia e privada (0700), nova a cada chamada', () => {
+    const a = buildClaudeSpawn(fakeEnv)
+    const b = buildClaudeSpawn(fakeEnv)
+    try {
+      expect(a.options.cwd).not.toBe(b.options.cwd)
+      expect(a.options.cwd.startsWith(tmpdir())).toBe(true)
+      expect(readdirSync(a.options.cwd)).toEqual([])
+      expect(statSync(a.options.cwd).mode & 0o777).toBe(0o700)
+    } finally {
+      rmSync(a.options.cwd, { recursive: true, force: true })
+      rmSync(b.options.cwd, { recursive: true, force: true })
+    }
   })
 })
