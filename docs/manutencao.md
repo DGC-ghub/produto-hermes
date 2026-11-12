@@ -1,13 +1,13 @@
 # Plano de manutenção do Hermes
 
-Atualizado em 2026-11-12 (DGC-89). Fonte: `package.json`, `Dockerfile`, CI, `npm outdated` e `npm audit --omit=dev`.
+Atualizado em 2026-11-12 (DGC-89). Fonte: cópia de trabalho `~/projects/produto-hermes` na VM (não é repositório git; reflete as branches de feature, não o `main` atual, que ainda não tem baileys, express, compression, jsdom, testing-library nem `.github/workflows`). Lida via `package.json`, `Dockerfile`, CI, `npm outdated` e `npm audit --omit=dev`.
 Este documento só descreve; nenhuma dependência foi alterada aqui.
 
 ## Runtime
 | Item | Versão | Obs. |
 |---|---|---|
 | Node na VM | 24.22.0 | Dockerfile usa `node:24-alpine` |
-| Node no CI | 22 | Diverge da imagem Docker (24) |
+| Node no CI | 22 | Diverge da imagem Docker (24); o comentário do CI "espelha o Pi (v22)" está desatualizado, a máquina já roda 24 |
 | @types/node | 22.x | combina com o CI, não com o Docker |
 
 ## O que está velho (atual -> disponível)
@@ -20,15 +20,15 @@ Este documento só descreve; nenhuma dependência foi alterada aqui.
 - Altas sem quebra: body-parser, compression, fast-uri, sharp.
 - Altas via react-router: resolvidas em 8.5.1.
 - Via prisma (toolchain `@prisma/dev`, impacto provável baixo em runtime): resolvidas em 7.10.1.
-- Moderadas: qs, morgan, music-metadata, hono.
+- Moderadas (7): qs, morgan, music-metadata e hono; mais 3 vindas do prisma (@hono/node-server, @prisma/dev, valibot).
 Reexecutar `npm audit --omit=dev` depois que a DGC-93 entrar em `main`.
 
 ## O que vence
-- Token do WhatsApp (Meta): o temporário vence; ver `docs/whatsapp-token-permanente.md` (conferir se foi criado o permanente).
+- Token do WhatsApp (Meta): o temporário vence; o guia `docs/whatsapp-token-permanente.md` existe só na cópia local, ainda não está em nenhuma branch remota (conferir se foi criado o permanente).
 - Segredos por env: `SESSION_SECRET`, `SECRETS_ENCRYPTION_KEY` (trocar sem plano quebra dados cifrados), `MP_ACCESS_TOKEN`, `RESEND_API_KEY`, `METRICS_TOKEN`, `ALARM_WEBHOOK_URL`. Falta calendário de rotação (decisão dos sócios).
 - Baileys: versão rc de biblioteca não oficial; o protocolo muda sem aviso.
 - Node 22 sai de suporte em abril/2027.
-- Domínio/certificado: ver `docs/dominio-setup.md` (data não verificada).
+- Domínio/certificado: `docs/dominio-setup.md` existe só na cópia local, fora do `main` (data não verificada).
 
 ## O que quebra fácil
 1. Baileys (sessão WhatsApp, rc, não oficial).
