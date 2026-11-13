@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AttendantInput, AttendantOutput, AttendantProvider } from '../types'
 
 // Modelo e timeout configuráveis. Sonnet é o equilíbrio certo para atendimento
@@ -206,15 +208,60 @@ export function parseClaudeJson(stdout: string): unknown {
   return JSON.parse(body.slice(start, end + 1))
 }
 
-// Coleira: roda em pasta temporária (sem CLAUDE.md/arquivos do projeto) e com
-// --allowedTools vazio (nenhuma ferramenta). É geração de texto pura.
+// Coleira (segurança A1, DGC-90): a mensagem de qualquer pessoa no WhatsApp vira o
+// prompt deste processo, que roda como o usuário da máquina. Por isso:
+//  - `--tools ""` desliga TODAS as ferramentas (`--allowedTools ""` não desliga nada);
+//  - `--strict-mcp-config` sem `--mcp-config` ignora os MCP do usuário;
+//  - `--setting-sources project` + pasta dedicada e vazia ignora as configurações
+//    do usuário e qualquer CLAUDE.md de projeto;
+//  - env mínimo: só o que o CLI precisa. Segredos do serviço (SESSION_SECRET,
+//    WHATSAPP_APP_SECRET, token do Mercado Pago, DATABASE_URL...) nunca passam.
+const CLAUDE_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'CLAUDE_CODE_OAUTH_TOKEN'] as const
+
+/**
+ * Pasta vazia, nova e privada (mkdtemp cria com modo 0700) para cada chamada.
+ * Um caminho fixo em /tmp deixaria outro usuário local plantar hooks/configs.
+ */
+export function createClaudeWorkdir(): string {
+  return mkdtempSync(join(tmpdir(), 'hermes-claude-cli-'))
+}
+
+/** Argumentos e opções do spawn do `claude`. Função pura (testável sem executar o CLI). */
+export function buildClaudeSpawn(
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+  cwd: string = createClaudeWorkdir(),
+): {
+  args: string[]
+  options: { cwd: string; timeout: number; env: Record<string, string> }
+} {
+  const env: Record<string, string> = {}
+  for (const key of CLAUDE_ENV_ALLOWLIST) {
+    const value = sourceEnv[key]
+    if (value !== undefined) env[key] = value
+  }
+  return {
+    args: [
+      '-p',
+      '--model',
+      MODEL,
+      '--tools',
+      '',
+      '--strict-mcp-config',
+      '--setting-sources',
+      'project',
+      '--disable-slash-commands',
+      '--output-format',
+      'text',
+    ],
+    options: { cwd, timeout: TIMEOUT_MS, env },
+  }
+}
+
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      'claude',
-      ['-p', '--model', MODEL, '--allowedTools', '', '--output-format', 'text'],
-      { cwd: tmpdir(), timeout: TIMEOUT_MS, env: { ...process.env } },
-    )
+    const { args, options } = buildClaudeSpawn()
+    const cleanup = () => rmSync(options.cwd, { recursive: true, force: true })
+    const child = spawn('claude', args, options)
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => {
@@ -223,8 +270,12 @@ function runClaude(prompt: string): Promise<string> {
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString()
     })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      cleanup()
+      reject(err)
+    })
     child.on('close', (code) => {
+      cleanup()
       if (code === 0) {
         resolve(stdout)
       } else {
