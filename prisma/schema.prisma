@@ -15,7 +15,7 @@ model Tenant {
   slug      String   @unique
   name      String
   // Guarda LGPD: dias que conversas, leads, chamados e eventos ficam no banco depois da
-  // última atividade. A rotina diária (scripts/lgpd-retencao.ts) apaga o que passar disso.
+  // última atividade. A rotina diária (npm run lgpd:retencao (scripts/lgpd.ts)) apaga o que passar disso.
   retentionDays Int    @default(90)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

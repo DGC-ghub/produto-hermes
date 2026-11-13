@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
 import { db } from '../db.server'
 import { DEMO_TENANT_SLUGS } from './tenants.server'
 
@@ -42,9 +42,25 @@ export function retentionFor(tenant: { slug: string; retentionDays: number }): n
   return DEMO_TENANT_SLUGS.includes(tenant.slug) ? Math.min(days, DEMO_RETENTION_DAYS) : days
 }
 
-/** Hash curto e estável do contato, para o registro não carregar telefone. */
+/**
+ * Hash curto e estável do contato, para o registro não carregar telefone.
+ * HMAC com segredo (LGPD_HASH_SECRET): SHA-256 puro de telefone se reverte por força bruta.
+ * Falha fechado: sem o segredo, não gera hash (e a exclusão nem começa).
+ */
 export function hashContato(contactId: string): string {
-  return createHash('sha256').update(contactId).digest('hex').slice(0, 12)
+  const secret = process.env.LGPD_HASH_SECRET
+  if (!secret || secret.length < 16) {
+    throw new Error('LGPD_HASH_SECRET ausente ou curto demais (mínimo 16 caracteres)')
+  }
+  return createHmac('sha256', secret).update(contactId).digest('hex').slice(0, 12)
+}
+
+/** O SQLite limita parâmetros por consulta: todo `in: [...]` vai em blocos. */
+const BLOCO = 500
+function blocos<T>(ids: T[]): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < ids.length; i += BLOCO) out.push(ids.slice(i, i + BLOCO))
+  return out
 }
 
 type Alvo = {
@@ -53,34 +69,69 @@ type Alvo = {
   ticketIds: string[]
   /** Leads sem conversa e chamados são selecionados por ids; webhook por filtro. */
   webhookWhere: object
-  traceWhere: object
+  tenantId: string
+  /** true (apagar-tenant): todas as medições do tenant; false: só as das conversas alvo. */
+  traceDoTenantInteiro: boolean
 }
 
 async function contar(alvo: Alvo): Promise<Counts> {
-  const conv = { in: alvo.conversationIds }
+  let mensagens = 0
+  let eventosHandoff = 0
+  let medicoes = 0
+  for (const b of blocos(alvo.conversationIds)) {
+    const conv = { in: b }
+    mensagens += await db.message.count({ where: { conversationId: conv } })
+    eventosHandoff += await db.handoffEvent.count({ where: { conversationId: conv } })
+    if (!alvo.traceDoTenantInteiro) {
+      medicoes += await db.messageTrace.count({
+        where: { tenantId: alvo.tenantId, conversationId: conv },
+      })
+    }
+  }
+  if (alvo.traceDoTenantInteiro) {
+    medicoes = await db.messageTrace.count({ where: { tenantId: alvo.tenantId } })
+  }
   return {
-    mensagens: await db.message.count({ where: { conversationId: conv } }),
-    eventosHandoff: await db.handoffEvent.count({ where: { conversationId: conv } }),
+    mensagens,
+    eventosHandoff,
     conversas: alvo.conversationIds.length,
     leads: alvo.leadIds.length,
     chamados: alvo.ticketIds.length,
     eventosWebhook: await db.webhookEvent.count({ where: alvo.webhookWhere }),
-    medicoes: await db.messageTrace.count({ where: alvo.traceWhere }),
+    medicoes,
   }
 }
 
-/** Operações de exclusão, NA ORDEM (filhos antes dos pais). Só monta; quem executa é o lote. */
+/**
+ * Operações de exclusão, NA ORDEM (filhos antes dos pais), em blocos de ids.
+ * Só monta; quem executa é o lote (`$transaction`).
+ */
 function operacoesDeApagar(alvo: Alvo) {
-  const conv = { in: alvo.conversationIds }
-  return [
-    db.message.deleteMany({ where: { conversationId: conv } }),
-    db.handoffEvent.deleteMany({ where: { conversationId: conv } }),
-    db.lead.deleteMany({ where: { id: { in: alvo.leadIds } } }),
-    db.ticket.deleteMany({ where: { id: { in: alvo.ticketIds } } }),
-    db.messageTrace.deleteMany({ where: alvo.traceWhere }),
-    db.webhookEvent.deleteMany({ where: alvo.webhookWhere }),
-    db.conversation.deleteMany({ where: { id: conv } }),
-  ]
+  const ops = []
+  for (const b of blocos(alvo.conversationIds)) {
+    const conv = { in: b }
+    ops.push(
+      db.message.deleteMany({ where: { conversationId: conv } }),
+      db.handoffEvent.deleteMany({ where: { conversationId: conv } }),
+    )
+    if (!alvo.traceDoTenantInteiro) {
+      ops.push(
+        db.messageTrace.deleteMany({ where: { tenantId: alvo.tenantId, conversationId: conv } }),
+      )
+    }
+  }
+  for (const b of blocos(alvo.leadIds)) ops.push(db.lead.deleteMany({ where: { id: { in: b } } }))
+  for (const b of blocos(alvo.ticketIds)) {
+    ops.push(db.ticket.deleteMany({ where: { id: { in: b } } }))
+  }
+  if (alvo.traceDoTenantInteiro) {
+    ops.push(db.messageTrace.deleteMany({ where: { tenantId: alvo.tenantId } }))
+  }
+  ops.push(db.webhookEvent.deleteMany({ where: alvo.webhookWhere }))
+  for (const b of blocos(alvo.conversationIds)) {
+    ops.push(db.conversation.deleteMany({ where: { id: { in: b } } }))
+  }
+  return ops
 }
 
 /** Quais chaves do webhook pertencem ao tenant (número Meta ou sessão Baileys). */
@@ -117,64 +168,82 @@ function relatorio(
  * conversa é a mensagem mais recente (ou a própria conversa, se não tiver mensagem).
  * `dryRun` só conta, sem apagar.
  */
+export type PurgeResultado = {
+  relatorios: ApagadoRelatorio[]
+  /** Tenants que falharam (só slug e tipo do erro, nunca dados). Os demais seguem. */
+  erros: { tenant: string; erro: string }[]
+}
+
+/**
+ * Cada tenant é processado isolado: `onRelatorio` roda logo após o tenant terminar (para
+ * gravar o registro antes de seguir) e uma falha num tenant não impede os outros.
+ */
 export async function purgeExpired(opts: {
   now?: Date
   dryRun?: boolean
-}): Promise<ApagadoRelatorio[]> {
+  onRelatorio?: (rel: ApagadoRelatorio) => void | Promise<void>
+}): Promise<PurgeResultado> {
   const now = opts.now ?? new Date()
   const dryRun = opts.dryRun ?? false
   const tenants = await db.tenant.findMany({
     select: { id: true, slug: true, retentionDays: true },
   })
   const out: ApagadoRelatorio[] = []
+  const erros: PurgeResultado['erros'] = []
   for (const tenant of tenants) {
-    const prazoDias = retentionFor(tenant)
-    const cutoff = new Date(now.getTime() - prazoDias * DAY_MS)
-    const conversas = await db.conversation.findMany({
-      where: {
-        tenantId: tenant.id,
-        updatedAt: { lt: cutoff },
-        messages: { none: { createdAt: { gte: cutoff } } },
-      },
-      select: { id: true, lead: { select: { id: true } } },
-    })
-    const conversationIds = conversas.map((c) => c.id)
-    const leadsSoltos = await db.lead.findMany({
-      where: { tenantId: tenant.id, conversationId: null, updatedAt: { lt: cutoff } },
-      select: { id: true },
-    })
-    const chamados = await db.ticket.findMany({
-      where: { tenantId: tenant.id, updatedAt: { lt: cutoff } },
-      select: { id: true },
-    })
-    const alvo: Alvo = {
-      conversationIds,
-      leadIds: [
-        ...conversas.flatMap((c) => (c.lead ? [c.lead.id] : [])),
-        ...leadsSoltos.map((l) => l.id),
-      ],
-      ticketIds: chamados.map((t) => t.id),
-      // Só o que já terminou: não mexe na fila do webhook (pending/processing).
-      webhookWhere: {
-        AND: [
-          await chavesWebhook(tenant.id),
-          { createdAt: { lt: cutoff }, status: { in: ['done', 'failed'] } },
+    try {
+      const prazoDias = retentionFor(tenant)
+      const cutoff = new Date(now.getTime() - prazoDias * DAY_MS)
+      const conversas = await db.conversation.findMany({
+        where: {
+          tenantId: tenant.id,
+          updatedAt: { lt: cutoff },
+          messages: { none: { createdAt: { gte: cutoff } } },
+        },
+        select: { id: true, lead: { select: { id: true } } },
+      })
+      const conversationIds = conversas.map((c) => c.id)
+      const leadsSoltos = await db.lead.findMany({
+        where: { tenantId: tenant.id, conversationId: null, updatedAt: { lt: cutoff } },
+        select: { id: true },
+      })
+      const chamados = await db.ticket.findMany({
+        where: { tenantId: tenant.id, updatedAt: { lt: cutoff } },
+        select: { id: true },
+      })
+      const alvo: Alvo = {
+        conversationIds,
+        leadIds: [
+          ...conversas.flatMap((c) => (c.lead ? [c.lead.id] : [])),
+          ...leadsSoltos.map((l) => l.id),
         ],
-      },
-      traceWhere: { tenantId: tenant.id, conversationId: { in: conversationIds } },
-    }
-    const contagens = await contar(alvo)
-    if (!dryRun) await db.$transaction([...operacoesDeApagar(alvo)])
-    out.push(
-      relatorio(
+        ticketIds: chamados.map((t) => t.id),
+        // Só o que já terminou: não mexe na fila do webhook (pending/processing).
+        webhookWhere: {
+          AND: [
+            await chavesWebhook(tenant.id),
+            { createdAt: { lt: cutoff }, status: { in: ['done', 'failed'] } },
+          ],
+        },
+        tenantId: tenant.id,
+        traceDoTenantInteiro: false,
+      }
+      const contagens = await contar(alvo)
+      if (!dryRun) await db.$transaction([...operacoesDeApagar(alvo)])
+      const rel = relatorio(
         { operacao: 'retencao', dryRun, tenant: tenant.slug, prazoDias },
         alvo,
         contagens,
         now,
-      ),
-    )
+      )
+      out.push(rel)
+      await opts.onRelatorio?.(rel)
+    } catch (e) {
+      // Só o tipo do erro: a mensagem do Prisma pode carregar valores.
+      erros.push({ tenant: tenant.slug, erro: e instanceof Error ? e.name : 'erro' })
+    }
   }
-  return out
+  return { relatorios: out, erros }
 }
 
 /** Exclusão por contato: só as coisas daquele contato naquele tenant. */
@@ -210,17 +279,15 @@ export async function deleteContact(opts: {
         },
       ],
     },
-    traceWhere: { tenantId: tenant.id, conversationId: { in: conversationIds } },
+    tenantId: tenant.id,
+    traceDoTenantInteiro: false,
   }
+  // Antes de apagar: sem LGPD_HASH_SECRET falha fechado, sem ter apagado nada.
+  const contatoHash = hashContato(opts.contactId)
   const contagens = await contar(alvo)
   if (!dryRun) await db.$transaction([...operacoesDeApagar(alvo)])
   return relatorio(
-    {
-      operacao: 'apagar-contato',
-      dryRun,
-      tenant: tenant.slug,
-      contatoHash: hashContato(opts.contactId),
-    },
+    { operacao: 'apagar-contato', dryRun, tenant: tenant.slug, contatoHash },
     alvo,
     contagens,
     now,
@@ -250,7 +317,8 @@ export async function deleteTenant(opts: {
     leadIds: leads.map((l) => l.id),
     ticketIds: chamados.map((t) => t.id),
     webhookWhere: await chavesWebhook(tenant.id),
-    traceWhere: { tenantId: tenant.id },
+    tenantId: tenant.id,
+    traceDoTenantInteiro: true,
   }
   const contagens = await contar(alvo)
   contagens.operadores = await db.operator.count({ where: T })

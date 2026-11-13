@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db.server'
 import { deleteContact, deleteTenant, hashContato, purgeExpired, retentionFor } from './lgpd.server'
 
@@ -14,7 +14,13 @@ async function limpar() {
   }
   await db.webhookEvent.deleteMany({ where: { messageId: { startsWith: 'zzz-lgpd' } } })
 }
-afterEach(limpar)
+beforeEach(() => {
+  process.env.LGPD_HASH_SECRET = 'segredo-ficticio-de-teste-lgpd'
+})
+afterEach(async () => {
+  vi.restoreAllMocks()
+  await limpar()
+})
 
 async function tenant(slug: string, retentionDays = 90) {
   return db.tenant.upsert({
@@ -79,7 +85,9 @@ describe('purgeExpired (guarda)', () => {
       data: { tenantId: t.id, name: 'Solto', updatedAt: dias(100) },
     })
 
-    const [rel] = (await purgeExpired({ now: NOW })).filter((r) => r.tenant === 'zzz-lgpd-a')
+    const [rel] = (await purgeExpired({ now: NOW })).relatorios.filter(
+      (r) => r.tenant === 'zzz-lgpd-a',
+    )
 
     expect(rel.contagens).toMatchObject({
       conversas: 1,
@@ -103,7 +111,7 @@ describe('purgeExpired (guarda)', () => {
   it('dry-run só conta e não apaga', async () => {
     const t = await tenant('zzz-lgpd-a')
     const velha = await conversa(t.id, 'c-velha', dias(100))
-    const [rel] = (await purgeExpired({ now: NOW, dryRun: true })).filter(
+    const [rel] = (await purgeExpired({ now: NOW, dryRun: true })).relatorios.filter(
       (r) => r.tenant === 'zzz-lgpd-a',
     )
     expect(rel.dryRun).toBe(true)
@@ -246,5 +254,90 @@ describe('deleteTenant', () => {
     expect(await db.conversation.findUnique({ where: { id: cb.id } })).not.toBeNull()
     expect(await db.message.count({ where: { conversationId: cb.id } })).toBe(1)
     expect(await db.ticket.findUnique({ where: { id: tkb.id } })).not.toBeNull()
+  })
+})
+
+describe('lotes grandes (limite de parâmetros do SQLite)', () => {
+  it('guarda e exclusão de tenant com 2.500 conversas', async () => {
+    const a = await tenant('zzz-lgpd-a')
+    const velho = dias(200)
+    const ids = Array.from({ length: 2500 }, (_, i) => `zzz-lgpd-conv-${i}`)
+    await db.conversation.createMany({
+      data: ids.map((id, i) => ({
+        id,
+        tenantId: a.id,
+        contactId: `c${i}`,
+        createdAt: velho,
+        updatedAt: velho,
+      })),
+    })
+    await db.message.createMany({
+      data: ids.map((id) => ({
+        conversationId: id,
+        role: 'user',
+        content: 't',
+        createdAt: velho,
+      })),
+    })
+    const { relatorios, erros } = await purgeExpired({ now: NOW })
+    expect(erros).toEqual([])
+    const rel = relatorios.find((r) => r.tenant === 'zzz-lgpd-a')
+    expect(rel?.contagens).toMatchObject({ conversas: 2500, mensagens: 2500 })
+    expect(await db.conversation.count({ where: { tenantId: a.id } })).toBe(0)
+
+    await db.conversation.createMany({
+      data: ids.map((id, i) => ({ id, tenantId: a.id, contactId: `c${i}` })),
+    })
+    const del = await deleteTenant({ tenantSlug: 'zzz-lgpd-a', dryRun: false })
+    expect(del.contagens.conversas).toBe(2500)
+    expect(await db.tenant.findUnique({ where: { slug: 'zzz-lgpd-a' } })).toBeNull()
+  }, 60_000)
+})
+
+describe('falha no meio da guarda', () => {
+  it('registra o tenant que terminou, reporta o que falhou e segue', async () => {
+    const a = await tenant('zzz-lgpd-a')
+    const b = await tenant('zzz-lgpd-b')
+    await conversa(a.id, 'c1', dias(200))
+    await conversa(b.id, 'c1', dias(200))
+    const vistos: string[] = []
+    const original = db.$transaction.bind(db)
+    let chamadas = 0
+    vi.spyOn(db, '$transaction').mockImplementation(((ops: never) => {
+      chamadas++
+      if (chamadas === 2) return Promise.reject(new Error('falha simulada com dado secreto'))
+      return original(ops)
+    }) as never)
+    const { relatorios, erros } = await purgeExpired({
+      now: NOW,
+      onRelatorio: (r) => {
+        vistos.push(r.tenant)
+      },
+    })
+    expect(vistos).toHaveLength(relatorios.length)
+    expect(erros).toHaveLength(1)
+    expect(JSON.stringify(erros)).not.toContain('secreto')
+    // Ordem dos tenants no banco não importa: um foi apagado e registrado, o outro falhou.
+    expect(relatorios.some((r) => vistos.includes(r.tenant))).toBe(true)
+  })
+})
+
+describe('hashContato', () => {
+  it('é HMAC: muda com o segredo e falha fechado sem ele', () => {
+    const h1 = hashContato('5511900000001')
+    process.env.LGPD_HASH_SECRET = 'outro-segredo-ficticio-123'
+    expect(hashContato('5511900000001')).not.toBe(h1)
+    process.env.LGPD_HASH_SECRET = ''
+    expect(() => hashContato('5511900000001')).toThrow(/LGPD_HASH_SECRET/)
+  })
+
+  it('apagar-contato sem segredo não apaga nada', async () => {
+    const a = await tenant('zzz-lgpd-a')
+    const c = await conversa(a.id, 'x1', dias(1))
+    process.env.LGPD_HASH_SECRET = ''
+    await expect(
+      deleteContact({ tenantSlug: 'zzz-lgpd-a', contactId: 'x1', dryRun: false }),
+    ).rejects.toThrow(/LGPD_HASH_SECRET/)
+    expect(await db.conversation.findUnique({ where: { id: c.id } })).not.toBeNull()
   })
 })
