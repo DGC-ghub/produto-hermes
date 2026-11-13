@@ -1,12 +1,6 @@
 import type { ReactNode } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import {
-  MemoryRouter,
-  UNSAFE_DataRouterContext,
-  UNSAFE_DataRouterStateContext,
-  UNSAFE_RouteContext,
-} from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
+import { renderRoute } from '../lib/render-route.test-util'
 import Canais, {
   confirmDisconnect,
   formatLastConn,
@@ -43,32 +37,12 @@ function render(sessions: Session[]): string {
     enabled: true,
     operator: { username: 'dono', tenantSlug: 'acme' },
   }
-  const Screen = Canais as unknown as (props: { loaderData: typeof loaderData }) => ReactNode
-  // Contextos mínimos de um router com dados: `useNavigation`/`useActionData`/`useRevalidator`
-  // (e o `<Form>` e o `<NavLink>` da casca) leem daqui.
-  const routeContext = {
-    matches: [{ route: { id: 'canais' }, pathname: '/canais', pathnameBase: '/' }],
-    outlet: null,
-    isDataRoute: true,
-  }
-  const routerContext = { router: { basename: '/' }, navigator: {}, static: false, basename: '/' }
-  const state = {
-    navigation: { state: 'idle' },
-    revalidation: 'idle',
-    loaderData: {},
-    actionData: undefined,
-  }
-  return renderToStaticMarkup(
-    <MemoryRouter>
-      <UNSAFE_DataRouterContext.Provider value={routerContext as never}>
-        <UNSAFE_DataRouterStateContext.Provider value={state as never}>
-          <UNSAFE_RouteContext.Provider value={routeContext as never}>
-            <Screen loaderData={loaderData} />
-          </UNSAFE_RouteContext.Provider>
-        </UNSAFE_DataRouterStateContext.Provider>
-      </UNSAFE_DataRouterContext.Provider>
-    </MemoryRouter>,
-  )
+  return renderRoute({
+    id: 'canais',
+    path: '/canais',
+    Screen: Canais as unknown as (props: { loaderData: typeof loaderData }) => ReactNode,
+    loaderData,
+  })
 }
 
 describe('shouldPollSessions — estados transitórios não congelam a tela', () => {

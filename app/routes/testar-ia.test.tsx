@@ -1,12 +1,5 @@
 import type { ReactNode } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import {
-  MemoryRouter,
-  redirect,
-  UNSAFE_DataRouterContext,
-  UNSAFE_DataRouterStateContext,
-  UNSAFE_RouteContext,
-} from 'react-router'
+import { redirect } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // O simulador interno roda o MOTOR REAL no tenant de quem está logado. Duas garantias
@@ -117,6 +110,7 @@ vi.mock('../db.server', () => ({
 }))
 
 import { processIncomingMessage } from '../lib/conversation.server'
+import { renderRoute } from '../lib/render-route.test-util'
 import Screen, { action, loader, simulatorComposerKey, simulatorContactId } from './testar-ia'
 
 const OWN_CONTACT = simulatorContactId(OPERATOR.accountId)
@@ -364,32 +358,13 @@ function render(over: Partial<LoaderData> = {}, navigation: Record<string, unkno
     ...over,
   }
   const Component = Screen as unknown as (props: { loaderData: LoaderData }) => ReactNode
-  const routeContext = {
-    matches: [{ route: { id: 'testar-ia' }, pathname: '/testar-ia', pathnameBase: '/' }],
-    outlet: null,
-    isDataRoute: true,
-  }
-  const routerContext = { router: { basename: '/' }, navigator: {}, static: false, basename: '/' }
-  const state = {
-    navigation: { state: 'idle', ...navigation },
-    revalidation: 'idle',
-    loaderData: {},
-    actionData: undefined,
-  }
-  return renderToStaticMarkup(
-    <MemoryRouter>
-      {/* biome-ignore lint/suspicious/noExplicitAny: contextos internos do router no teste */}
-      <UNSAFE_DataRouterContext.Provider value={routerContext as any}>
-        {/* biome-ignore lint/suspicious/noExplicitAny: idem */}
-        <UNSAFE_DataRouterStateContext.Provider value={state as any}>
-          {/* biome-ignore lint/suspicious/noExplicitAny: idem */}
-          <UNSAFE_RouteContext.Provider value={routeContext as any}>
-            <Component loaderData={loaderData} />
-          </UNSAFE_RouteContext.Provider>
-        </UNSAFE_DataRouterStateContext.Provider>
-      </UNSAFE_DataRouterContext.Provider>
-    </MemoryRouter>,
-  )
+  return renderRoute({
+    id: 'testar-ia',
+    path: '/testar-ia',
+    Screen: Component,
+    loaderData,
+    navigation,
+  })
 }
 
 describe('/testar-ia — tela', () => {
