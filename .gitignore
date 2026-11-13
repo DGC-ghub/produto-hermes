@@ -43,3 +43,6 @@ hermes.log
 # Eval: o baseline É versionado (trava a regressão); a última rodada, não.
 eval/ultima-rodada.md
 eval-report.md
+
+# Registro LGPD de exclusões (contagens e ids, sem conteúdo)
+/logs/
