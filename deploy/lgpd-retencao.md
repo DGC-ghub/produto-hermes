@@ -49,3 +49,11 @@ WantedBy=timers.target
 - Backups já feitos seguem o prazo de rotação do backup (ver `backup-offsite.md`).
 - `apagar-contato` casa o `contactId` exato; no Baileys o mesmo contato pode aparecer
   como `@lid` e como número: rode para os dois ids se necessário.
+
+## Segredo do registro (obrigatório)
+
+`LGPD_HASH_SECRET` (mínimo 16 caracteres, aleatório, só no `.env` do servidor) protege o hash do
+contato no registro (HMAC). Sem ele, `apagar-contato` falha antes de apagar qualquer coisa.
+O `--contato` fica no histórico do shell: rode o comando com um espaço na frente
+(`HISTCONTROL=ignorespace`) ou limpe o histórico depois.
+A rotina `retencao` sai com código 1 se algum tenant falhar; os que terminaram já estão no registro.
