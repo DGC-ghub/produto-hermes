@@ -1,13 +1,7 @@
 import type { ReactNode } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import {
-  MemoryRouter,
-  UNSAFE_DataRouterContext,
-  UNSAFE_DataRouterStateContext,
-  UNSAFE_RouteContext,
-} from 'react-router'
 import { describe, expect, it } from 'vitest'
 import type { ContactDossier } from '../lib/dossier.server'
+import { renderRoute } from '../lib/render-route.test-util'
 import Atendente, { replyComposerKey } from './atendente'
 
 // A Central tem VÁRIOS forms na mesma tela e duas ações lentas (resumo pela IA, resposta pelo
@@ -61,37 +55,14 @@ const Screen = Atendente as unknown as (props: { loaderData: typeof loaderData }
  * fica sabendo se o envio falhou ou apenas ficou em dúvida.
  */
 function render(formData?: FormData, actionData?: { error?: string; ambiguous?: boolean }): string {
-  const navigation = formData ? { state: 'submitting', formData } : { state: 'idle' }
-  // Contextos mínimos de um router com dados: `useNavigation`/`useActionData` (e o `<Form>`
-  // e o `<NavLink>` da casca) leem daqui. Nada é submetido de verdade — só marcação.
-  const match = {
-    params: {},
-    pathname: '/atendente',
-    pathnameBase: '/atendente',
-    route: { id: 'atendente', path: '/atendente' },
-  }
-  const routeContext = { matches: [match], outlet: null, isDataRoute: true }
-  const routerContext = { router: { basename: '/' }, navigator: {}, static: false, basename: '/' }
-  return renderToStaticMarkup(
-    <MemoryRouter>
-      <UNSAFE_DataRouterContext.Provider value={routerContext as never}>
-        <UNSAFE_DataRouterStateContext.Provider
-          value={
-            {
-              navigation,
-              loaderData: {},
-              // `useActionData` lê o desfecho pela ID da rota — a mesma do `match` acima.
-              actionData: actionData ? { atendente: actionData } : undefined,
-            } as never
-          }
-        >
-          <UNSAFE_RouteContext.Provider value={routeContext as never}>
-            <Screen loaderData={loaderData} />
-          </UNSAFE_RouteContext.Provider>
-        </UNSAFE_DataRouterStateContext.Provider>
-      </UNSAFE_DataRouterContext.Provider>
-    </MemoryRouter>,
-  )
+  return renderRoute({
+    id: 'atendente',
+    path: '/atendente',
+    Screen,
+    loaderData,
+    navigation: formData ? { state: 'submitting', formData } : undefined,
+    actionData,
+  })
 }
 
 /** O `<button>` cujo texto visível é `label`, com todos os seus atributos. */
