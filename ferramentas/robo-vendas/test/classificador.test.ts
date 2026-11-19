@@ -85,6 +85,51 @@ describe("classificador", () => {
 		expect(c("Não quero agora, mas me manda o vídeo").classe).toBe("escalar");
 	});
 
+	it.each([
+		"Não me mande por aqui, manda pro email da clínica",
+		"Não mande pra esse número, manda pro da Dra. Ana",
+		"Não envie agora, só segunda",
+		"Não tenho interesse em trocar de sistema, mas quanto custa?",
+		"Não tenho interesse agora, me procura em janeiro",
+		"O sistema para de enviar lembrete se o paciente responder?",
+		"Ele para de chamar o paciente depois que confirma?",
+		"Como faço para remover do cadastro um paciente?",
+		"Dá pra descadastrar paciente pelo sistema?",
+		"Sair da lista de espera é automático?",
+		"Tira meu número antigo e coloca esse",
+		"tenho nao quero",
+		"Não agora",
+	])("1ª resposta: NÃO vira 'não' (vai ao Gabriel): %s", (t) => {
+		expect(pedidoDeParar(t)).toBe(false);
+		expect(c(t).classe).not.toBe("nao");
+	});
+
+	it.each([
+		"Parem",
+		"Parem de mandar mensagem",
+		"Não temos interesse, obrigado",
+		"Não estamos interessados",
+		"Não quero receber mensagens",
+		"Não quero receber mais mensagens",
+		"Me exclui da lista",
+		"Me remove daqui",
+		"Pode tirar meu número",
+		"Não manda mais nada",
+		"Sem interesse, obrigado",
+		"Stop",
+		"para",
+		"Para, obrigado",
+		"descadastrar",
+		"Me descadastra",
+		"Não me mande mensagem",
+		"Bom dia, não tenho interesse",
+		"sem interesse",
+		"Quero sair da lista",
+	])("pedido claro de parar (1ª resposta vira 'não'): %s", (t) => {
+		expect(pedidoDeParar(t)).toBe(true);
+		expect(c(t).classe).toBe("nao");
+	});
+
 	it("pedidoDeParar de mídia (sem texto) é falso", () => {
 		expect(pedidoDeParar(null)).toBe(false);
 	});

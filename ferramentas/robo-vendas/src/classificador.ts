@@ -17,22 +17,40 @@ export function normalizar(t: string): string {
 }
 
 /**
- * Pedido de parar: só vale quando é claro. Na dúvida, não conta (o robô passa ao Gabriel).
- * Frases inteiras ("pare", "sair"), "não quero" sozinho ou no fim, "me tira da lista", "para de me mandar".
+ * Pedido de parar: só vale quando a mensagem INTEIRA é o pedido (com cortesia opcional).
+ * Com "?", ou com "mas", "agora", "só", "pro email"..., nunca conta: o robô passa ao Gabriel.
  */
+const CORTESIA_INI = /^(oi|ola|bom dia|boa tarde|boa noite)( |$)/;
+const CORTESIA_FIM = /( (por favor|pf|pfv|obrigad[oa]|obrigadao|valeu|grato|grata))+$/;
+const RESSALVA = /\b(mas|porem|agora|so|apenas|depois|amanha|semana|janeiro|email|pro|pra|quando|video|ligar|liga|procura)\b/;
+const MSG = "( (mensagem|mensagens|msg|msgs|nada|recado|recados|whatsapp|zap))?";
 const PARAR = new RegExp(
-	[
-		"^(pare|parar|para|sair|remover|remova|descadastrar|descadastre)( por favor| pf| pfv| obrigad[oa])?$",
-		"\\b(pare|parar|para) de (me )?(mandar|enviar|escrever|chamar|incomodar)\\b",
-		"\\b(me tire|me tira|tire meu|tira meu) (d[aoe]s? |dessa |desse )?(sua |essa |nossa )?(lista|contato|cadastro|numero)\\b",
-		"\\b(sair|remover|remova|me remova|me remove) d[aoe]s? (lista|cadastro|contatos?|mensagens)\\b",
-		"\\bdescadastr\\w*",
-		"\\bnao tenho interesse\\b",
-		"\\bsem interesse$",
-		"\\bnao (me )?(mande|mandem|envie|enviem|escreva|escrevam)\\b",
-		"(^| )nao quero( mais)?( obrigad[oa])?$",
-	].join("|"),
+	"^(" +
+		[
+			"(pode |podem )?(pare|parem|parar|para|stop|sair|remover|remova|descadastrar|descadastre|descadastra)",
+			"(me |nos )?(descadastrar|descadastre|descadastra|descadastrem)",
+			"(pode |podem )?(pare|parem|parar|para) de (me |nos )?(mandar|enviar|escrever|chamar|incomodar)" + MSG,
+			"(nao|n) (tenho|temos) interesse",
+			"nao (estou|estamos) interessad[oa]s?",
+			"sem interesse",
+			"nao (quero|queremos)( mais)?( receber( mais)?( mensagens?| msgs?)?)?",
+			"nao (me |nos )?(mande|manda|mandem|envie|enviem|escreva|escrevam)( mais)?" + MSG,
+			"(me |nos )(tire|tira|tirem|remova|remove|removam|exclua|exclui|excluam|retire|retira) (daqui|(d[aoe]s? |dessa |desse )?(sua |essa |nossa )?(lista|contato|contatos|cadastro|numero))",
+			"(pode |podem )?(tirar|remover|excluir|retirar|tire|tira|remova|remove|exclua|exclui) (meu|nosso) (numero|contato|telefone|cadastro)( d[aoe]s? (lista|cadastro|contatos?))?",
+			"(quero |queremos |gostaria de |preciso )?(sair|remover|excluir) d[aoe]s? (lista|cadastro|contatos?|mensagens)",
+		].join("|") +
+		")$",
 );
+
+/** Texto sem cortesia, pronto para o PARAR. */
+function nucleo(n: string): string {
+	return n.replace(CORTESIA_INI, "").replace(CORTESIA_FIM, "").trim();
+}
+
+function ehPararClaro(n: string): boolean {
+	if (n.includes("?") || RESSALVA.test(n)) return false;
+	return PARAR.test(nucleo(n));
+}
 const ROBO =
 	/\b(e|eh|voce e|vc e|isso e|sera que e) (um |uma )?(robo|bot|chatbot|ia|inteligencia artificial|automatic\w*|maquina|pessoa|gente|humano|real)\b|\bchatbot\b|\bresposta automatica\b|\b(robo|bot)\b/;
 const PRECO = /\b(quanto|preco|valor|valores|custa|custo|mensalidade|investimento|orcamento|cobram|cobra)\b/;
@@ -75,11 +93,11 @@ export function classificar(texto: string | null, aguardandoResposta: boolean): 
 	const n = normalizar(texto);
 	const cat = categoriaDe(n);
 	if (!aguardandoResposta) return { classe: "escalar", categoria: cat };
-	if (PARAR.test(n)) return { classe: "nao", categoria: "outro" };
+	if (ehPararClaro(n)) return { classe: "nao", categoria: "outro" };
 	if (ROBO.test(n)) return { classe: "robo", categoria: "outro" };
 	if (ehSim(n)) return { classe: "sim", categoria: "interesse" };
 	const palavras = n.split(" ").filter(Boolean);
-	if (palavras[0] === "nao" && palavras.length <= 3 && !n.includes("?") && cat === "outro") {
+	if (palavras[0] === "nao" && palavras.length <= 3 && !n.includes("?") && !RESSALVA.test(n) && cat === "outro") {
 		return { classe: "nao", categoria: "outro" };
 	}
 	return { classe: "escalar", categoria: cat };
@@ -87,5 +105,5 @@ export function classificar(texto: string | null, aguardandoResposta: boolean): 
 
 /** Pedido claro de parar ("pare", "sair", "remover", "não tenho interesse"...), em qualquer fase da conversa. */
 export function pedidoDeParar(texto: string | null): boolean {
-	return texto !== null && PARAR.test(normalizar(texto));
+	return texto !== null && ehPararClaro(normalizar(texto));
 }

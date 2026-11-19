@@ -66,8 +66,9 @@ export async function enviarKit(ctx: Ctx, clinicaId: string): Promise<boolean> {
 		const chave = `${clinicaId}:${nome}`;
 		if (ctx.store.temEnvio(chave)) continue;
 		// Entre os passos, olha de novo: a conversa pode ter mudado (pare, etiqueta, Gabriel assumiu).
-		if (ctx.store.clinica(clinicaId).status !== "kit_agendado") return false;
+		// O status é lido DEPOIS da chamada ao Chatwoot: o webhook roda em paralelo e o "pare" pode chegar durante ela.
 		if ((await podeEscrever(ctx, clinicaId)) !== "ok") return false;
+		if (ctx.store.clinica(clinicaId).status !== "kit_agendado") return false;
 		if (!(await enviarUnico(ctx, chave, clinicaId, nome, acao))) return false;
 	}
 	return true;

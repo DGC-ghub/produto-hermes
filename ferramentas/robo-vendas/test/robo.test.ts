@@ -253,7 +253,7 @@ describe("respostas da clínica", () => {
 		const t = await comAmoAguardando();
 		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
 		await t.diz("amo", "sim");
-		await t.diz("amo", "pare, não quero mais");
+		await t.diz("amo", "pare");
 		await t.rodar(30);
 		expect(amo()).toHaveLength(0);
 		expect(t.store.clinica("amo").status).toBe("manual");
@@ -306,6 +306,34 @@ describe("respostas da clínica", () => {
 		expect(amo()).toHaveLength(0);
 		expect(t.store.clinica("amo").status).toBe("aguardando");
 		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+	});
+
+	it("corrida: o 'pare' chega durante a leitura das etiquetas (antes do passo) e nada do kit sai", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		const etq = t.cw.port.etiquetas;
+		t.cw.port.etiquetas = async (id) => {
+			const r = await etq(id);
+			t.store.atualizarClinica("amo", { status: "manual" });
+			return r;
+		};
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		expect(amo()).toHaveLength(0);
+		expect(t.store.clinica("amo").status).toBe("manual");
+		expect(t.store.saidasPendentes()).toHaveLength(0);
+	});
+
+	it("'pare' depois do 'sim': cancela outras saídas da fila, avisa no Telegram e vai sem rascunho", async () => {
+		const t = await comAmoAguardando();
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		t.cw.tiraEtiqueta("amo", "com-gabriel");
+		t.store.agendarSaida({ chave: "amo:extra", clinica_id: "amo", tipo: "robo", texto: "x", executar_apos: t.relogio.t + 99 * 60 * MIN, imediata: 0 });
+		await t.diz("amo", "pare");
+		expect(t.store.saidasPendentes().filter((s) => s.clinica_id === "amo")).toHaveLength(0);
+		expect(t.tgMsgs.some((m) => m.texto.includes("parece pedido para parar"))).toBe(true);
+		expect(t.cw.notas.at(-1)?.texto).toContain("Sem rascunho para este caso");
 	});
 
 	it("corrida: o 'pare' chega no meio do envio do vídeo e o PDF não sai", async () => {
