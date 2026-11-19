@@ -103,7 +103,7 @@ services:
     environment:
       SERVER_TYPE: http
       SERVER_PORT: "8080"
-      SERVER_URL: http://127.0.0.1:8090
+      SERVER_URL: http://evolution:8080
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:?}
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
       LOG_LEVEL: ERROR,WARN,INFO

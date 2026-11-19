@@ -78,3 +78,12 @@ Instância `dgc-vendas` (Baileys, conexão por QR como aparelho conectado). A ch
 - A porta 443 da tailnet da VM já era de outro serviço; o Chatwoot usa a 8443.
 - Sem SMTP, convidar usuário exige um passo manual na VM.
 - (A completar: medição com 1 conversa, o que o app faz bem e mal no celular, push.)
+
+### Ligação Evolution → Chatwoot (19/11, DGC-371)
+- Usuário de serviço `Integracao Evolution` (administrador, e-mail `.invalid`) existe só para dar o token à Evolution. Não é pessoa.
+- Config feita por `POST /chatwoot/set/dgc-vendas` com `autoCreate=true`, `importContacts=false`, `importMessages=false` (sem histórico antigo), `conversationPending=false`, URL interna `http://chatwoot-web:3000`.
+- **Armadilha:** `SERVER_URL` da Evolution define a URL de webhook gravada na caixa do Chatwoot. Com `127.0.0.1:8090` o Chatwoot (dentro do contêiner) não alcança a Evolution. Use o nome interno `http://evolution:8080`.
+- O QR aparece no Chatwoot, como imagem na conversa do contato "DGC Hub" (+123456) da caixa "WhatsApp DGC". Se expirar, escrever `init` nessa conversa gera outro.
+- Agent bot `Robo de vendas DGC` criado, token em `~/.config/dgc-atendimento/robo.env`, **sem caixa ligada** (DGC-370).
+- RAM com 1 conversa (a do QR): evolution 143 MiB, sidekiq 583 MiB (limite 600: apertado), web 395, postgres 114, redis 15. VM com 5,2 GB disponíveis.
+- Novos usuários: `scripts/criar-usuario.sh "Nome" email` (senha digitada na VM, sem eco).
