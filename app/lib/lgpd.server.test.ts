@@ -182,6 +182,20 @@ describe('deleteContact', () => {
     expect(await db.message.count({ where: { conversationId: outroTenant.id } })).toBe(1)
   })
 
+  it('apaga o opt-in só daquele contato', async () => {
+    const a = await tenant('zzz-lgpd-a')
+    await conversa(a.id, '5511900000001', dias(1))
+    await db.contactOptIn.createMany({
+      data: [
+        { tenantId: a.id, contactId: '5511900000001', status: 'sim' },
+        { tenantId: a.id, contactId: '5511900000002', status: 'sim' },
+      ],
+    })
+    await deleteContact({ tenantSlug: 'zzz-lgpd-a', contactId: '5511900000001', dryRun: false })
+    expect(await db.contactOptIn.count({ where: { tenantId: a.id } })).toBe(1)
+    await db.contactOptIn.deleteMany({ where: { tenantId: a.id } })
+  })
+
   it('o registro não carrega telefone nem conteúdo', async () => {
     const a = await tenant('zzz-lgpd-a')
     await conversa(a.id, '5511900000001', dias(1))

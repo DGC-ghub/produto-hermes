@@ -36,6 +36,7 @@ const dossier: ContactDossier = {
   headline: 'Maria',
   priority: 'alta',
   summary: null,
+  optInLabel: 'Aceitou lembretes em 19/11',
 }
 
 const loaderData = {

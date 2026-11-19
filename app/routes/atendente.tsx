@@ -255,6 +255,7 @@ function Dossier({ dossier }: { dossier: ContactDossier }) {
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <PriorityTag priority={dossier.priority} />
             {assumed && <Tag>em atendimento humano</Tag>}
+            {dossier.optInLabel && <Tag>{dossier.optInLabel}</Tag>}
           </div>
         </div>
         <div className="shrink-0">

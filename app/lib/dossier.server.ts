@@ -1,4 +1,5 @@
 import { db } from '../db.server'
+import { seloOptIn } from './optin'
 
 // O "dossiê" é a ficha consolidada de um CONTATO (não de uma conversa): quem é,
 // o que já fez e por que chegou ao humano. É o que o Hermes entrega ao atendente
@@ -38,6 +39,8 @@ export type ContactDossier = {
   headline: string
   priority: DossierPriority
   summary: string | null
+  // Selo do opt-in ("Aceitou lembretes em DD/MM"); null = nunca perguntado.
+  optInLabel: string | null
 }
 
 export type ComposeDossierInput = {
@@ -53,6 +56,7 @@ export type ComposeDossierInput = {
   openTicketCount?: number
   recentMessages: DossierMessage[]
   summary?: string | null
+  optInLabel?: string | null
 }
 
 const HEADLINE_NEED_MAX = 40
@@ -108,6 +112,7 @@ export function composeDossier(input: ComposeDossierInput): ContactDossier {
     headline: parts.join(' · '),
     priority,
     summary: input.summary ?? null,
+    optInLabel: input.optInLabel ?? null,
   }
 }
 
@@ -138,7 +143,7 @@ export async function getContactDossier(
   const conversationIds = conversations.map((c) => c.id)
   const activeStatus = conversations[0].status
 
-  const [leadRow, ticketRows, messageRows, handoffRow] = await Promise.all([
+  const [leadRow, ticketRows, messageRows, handoffRow, optInRow] = await Promise.all([
     db.lead.findFirst({
       where: { conversationId: { in: conversationIds } },
       orderBy: { updatedAt: 'desc' },
@@ -158,6 +163,10 @@ export async function getContactDossier(
       orderBy: { createdAt: 'desc' },
       select: { reason: true },
     }),
+    db.contactOptIn.findUnique({
+      where: { tenantId_contactId: { tenantId: tenant.id, contactId } },
+      select: { status: true, decidedAt: true },
+    }),
   ])
 
   return composeDossier({
@@ -166,6 +175,7 @@ export async function getContactDossier(
     tenantName: tenant.name,
     status: activeStatus,
     summary: conversations[0].summary,
+    optInLabel: seloOptIn(optInRow),
     handoffReason: handoffRow?.reason ?? null,
     lead: leadRow
       ? {

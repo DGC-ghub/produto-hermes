@@ -35,6 +35,7 @@ model Tenant {
   aiSetupVersions AiSetupVersion[]
   aiSetupJobs     AiSetupJob[]
   aiSetupEvents   AiSetupEvent[]
+  contactOptIns   ContactOptIn[]
 }
 
 // Número do WhatsApp Business (phone_number_id da Meta) que pertence a UMA empresa.
@@ -480,4 +481,26 @@ model AiSetupEvent {
   version AiSetupVersion? @relation(fields: [versionId], references: [id])
 
   @@index([tenantId, createdAt])
+}
+
+// Opt-in do paciente para lembretes e novidades (DGC-348). Uma linha por (tenant, contato).
+// status: "sim" | "nao" | null (null = a pergunta foi feita e ainda não houve resposta).
+// Sem linha = nunca perguntado. A política da Meta exige opt-in para mensagem que a empresa
+// inicia fora de consulta marcada pelo próprio paciente; a regra mora em app/lib/optin.ts.
+model ContactOptIn {
+  id              String    @id @default(cuid())
+  tenantId        String
+  contactId       String
+  status          String?
+  askedAt         DateTime?
+  decidedAt       DateTime?
+  // Id da mensagem do paciente que gravou a decisão (prova de origem). Sem FK de propósito:
+  // a retenção LGPD apaga mensagens e o registro do consentimento não pode depender delas.
+  sourceMessageId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, contactId])
 }

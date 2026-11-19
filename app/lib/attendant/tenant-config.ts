@@ -74,6 +74,10 @@ export type TenantConfig = {
   // varia por vertical (ex.: assistência pede bairro+equipamento). Dado, não código:
   // é assim que o motor deixa de ter um `if slug === ...` colado. Ausente → default neutro.
   nextStepPrompt?: string
+  // Opt-in do paciente (DGC-348). Atrás de flag por tenant: ausente/false = o fluxo de
+  // conversa fica exatamente como era (a demo gravada não muda). `limiteDiario` é o teto de
+  // conversas que a empresa abre por dia numa reativação (ver docs/whatsapp-oficial-notas.md).
+  optIn?: { enabled: boolean; limiteDiario?: number }
 }
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
@@ -97,6 +101,19 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
     ? (value as string[])
     : []
+}
+
+function parseOptIn(value: unknown): TenantConfig['optIn'] {
+  if (value === undefined || value === null) return undefined
+  const o = asObject(value, 'optIn')
+  const limite = o.limiteDiario
+  if (
+    limite !== undefined &&
+    (typeof limite !== 'number' || !Number.isInteger(limite) || limite < 1)
+  ) {
+    throw new Error('TenantConfig.optIn.limiteDiario deve ser um inteiro maior que zero')
+  }
+  return { enabled: o.enabled === true, limiteDiario: limite as number | undefined }
 }
 
 /**
@@ -159,6 +176,7 @@ export function parseTenantConfig(slug: string, raw: unknown): TenantConfig {
       typeof root.nextStepPrompt === 'string' && root.nextStepPrompt.trim().length > 0
         ? root.nextStepPrompt
         : undefined,
+    optIn: parseOptIn(root.optIn),
   }
 }
 

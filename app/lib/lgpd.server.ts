@@ -70,6 +70,8 @@ type Alvo = {
   /** Leads sem conversa e chamados são selecionados por ids; webhook por filtro. */
   webhookWhere: object
   tenantId: string
+  /** Só em apagar-contato: apaga também o opt-in desse contato. */
+  contactId?: string
   /** true (apagar-tenant): todas as medições do tenant; false: só as das conversas alvo. */
   traceDoTenantInteiro: boolean
 }
@@ -119,6 +121,14 @@ function operacoesDeApagar(alvo: Alvo) {
         db.messageTrace.deleteMany({ where: { tenantId: alvo.tenantId, conversationId: conv } }),
       )
     }
+  }
+  // Consentimento do contato (só no apagar-contato; no apagar-tenant sai por cascade).
+  if (alvo.contactId) {
+    ops.push(
+      db.contactOptIn.deleteMany({
+        where: { tenantId: alvo.tenantId, contactId: alvo.contactId },
+      }),
+    )
   }
   for (const b of blocos(alvo.leadIds)) ops.push(db.lead.deleteMany({ where: { id: { in: b } } }))
   for (const b of blocos(alvo.ticketIds)) {
@@ -280,6 +290,7 @@ export async function deleteContact(opts: {
       ],
     },
     tenantId: tenant.id,
+    contactId: opts.contactId,
     traceDoTenantInteiro: false,
   }
   // Antes de apagar: sem LGPD_HASH_SECRET falha fechado, sem ter apagado nada.

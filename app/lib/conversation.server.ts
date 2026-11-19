@@ -14,6 +14,17 @@ import { resolveKnowledge } from './knowledge-db.server'
 import { extractLeadPatch } from './lead'
 import { createTimer, type Timer } from './metrics'
 import { recordMessageTrace, type TraceOutcome } from './metrics.server'
+import {
+  deveFazerPerguntaOptIn,
+  foiPerguntaOptIn,
+  interpretarRespostaOptIn,
+  OPT_IN_ACK_NAO,
+  OPT_IN_ACK_PARAR,
+  OPT_IN_ACK_SIM,
+  OPT_IN_QUESTION,
+  pacienteEncerrouPedido,
+} from './optin'
+import { lerOptIn } from './optin.server'
 import { retrieveRelevantChunks } from './retrieval'
 import { comRetry } from './setup/retry'
 import { resolveTenant } from './tenants.server'
@@ -728,20 +739,54 @@ async function runIncomingMessage(
 
   // Resposta 1/2/3 a uma confirmação pendente: decidida no balcão, sem gastar o cérebro. O que
   // não for 1/2/3 vai para a recepção. O guard vem antes: dor/remédio escala mesmo na confirmação.
+  // Opt-in (DGC-348), só com a flag do tenant e efeitos reais. "Parar"/"sair" vale a qualquer
+  // momento; sim/não só quando a ÚLTIMA fala da assistente foi a pergunta (e a decisão ainda
+  // não existe). Vem ANTES da confirmação: um "sim" a esta pergunta não pode confirmar consulta.
+  const optInAtivo = operationalEffects && configEfetiva.optIn?.enabled === true
+  const registroOptIn = optInAtivo
+    ? await timer.step('optin', () => lerOptIn(tenant.id, contactId))
+    : null
+  const ultimaFala = history[history.length - 1]
+  const respostaOptIn = optInAtivo ? interpretarRespostaOptIn(message) : null
+  const optInDecidido: 'sim' | 'nao' | null =
+    respostaOptIn === 'parar'
+      ? 'nao'
+      : respostaOptIn &&
+          !registroOptIn?.status &&
+          ultimaFala?.role === 'assistant' &&
+          foiPerguntaOptIn(ultimaFala.content)
+        ? respostaOptIn
+        : null
   const confirmacao =
-    agenda && !guardForcesSafe
+    agenda && !guardForcesSafe && !optInDecidido
       ? await timer.step('confirmacao', () =>
           tratarRespostaConfirmacao(tenant.slug, contactId, message),
         )
       : null
   const humanMessage = configEfetiva.escalationPolicy.humanMessage
-  const atalho: { reply: string; needsHuman: boolean; reason: string } | null = guardForcesSafe
-    ? { reply: humanMessage, needsHuman: true, reason: guard.reason ?? 'unknown' }
-    : confirmacao?.kind === 'humano'
-      ? { reply: humanMessage, needsHuman: true, reason: 'confirmacao_fora_do_padrao' }
-      : confirmacao?.kind === 'resposta'
-        ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
-        : null
+  type Atalho = { reply: string; needsHuman: boolean; reason: string; optIn?: 'sim' | 'nao' }
+  const atalhoOptIn: Atalho | null = optInDecidido
+    ? {
+        reply:
+          respostaOptIn === 'parar'
+            ? OPT_IN_ACK_PARAR
+            : optInDecidido === 'sim'
+              ? OPT_IN_ACK_SIM
+              : OPT_IN_ACK_NAO,
+        needsHuman: false,
+        reason: 'optin',
+        optIn: optInDecidido,
+      }
+    : null
+  const atalho: Atalho | null =
+    atalhoOptIn ??
+    (guardForcesSafe
+      ? { reply: humanMessage, needsHuman: true, reason: guard.reason ?? 'unknown' }
+      : confirmacao?.kind === 'humano'
+        ? { reply: humanMessage, needsHuman: true, reason: 'confirmacao_fora_do_padrao' }
+        : confirmacao?.kind === 'resposta'
+          ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
+          : null)
   if (atalho) {
     const reply = atalho.reply
     // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
@@ -769,6 +814,20 @@ async function runIncomingMessage(
               sourcesJson: JSON.stringify([]),
             },
           })
+          if (atalho.optIn) {
+            const agora = new Date()
+            await tx.contactOptIn.upsert({
+              where: { tenantId_contactId: { tenantId: tenant.id, contactId } },
+              create: {
+                tenantId: tenant.id,
+                contactId,
+                status: atalho.optIn,
+                decidedAt: agora,
+                sourceMessageId: userMessage.id,
+              },
+              update: { status: atalho.optIn, decidedAt: agora, sourceMessageId: userMessage.id },
+            })
+          }
           if (operationalEffects && atalho.needsHuman) {
             await tx.conversation.update({
               where: { id: conversationId },
@@ -907,7 +966,16 @@ async function runIncomingMessage(
     pedidoAgenda && agenda && operationalEffects
       ? await timer.step('agenda', () => executarPedido(agenda, contactId, pedidoAgenda))
       : null
-  const reply = resultadoAgenda?.reply ?? decision.reply
+  const replyDoCerebro = resultadoAgenda?.reply ?? decision.reply
+  // Opt-in: pergunta UMA vez, depois de resolver o pedido (consulta marcada ou o paciente
+  // encerrou com "obrigada"), nunca antes e nunca em transbordo.
+  const perguntarOptIn = deveFazerPerguntaOptIn({
+    habilitado: optInAtivo,
+    registro: registroOptIn,
+    pedidoResolvido: resultadoAgenda?.ok === true || pacienteEncerrouPedido(message),
+    precisaHumano: needsHuman,
+  })
+  const reply = perguntarOptIn ? `${replyDoCerebro}\n\n${OPT_IN_QUESTION}` : replyDoCerebro
   const confidence = decision.confidence
   const sources: ProcessIncomingMessageSource[] = retrieved.map((chunk) => ({
     fileName: chunk.fileName,
@@ -983,6 +1051,13 @@ async function runIncomingMessage(
           }
         }
 
+        if (perguntarOptIn) {
+          await tx.contactOptIn.upsert({
+            where: { tenantId_contactId: { tenantId: tenant.id, contactId } },
+            create: { tenantId: tenant.id, contactId, askedAt: new Date() },
+            update: {},
+          })
+        }
         const created = await tx.message.create({
           data: {
             conversationId,

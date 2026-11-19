@@ -78,3 +78,28 @@ describe('serializeTenantConfig', () => {
     expect(JSON.parse(serializeTenantConfig(config))).not.toHaveProperty('slug')
   })
 })
+
+describe('optIn no TenantConfig', () => {
+  const base = JSON.parse(
+    JSON.stringify({
+      businessProfile: { name: 'X', segment: 'y', tone: 'z' },
+      objectives: [],
+      knowledge: { sourceDir: 'k', sourcePolicy: 'answer_only_from_knowledge' },
+      tools: [],
+      guardrails: { neverPromise: [] },
+      escalationPolicy: { triggers: [], defaultReason: 'r', humanMessage: 'h' },
+    }),
+  )
+  it('ausente = desligado', () => {
+    expect(parseTenantConfig('x', base).optIn).toBeUndefined()
+  })
+  it('lê a flag e o limite diário', () => {
+    const c = parseTenantConfig('x', { ...base, optIn: { enabled: true, limiteDiario: 100 } })
+    expect(c.optIn).toEqual({ enabled: true, limiteDiario: 100 })
+  })
+  it('limite inválido é recusado', () => {
+    expect(() =>
+      parseTenantConfig('x', { ...base, optIn: { enabled: true, limiteDiario: 0 } }),
+    ).toThrow()
+  })
+})

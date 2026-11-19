@@ -171,3 +171,24 @@ validar o MVP simulado, implementar a segurança obrigatória do backlog, escolh
 o canal oficial (Meta direta ou BSP) e só então conectar um webhook que reutiliza
 `processIncomingMessage(...)` — com `contactId`/`tenant` resolvidos de forma
 confiável pelo canal autenticado.
+
+## 9. Opt-in e limite diário de reativação (DGC-348)
+
+**Opt-in:** a política da Meta (https://business.whatsapp.com/policy) pede opt-in para mensagem que a
+empresa inicia. Por isso `app/lib/optin.ts` só deixa `reativacao` e `followup_marketing` saírem
+para quem disse `sim`. `lembrete_consulta` de consulta marcada pelo próprio paciente sempre pode.
+Bloqueio e denúncia derrubam a qualidade do número principal da clínica.
+
+**Limite de conversas abertas pela empresa por dia (número novo):**
+
+- Fonte: https://developers.facebook.com/docs/whatsapp/messaging-limits/ — **consultada em 19/11/2026**.
+- Texto da fonte: "Newly created business portfolios have a messaging limit of 250" (usuários únicos de
+  WhatsApp contatados fora da janela de atendimento, em período móvel de 24 horas).
+- Sobe para 2.000 ao verificar o negócio (ou 2.000 mensagens entregues em 30 dias com templates de
+  alta qualidade); depois 10.000, 100.000 e ilimitado, automático (usar ao menos metade do limite
+  nos últimos 7 dias, com qualidade alta).
+- O limite é do portfólio de negócios da Meta, não de cada número. A página pode mudar: reconferir
+  antes do piloto.
+- No código: `optIn.limiteDiario` no JSON do tenant (`config/tenants/<slug>.json`) alimenta
+  `distribuirEmLotes`. Para número novo, use um valor **abaixo** de 250 (a página não diz qual
+  margem é segura; a escolha é da operação).
