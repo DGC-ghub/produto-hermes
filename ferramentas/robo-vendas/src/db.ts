@@ -7,6 +7,7 @@ export interface ClinicaRow {
 	primeira_em: number | null;
 	respondeu_em: number | null;
 	encerrada_em: number | null;
+	conversa_id: number | null;
 }
 
 export interface SaidaRow {
@@ -40,7 +41,7 @@ export class Store {
 			PRAGMA journal_mode = WAL;
 			CREATE TABLE IF NOT EXISTS clinicas (
 				id TEXT PRIMARY KEY, status TEXT NOT NULL, primeira_em INTEGER,
-				respondeu_em INTEGER, encerrada_em INTEGER
+				respondeu_em INTEGER, encerrada_em INTEGER, conversa_id INTEGER
 			);
 			CREATE TABLE IF NOT EXISTS envios (
 				chave TEXT PRIMARY KEY, clinica_id TEXT NOT NULL, tipo TEXT NOT NULL,
@@ -60,6 +61,8 @@ export class Store {
 			);
 			CREATE TABLE IF NOT EXISTS estado (chave TEXT PRIMARY KEY, valor TEXT NOT NULL);
 		`);
+		const cols = this.db.prepare("PRAGMA table_info(clinicas)").all() as { name: string }[];
+		if (!cols.some((c) => c.name === "conversa_id")) this.db.exec("ALTER TABLE clinicas ADD COLUMN conversa_id INTEGER");
 	}
 
 	fechar() {
@@ -168,6 +171,12 @@ export class Store {
 
 	pendencia(id: number): PendenciaRow | undefined {
 		return this.db.prepare("SELECT * FROM pendencias WHERE id = ?").get(id) as PendenciaRow | undefined;
+	}
+
+	pendenciaDaConversa(clinicaId: string): PendenciaRow | undefined {
+		return this.db
+			.prepare("SELECT * FROM pendencias WHERE clinica_id = ? AND status = 'aberta' ORDER BY id DESC LIMIT 1")
+			.get(clinicaId) as PendenciaRow | undefined;
 	}
 
 	pendenciasAbertas(): PendenciaRow[] {

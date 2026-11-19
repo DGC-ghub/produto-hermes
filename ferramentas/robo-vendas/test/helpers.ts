@@ -6,7 +6,8 @@ import { Store } from "../src/db.ts";
 import { ritmoDe } from "../src/config.ts";
 import { Robo } from "../src/robo.ts";
 import { protegerWhatsApp } from "../src/seguro.ts";
-import type { Botao, Campanha, Ctx, Ritmo, WhatsAppPort } from "../src/types.ts";
+import { canonico } from "../src/telefone.ts";
+import type { Botao, Campanha, ChatwootPort, Ctx, Ritmo, Status_, WhatsAppPort } from "../src/types.ts";
 
 export const MIN = 60_000;
 export const HORA = 60 * MIN;
@@ -30,11 +31,65 @@ export function waFalso() {
 	let on = true;
 	const port: WhatsAppPort = {
 		conectado: () => on,
+		estado: async () => (on ? { estado: "aberta" as const } : { estado: "fechada" as const, permanente: false }),
 		enviarTexto: async (jid, texto) => void enviados.push({ tipo: "texto", jid, texto }),
 		enviarVideo: async (jid, arquivo) => void enviados.push({ tipo: "video", jid, arquivo }),
 		enviarDocumento: async (jid, arquivo) => void enviados.push({ tipo: "doc", jid, arquivo }),
 	};
 	return { port, enviados, ligar: (v: boolean) => (on = v) };
+}
+
+export const conversaDe = (clinicaId: string) => 100 + campanha.clinicas.findIndex((c) => c.id === clinicaId);
+
+/** Chatwoot falso: guarda notas, etiquetas, atribuições e status. Nada de rede. */
+export function cwFalso() {
+	const etiquetas = new Map<number, Set<string>>();
+	const notas: { conversaId: number; texto: string }[] = [];
+	const atribuidas: number[] = [];
+	const status: { conversaId: number; status: Status_ }[] = [];
+	const estado = { existe: true, falha: false };
+	const set = (id: number) => etiquetas.get(id) ?? etiquetas.set(id, new Set()).get(id) as Set<string>;
+	const falha = () => {
+		if (estado.falha) throw new Error("chatwoot fora do ar");
+	};
+	const port: ChatwootPort = {
+		notaPrivada: async (conversaId, texto) => {
+			falha();
+			notas.push({ conversaId, texto });
+		},
+		etiquetas: async (id) => {
+			falha();
+			return [...set(id)];
+		},
+		adicionarEtiquetas: async (id, novas) => {
+			falha();
+			for (const n of novas) set(id).add(n);
+		},
+		atribuirGabriel: async (id) => {
+			falha();
+			atribuidas.push(id);
+		},
+		status: async (conversaId, st) => {
+			falha();
+			status.push({ conversaId, status: st });
+		},
+		acharConversa: async (tel) => {
+			if (!estado.existe) return null;
+			const n = canonico(tel);
+			const i = campanha.clinicas.findIndex((c) => c.telefone && canonico(c.telefone) === n);
+			return i < 0 ? null : 100 + i;
+		},
+	};
+	return {
+		port,
+		notas,
+		atribuidas,
+		status,
+		estado,
+		etiquetasDe: (id: string) => [...set(conversaDe(id))].sort(),
+		poeEtiqueta: (id: string, e: string) => set(conversaDe(id)).add(e),
+		tiraEtiqueta: (id: string, e: string) => set(conversaDe(id)).delete(e),
+	};
 }
 
 export interface MsgTg {
@@ -45,16 +100,15 @@ export interface MsgTg {
 export function criar(opts: { agora?: number; rand?: number; ritmo?: Partial<Ritmo>; caminho?: string } = {}) {
 	const relogio = { t: opts.agora ?? TER_9H };
 	const wa = waFalso();
+	const cw = cwFalso();
 	const tgMsgs: MsgTg[] = [];
 	const store = new Store(opts.caminho ?? ":memory:");
 	store.semear(campanha);
 	const ctx: Ctx = {
 		store,
 		wa: protegerWhatsApp(wa.port, campanha),
-		tg: {
-			enviar: async (texto, botoes) => void tgMsgs.push({ texto, botoes }),
-			enviarImagem: async (_p, legenda) => void tgMsgs.push({ texto: `[imagem] ${legenda}` }),
-		},
+		cw: cw.port,
+		tg: { enviar: async (texto, botoes) => void tgMsgs.push({ texto, botoes }) },
 		cal: calendarioReal(),
 		ritmo: { ...ritmoDe(false), ...opts.ritmo },
 		campanha,
@@ -69,6 +123,7 @@ export function criar(opts: { agora?: number; rand?: number; ritmo?: Partial<Rit
 		robo,
 		store,
 		wa,
+		cw,
 		tgMsgs,
 		relogio,
 		avancar: (ms: number) => void (relogio.t += ms),
@@ -87,7 +142,13 @@ export function criar(opts: { agora?: number; rand?: number; ritmo?: Partial<Rit
 		},
 		diz: (clinicaId: string, texto: string | null, tipo: "texto" | "audio" | "ligacao" = "texto") => {
 			const c = campanha.clinicas.find((x) => x.id === clinicaId);
-			return robo.aoReceber({ jid: `${c?.telefone}@s.whatsapp.net`, texto, tipo });
+			return robo.aoReceber({
+				jid: `${c?.telefone}@s.whatsapp.net`,
+				texto,
+				tipo,
+				conversaId: conversaDe(clinicaId),
+				etiquetas: cw.etiquetasDe(clinicaId),
+			});
 		},
 	};
 }

@@ -1,63 +1,73 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import QRCode from "qrcode";
+import { criarChatwoot } from "./adaptador-chatwoot.ts";
+import { criarEvolution } from "./adaptador-evolution.ts";
+import { criarTelegram, ligarRobo } from "./adaptador-telegram.ts";
 import { calendarioDe, carregarCampanha, ritmoDe } from "./config.ts";
 import { Store } from "./db.ts";
-import { criarTelegram, ligarRobo } from "./adaptador-telegram.ts";
-import { criarWhatsApp } from "./adaptador-whatsapp.ts";
 import { Robo } from "./robo.ts";
 import { protegerWhatsApp } from "./seguro.ts";
-import type { Ctx, WhatsAppPort } from "./types.ts";
+import type { Ctx } from "./types.ts";
+import { criarWebhook } from "./webhook.ts";
 
 const raiz = join(dirname(fileURLToPath(import.meta.url)), "..");
 const modoTeste = process.env.MODO_TESTE === "1";
 // A escala de tempo (1 dia = 2 min) só vale no modo teste: nunca em produção.
 const escala = modoTeste && process.env.ESCALA_TEMPO !== "0";
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const chatId = process.env.TELEGRAM_CHAT_ID;
-if (!token || !chatId) {
-	console.error("Faltam TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID (veja ~/.config/dgc-robo-vendas/env).");
-	process.exit(1);
+
+function exigir(nome: string): string {
+	const v = process.env[nome];
+	if (!v) {
+		console.error(`Falta ${nome} (veja ~/.config/dgc-atendimento/robo.env e o README).`);
+		process.exit(1);
+	}
+	return v;
 }
 
-const dados = process.env.DADOS_DIR ?? join(homedir(), ".local/share/dgc-robo-vendas");
-mkdirSync(join(dados, "wa-auth"), { recursive: true, mode: 0o700 });
+const chatId = exigir("TELEGRAM_CHAT_ID");
+const tgToken = exigir("TELEGRAM_BOT_TOKEN");
+const segredoWebhook = exigir("WEBHOOK_SECRET");
+const dados = process.env.DADOS_DIR ?? join(homedir(), ".local/share/dgc-atendimento/robo");
+mkdirSync(dados, { recursive: true, mode: 0o700 });
 const campanha = carregarCampanha(join(raiz, "config", modoTeste ? "campanha-teste.json" : "campanha.json"), modoTeste);
 const store = new Store(join(dados, modoTeste ? "funil-teste.sqlite" : "funil.sqlite"));
 store.semear(campanha);
 
-const { port: tg, bot } = criarTelegram(token, chatId);
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
-
-let robo: Robo;
-const wa = criarWhatsApp(join(dados, "wa-auth"), {
-	aoQr: (qr) => {
-		QRCode.toBuffer(qr, { width: 480 })
-			.then((png) => tg.enviarImagem(png, "Escaneie no WhatsApp Business > Aparelhos conectados."))
-			.catch((e) => log(`erro ao mandar o QR: ${(e as Error).message}`));
-	},
-	aoConexao: (ev) => void robo.aoConexao(ev).catch((e) => log(`conexão: ${(e as Error).message}`)),
-	aoMensagem: (e) => void robo.aoReceber(e).catch((err) => log(`entrada: ${(err as Error).message}`)),
+const { port: tg, bot } = criarTelegram(tgToken, chatId);
+const wa = criarEvolution({
+	url: process.env.EVOLUTION_URL ?? "http://127.0.0.1:8080",
+	chave: exigir("EVOLUTION_API_KEY"),
+	instancia: process.env.EVOLUTION_INSTANCIA ?? "dgc",
+});
+const cw = criarChatwoot({
+	url: process.env.CHATWOOT_URL ?? "http://127.0.0.1:3000",
+	token: exigir("CHATWOOT_BOT_TOKEN"),
+	conta: Number(process.env.CHATWOOT_CONTA ?? "1"),
+	gabrielId: Number(exigir("CHATWOOT_GABRIEL_ID")),
 });
 
 const ctx: Ctx = {
 	store,
-	wa: protegerWhatsApp(wa.port as WhatsAppPort, campanha),
+	wa: protegerWhatsApp(wa, campanha),
+	cw,
 	tg,
 	cal: calendarioDe(escala),
 	ritmo: ritmoDe(escala),
 	campanha,
 	agora: () => Date.now(),
 	rand: Math.random,
-	midiaDir: join(dados, "midia"),
+	midiaDir: process.env.MIDIA_DIR ?? join(dados, "..", "midia"),
 	log,
 };
-robo = new Robo(ctx, chatId);
+const robo = new Robo(ctx, chatId);
 ligarRobo(bot, robo);
 
-await wa.iniciar();
+const porta = Number(process.env.WEBHOOK_PORTA ?? "8090");
+criarWebhook(robo, segredoWebhook, log).listen(porta, "127.0.0.1", () => log(`webhook em 127.0.0.1:${porta}`));
+void robo.tick();
 setInterval(() => void robo.tick(), escala ? 5_000 : 60_000);
 log(`robô no ar (${modoTeste ? "MODO_TESTE" : "produção"}; ${store.estado("liberado") === "1" ? "liberado" : "travado"})`);
 bot.start({ onStart: () => log("telegram conectado") }).catch((e) => {

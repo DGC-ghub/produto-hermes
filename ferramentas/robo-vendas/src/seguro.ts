@@ -39,5 +39,6 @@ export function protegerWhatsApp(real: WhatsAppPort, campanha: Campanha): WhatsA
 			await real.enviarDocumento(jid, a, n);
 		},
 		conectado: () => real.conectado(),
+		estado: () => real.estado(),
 	};
 }

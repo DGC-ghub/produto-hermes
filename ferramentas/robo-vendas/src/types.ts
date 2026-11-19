@@ -34,26 +34,54 @@ export interface Botao {
 	dado: string;
 }
 
+/** Evolution API. Só envia o que o núcleo já validou contra campanha.json (ver seguro.ts). */
 export interface WhatsAppPort {
 	enviarTexto(jid: string, texto: string, opts?: { digitarMs?: number }): Promise<void>;
 	enviarVideo(jid: string, arquivo: string, legenda?: string): Promise<void>;
 	enviarDocumento(jid: string, arquivo: string, nomeArquivo: string): Promise<void>;
+	/** Último estado conhecido (atualizado por `estado()`). */
 	conectado(): boolean;
+	/** Consulta a Evolution. `permanente` = deslogado ou banido (401/403). */
+	estado(): Promise<{ estado: "aberta" } | { estado: "fechada"; permanente: boolean; motivo?: string }>;
+}
+
+export type Status_ = "open" | "pending" | "resolved";
+
+/** Chatwoot (API do agent bot). Nada aqui escreve para a clínica, exceto nota privada. */
+export interface ChatwootPort {
+	notaPrivada(conversaId: number, texto: string): Promise<void>;
+	etiquetas(conversaId: number): Promise<string[]>;
+	/** Soma as etiquetas às que já existem (a API do Chatwoot troca o conjunto inteiro). */
+	adicionarEtiquetas(conversaId: number, novas: string[]): Promise<void>;
+	atribuirGabriel(conversaId: number): Promise<void>;
+	status(conversaId: number, status: Status_): Promise<void>;
+	/** Conversa do contato com esse telefone (a integração da Evolution a cria no 1º envio). */
+	acharConversa(telefone: string): Promise<number | null>;
 }
 
 export interface TelegramPort {
 	enviar(texto: string, botoes?: Botao[][]): Promise<void>;
-	enviarImagem(png: Buffer, legenda: string): Promise<void>;
 }
 
 export type TipoMidia = "texto" | "audio" | "ligacao" | "imagem" | "documento" | "outro";
 
+/** Mensagem de entrada, já traduzida do webhook do Chatwoot. */
 export interface Entrada {
 	jid: string;
 	texto: string | null;
 	tipo: TipoMidia;
+	conversaId: number;
+	/** Etiquetas da conversa no momento do evento. */
+	etiquetas?: string[];
 	grupo?: boolean;
-	deMim?: boolean;
+}
+
+/** Mensagem de saída vista no webhook (para saber se um humano respondeu). */
+export interface SaidaVista {
+	conversaId: number;
+	/** true = escrita por pessoa (Gabriel/Danilo), não pelo robô nem pelo espelho da Evolution. */
+	humano: boolean;
+	privada: boolean;
 }
 
 export interface Ritmo {
@@ -86,6 +114,7 @@ export interface Calendario {
 export interface Ctx {
 	store: import("./db.ts").Store;
 	wa: WhatsAppPort;
+	cw: ChatwootPort;
 	tg: TelegramPort;
 	cal: Calendario;
 	ritmo: Ritmo;

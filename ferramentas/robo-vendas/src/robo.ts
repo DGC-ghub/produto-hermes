@@ -1,10 +1,10 @@
 import { dataBR } from "./calendario.ts";
 import { classificar, type Categoria } from "./classificador.ts";
-import type { ClinicaRow, PendenciaRow } from "./db.ts";
-import { aleatorio, bloqueado, clinicaCfg, enviarKit, enviarTexto, enviarUnico } from "./enviador.ts";
+import type { ClinicaRow } from "./db.ts";
+import { aleatorio, bloqueado, clinicaCfg, conversaDe, enviarKit, enviarTexto, enviarUnico, marcar, podeEscrever } from "./enviador.ts";
 import { jidPermitido } from "./seguro.ts";
 import { canonico, mascarar } from "./telefone.ts";
-import type { Botao, ClinicaConfig, Ctx, Entrada } from "./types.ts";
+import type { Botao, ClinicaConfig, Ctx, Entrada, SaidaVista } from "./types.ts";
 
 export type EventoTelegram =
 	| { tipo: "comando"; nome: string; arg?: string }
@@ -46,27 +46,37 @@ export class Robo {
 		return this.ctx.tg.enviar(texto, botoes);
 	}
 
-	private rascunho(categoria: Categoria): string | null {
+	private rascunho(categoria: string): string | null {
 		const base = this.ctx.campanha.textos.rascunhos[categoria] ?? null;
 		if (!base) return null;
 		const [d1 = "amanhã", d2 = "depois"] = this.ctx.cal.proximosDiasUteis(this.ctx.agora(), 2);
 		return base.replaceAll("{dia1}", d1).replaceAll("{dia2}", d2);
 	}
 
-	// ---------- mensagens que chegam da clínica ----------
+	// ---------- mensagens que chegam da clínica (webhook do agent bot) ----------
 
 	async aoReceber(e: Entrada): Promise<void> {
 		const { ctx } = this;
-		if (e.grupo || e.deMim) return;
+		if (e.grupo) return;
 		const cfg = this.cfgPorTelefone(e.jid);
 		if (!cfg) {
-			ctx.log("mensagem de contato fora da campanha: ignorada");
+			// Fora da campanha: o robô não responde e tira a conversa de `pending`, sem atribuir.
+			ctx.log("conversa de contato fora da campanha: passada a open, sem resposta");
+			await this.cw(() => ctx.cw.status(e.conversaId, "open"));
 			return;
 		}
 		const row = ctx.store.clinica(cfg.id);
+		if (row.conversa_id !== e.conversaId) ctx.store.atualizarClinica(cfg.id, { conversa_id: e.conversaId });
 		if (row.respondeu_em === null) ctx.store.atualizarClinica(cfg.id, { respondeu_em: ctx.agora() });
-		if (row.status === "manual") return;
+		const etq = e.etiquetas ?? [];
 		const mensagem = e.texto ?? ROTULO_MIDIA[e.tipo] ?? "[mensagem sem texto]";
+		// Cada etiqueta de parada vale só nesta conversa; o robô não escreve nada.
+		if (etq.includes("com-gabriel") || etq.includes("robo-pausado") || etq.includes("nao-quer")) {
+			ctx.store.cancelarSaidasDaClinica(cfg.id);
+			await this.cw(() => ctx.cw.status(e.conversaId, "open"));
+			return;
+		}
+		await marcar(ctx, cfg.id, ["respondeu"]);
 		if (row.status === "parou") {
 			await this.escalar(cfg, "outro", `${mensagem}\n(Esta clínica pediu para parar. O robô não responde.)`, false);
 			return;
@@ -90,10 +100,35 @@ export class Robo {
 				executar_apos: ctx.agora(),
 				imediata: 1,
 			});
-			await this.tg(`${cfg.nome} perguntou se é robô: "${mensagem}". Respondi com a frase de honestidade. Assuma a conversa.`);
 			await this.executarSaidas();
+			await this.escalar(cfg, "robo", mensagem, false);
+			await this.tg(`${cfg.nome} perguntou se é robô: "${mensagem}". Respondi com a frase de honestidade e passei a conversa para você, no Chatwoot.`);
 		} else {
 			await this.escalar(cfg, r.categoria, mensagem, true);
+		}
+	}
+
+	/** Um humano (Gabriel ou Danilo) escreveu na conversa: encerra o lembrete das 4h. */
+	async aoSaida(s: SaidaVista): Promise<void> {
+		if (!s.humano || s.privada) return;
+		const { ctx } = this;
+		const linha = ctx.store.clinicas().find((c) => c.conversa_id === s.conversaId);
+		if (!linha) return;
+		const p = ctx.store.pendenciaDaConversa(linha.id);
+		if (!p) return;
+		// O espelho da mensagem que o próprio robô acabou de mandar não conta.
+		if (ctx.agora() - p.criada_em < 60_000 && p.categoria === "robo") return;
+		ctx.store.atualizarPendencia(p.id, { status: "enviada" });
+	}
+
+	/** Chamada ao Chatwoot que não deve derrubar o fluxo: registra e segue. */
+	private async cw(acao: () => Promise<void>): Promise<boolean> {
+		try {
+			await acao();
+			return true;
+		} catch (e) {
+			this.ctx.log(`chatwoot: ${(e as Error).message}`);
+			return false;
 		}
 	}
 
@@ -112,28 +147,33 @@ export class Robo {
 		});
 	}
 
-	private async escalar(cfg: ClinicaConfig, categoria: Categoria, mensagem: string, comBotoes: boolean) {
+	/**
+	 * Passa ao humano, sem escrever à clínica: nota privada com o rascunho,
+	 * etiqueta `com-gabriel` (quando `parar`), atribuição ao Gabriel e status `open`.
+	 */
+	private async escalar(cfg: ClinicaConfig, categoria: Categoria | "robo", mensagem: string, marcarGabriel: boolean) {
 		const { ctx } = this;
+		const row = ctx.store.clinica(cfg.id);
+		const conversa = row.conversa_id ?? (await conversaDe(ctx, cfg.id));
 		const rascunho = this.rascunho(categoria);
-		const id = ctx.store.criarPendencia({
-			clinica_id: cfg.id,
-			categoria,
-			mensagem,
-			rascunho,
-			agora: ctx.agora(),
-		});
-		const texto = `Pendência #${id}: ${cfg.nome} (${categoria})\n\nA clínica disse:\n${mensagem}\n\nRascunho:\n${rascunho ?? "(sem rascunho: use Editar e me mande o texto)"}`;
-		await this.tg(texto, comBotoes ? this.botoesPendencia(id) : undefined);
-	}
-
-	private botoesPendencia(id: number): Botao[][] {
-		return [
-			[
-				{ texto: "Enviar", dado: `env:${id}` },
-				{ texto: "Editar", dado: `edi:${id}` },
-				{ texto: "Eu respondo", dado: `eu:${id}` },
-			],
-		];
+		if (marcarGabriel || categoria === "robo") {
+			ctx.store.criarPendencia({ clinica_id: cfg.id, categoria, mensagem, rascunho, agora: ctx.agora() });
+		}
+		if (conversa === null) {
+			await this.tg(`${cfg.nome} (${categoria}): não achei a conversa no Chatwoot. A clínica disse: ${mensagem}`);
+			return;
+		}
+		const nota = [
+			`Passei para você: ${categoria}.`,
+			"",
+			`A clínica disse: ${mensagem}`,
+			"",
+			rascunho ? `Rascunho (edite e envie por aqui):\n${rascunho}` : "Sem rascunho para este caso.",
+		].join("\n");
+		await this.cw(() => ctx.cw.notaPrivada(conversa, nota));
+		if (marcarGabriel || categoria === "robo") await this.cw(() => ctx.cw.adicionarEtiquetas(conversa, ["com-gabriel"]));
+		await this.cw(() => ctx.cw.atribuirGabriel(conversa));
+		await this.cw(() => ctx.cw.status(conversa, "open"));
 	}
 
 	// ---------- agendador (roda a cada minuto, lê tudo do SQLite) ----------
@@ -141,7 +181,9 @@ export class Robo {
 	async tick(): Promise<void> {
 		const { ctx } = this;
 		try {
+			await this.verificarConexao();
 			await this.executarSaidas();
+			await this.sincronizarEtiquetas();
 			await this.enviarFrios();
 			await this.lembrarPendencias();
 			await this.resumoDasOito();
@@ -156,29 +198,59 @@ export class Robo {
 		if (bloqueado(ctx) || !ctx.wa.conectado()) return;
 		for (const s of ctx.store.saidasVencidas(ctx.agora())) {
 			if (!s.imediata && !ctx.cal.janelaResposta(ctx.agora())) continue;
-			const row = ctx.store.clinica(s.clinica_id);
 			try {
+				// Etiqueta de parada na conversa: o robô desiste desta saída (o "pare" sai mesmo com `nao-quer`; a frase do robô, com `com-gabriel`).
+				const ignorar = s.tipo === "pare" ? ["nao-quer"] : s.tipo === "robo" ? ["com-gabriel"] : [];
+				const pode = await podeEscrever(ctx, s.clinica_id, ignorar);
+				if (pode === "parado") ctx.store.concluirSaida(s.id);
+				if (pode !== "ok") continue;
 				if (s.tipo === "kit") {
 					if (await enviarKit(ctx, s.clinica_id)) {
 						ctx.store.atualizarClinica(s.clinica_id, { status: "kit_enviado" });
 						ctx.store.concluirSaida(s.id);
+						await marcar(ctx, s.clinica_id, ["kit-enviado"]);
 						await this.tg(`${this.nome(s.clinica_id)}: kit enviado (texto, vídeo e PDF).`);
 					}
 				} else {
-					if (s.tipo === "manual" && row.status === "parou") {
-						ctx.store.concluirSaida(s.id);
-						await this.tg(`${this.nome(s.clinica_id)} pediu para parar: não enviei a mensagem.`);
-						continue;
-					}
 					const texto = s.texto ?? "";
 					const ok = await enviarUnico(ctx, s.chave, s.clinica_id, s.tipo, () => enviarTexto(ctx, s.clinica_id, texto));
 					if (ok || ctx.store.temEnvio(s.chave)) {
 						ctx.store.concluirSaida(s.id);
-						if (s.tipo === "manual") await this.tg(`Enviado para ${this.nome(s.clinica_id)}.`);
+						if (s.tipo === "pare") {
+							const conversa = await conversaDe(ctx, s.clinica_id);
+							await marcar(ctx, s.clinica_id, ["nao-quer"]);
+							if (conversa !== null) await this.cw(() => ctx.cw.status(conversa, "resolved"));
+						}
 					}
 				}
 			} catch (e) {
 				ctx.log(`saída ${s.chave} falhou: ${(e as Error).message}`);
+			}
+		}
+	}
+
+	/** Consulta a Evolution a cada ciclo (1 min): queda curta, queda longa ou bloqueio. */
+	private async verificarConexao(): Promise<void> {
+		try {
+			await this.aoConexao(await this.ctx.wa.estado());
+		} catch (e) {
+			this.ctx.log(`não consegui ler o estado da Evolution: ${(e as Error).message}`);
+			await this.aoConexao({ estado: "fechada", permanente: false });
+		}
+	}
+
+	/** Reaplica as etiquetas do funil que ainda não entraram (a conversa pode nascer depois do envio). */
+	private async sincronizarEtiquetas(): Promise<void> {
+		const { ctx } = this;
+		for (const r of ctx.store.clinicas()) {
+			const quer: [string, boolean][] = [
+				["1a-msg", ctx.store.temEnvio(`${r.id}:primeira`)],
+				["kit-enviado", r.status === "kit_enviado"],
+			];
+			for (const [etq, deve] of quer) {
+				const chave = `etq:${r.id}:${etq}`;
+				if (!deve || ctx.store.estado(chave) === "1") continue;
+				if (await marcar(ctx, r.id, [etq])) ctx.store.definirEstado(chave, "1");
 			}
 		}
 	}
@@ -199,6 +271,7 @@ export class Robo {
 			const d7 = ctx.cal.somarDiasUteis(r.primeira_em, 7);
 			const d3 = ctx.cal.somarDiasUteis(r.primeira_em, 3);
 			if (agora >= d7 && !ctx.store.temEnvio(`${c.id}:d7`)) {
+				if ((await podeEscrever(ctx, c.id)) !== "ok") continue;
 				if (await enviarUnico(ctx, `${c.id}:d7`, c.id, "d7", () => enviarTexto(ctx, c.id, c.ultimoD7))) {
 					ctx.store.atualizarClinica(c.id, { status: "encerrado", encerrada_em: agora });
 					this.marcarFrio();
@@ -206,6 +279,7 @@ export class Robo {
 				return;
 			}
 			if (agora >= d3 && agora < d7 && !ctx.store.temEnvio(`${c.id}:d3`)) {
+				if ((await podeEscrever(ctx, c.id)) !== "ok") continue;
 				if (await enviarUnico(ctx, `${c.id}:d3`, c.id, "d3", () => enviarTexto(ctx, c.id, c.lembreteD3))) this.marcarFrio();
 				return;
 			}
@@ -215,6 +289,7 @@ export class Robo {
 		if (ctx.store.primeirasDoDia(ctx.cal.diaId(agora)) >= ctx.ritmo.maxPrimeirasPorDia) return;
 		const proxima = await this.proximaPrimeira(ordenadas, linhas);
 		if (!proxima) return;
+		if ((await podeEscrever(ctx, proxima.id)) !== "ok") return;
 		const ok = await enviarUnico(ctx, `${proxima.id}:primeira`, proxima.id, "primeira", () =>
 			enviarTexto(ctx, proxima.id, proxima.primeira),
 		);
@@ -274,8 +349,7 @@ export class Robo {
 			if (ctx.cal.minutosComerciais(p.ultimo_aviso_em, agora) >= ctx.ritmo.lembretePendenciaMin) {
 				ctx.store.atualizarPendencia(p.id, { ultimo_aviso_em: agora });
 				await this.tg(
-					`Lembrete: a pendência #${p.id} (${this.nome(p.clinica_id)}) segue aberta. Não enviei nada. Use os botões da mensagem original ou /funil.`,
-					this.botoesPendencia(p.id),
+					`Lembrete: ${this.nome(p.clinica_id)} (${p.categoria}) espera a sua resposta no Chatwoot há mais de 4 horas comerciais. Não enviei nada.`,
 				);
 			}
 		}
@@ -295,8 +369,8 @@ export class Robo {
 			this.funil(),
 			"",
 			pend.length
-				? `Pendências suas:\n${pend.map((p) => `#${p.id} ${this.nome(p.clinica_id)} (${p.categoria})`).join("\n")}`
-				: "Pendências suas: nenhuma.",
+				? `Conversas com você:\n${pend.map((p) => `#${p.id} ${this.nome(p.clinica_id)} (${p.categoria})`).join("\n")}`
+				: "Conversas com você: nenhuma.",
 			"",
 			saiHoje.length ? `Sai hoje:\n${saiHoje.join("\n")}` : "Sai hoje: nada.",
 		];
@@ -339,27 +413,9 @@ export class Robo {
 
 	async aoTelegram(chatId: string, ev: EventoTelegram): Promise<void> {
 		if (String(chatId) !== String(this.chatId)) return;
-		const { ctx } = this;
 		if (ev.tipo === "comando") return this.comando(ev.nome, ev.arg);
 		if (ev.tipo === "botao") return this.botao(ev.dado);
-		const editando = ctx.store.estado("editando");
-		if (editando === null) {
-			await this.tg("Use os botões das mensagens ou os comandos: /podeir /pausar /retomar /funil /status.");
-			return;
-		}
-		const p = ctx.store.pendencia(Number(editando));
-		ctx.store.definirEstado("editando", null);
-		if (!p || p.status !== "aberta") {
-			await this.tg("Essa pendência já foi tratada.");
-			return;
-		}
-		ctx.store.atualizarPendencia(p.id, { texto_final: ev.texto });
-		await this.tg(`Prévia para ${this.nome(p.clinica_id)}:\n\n${ev.texto}`, [
-			[
-				{ texto: "Enviar", dado: `env:${p.id}` },
-				{ texto: "Eu respondo", dado: `eu:${p.id}` },
-			],
-		]);
+		await this.tg("Use os comandos: /podeir /pausar /retomar /funil /status.");
 	}
 
 	private async comando(nome: string, arg?: string) {
@@ -427,40 +483,6 @@ export class Robo {
 			ctx.store.definirEstado("leva2", "recusada");
 			return this.tg("Ok, a 2ª leva não começa.");
 		}
-		const p = ctx.store.pendencia(Number(arg));
-		if (!p) return this.tg("Não achei essa pendência.");
-		if (p.status !== "aberta") return this.tg(`A pendência #${p.id} já foi tratada.`);
-		if (acao === "edi") {
-			ctx.store.definirEstado("editando", String(p.id));
-			return this.tg(`Mande agora o texto para ${this.nome(p.clinica_id)}. Eu mostro a prévia antes de enviar.`);
-		}
-		if (acao === "eu") {
-			ctx.store.atualizarPendencia(p.id, { status: "manual" });
-			ctx.store.atualizarClinica(p.clinica_id, { status: "manual" });
-			ctx.store.cancelarSaidasDaClinica(p.clinica_id);
-			return this.tg(`${this.nome(p.clinica_id)} agora é com você. Não escrevo mais para ela.`);
-		}
-		if (acao === "env") return this.enviarPendencia(p);
-	}
-
-	private async enviarPendencia(p: PendenciaRow) {
-		const { ctx } = this;
-		const texto = p.texto_final ?? p.rascunho;
-		if (!texto) return this.tg("Esta pendência não tem rascunho. Toque em Editar e me mande o texto.");
-		ctx.store.agendarSaida({
-			chave: `pend:${p.id}`,
-			clinica_id: p.clinica_id,
-			tipo: "manual",
-			texto,
-			executar_apos: ctx.agora(),
-			imediata: 1,
-		});
-		ctx.store.atualizarPendencia(p.id, { status: "enviada" });
-		if (bloqueado(ctx)) {
-			await this.tg("O robô está pausado ou travado. A mensagem sai quando você liberar ou retomar.");
-			return;
-		}
-		await this.executarSaidas();
 	}
 
 	// ---------- textos para o Telegram ----------

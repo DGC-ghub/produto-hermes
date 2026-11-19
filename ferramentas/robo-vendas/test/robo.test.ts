@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { carregarCampanha } from "../src/config.ts";
 import { Store } from "../src/db.ts";
 import { jidPermitido, protegerWhatsApp } from "../src/seguro.ts";
-import { campanha, criar, jidDe, MIN, textos, waFalso } from "./helpers.ts";
+import { traduzir } from "../src/webhook.ts";
+import { campanha, conversaDe, criar, jidDe, MIN, textos, waFalso } from "./helpers.ts";
 
 const ordem1 = ["amo", "interface", "villaca", "expodonto", "sencis"];
 const destinos = (e: ReturnType<typeof criar>["wa"]["enviados"]) => textos(e).map((x) => x.jid);
@@ -201,84 +202,165 @@ describe("respostas da clínica", () => {
 		expect(t.wa.enviados.filter((e) => e.jid === jidDe("amo"))).toHaveLength(0);
 	});
 
-	it("é robô?: responde na hora com a frase de honestidade e avisa o Gabriel", async () => {
+	it("é robô?: manda a frase honesta, passa ao Gabriel e avisa no Telegram", async () => {
 		const t = await comAmoAguardando();
 		await t.diz("amo", "isso é um robô?");
 		expect(textos(t.wa.enviados).map((e) => e.texto)).toEqual(["Sou o assistente do Gabriel; ele mesmo te responde já já."]);
 		expect(t.tgMsgs.at(-1)?.texto).toContain("perguntou se é robô");
+		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+		expect(t.cw.atribuidas).toContain(conversaDe("amo"));
+		expect(t.cw.status.at(-1)).toEqual({ conversaId: conversaDe("amo"), status: "open" });
 	});
 
-	it("preço: não responde sozinho; escala com rascunho e 3 botões", async () => {
+	it("preço: nada vai à clínica; nota privada com rascunho, etiqueta, atribuição e open", async () => {
 		const t = await comAmoAguardando();
 		await t.diz("amo", "Quanto custa?");
-		const m = t.tgMsgs.at(-1);
 		await t.rodar(60);
 		expect(t.wa.enviados.filter((e) => e.jid === jidDe("amo"))).toHaveLength(0);
-		expect(m?.texto).toContain("Amo Odontologia");
-		expect(m?.texto).toContain("Quanto custa?");
-		expect(m?.texto).toContain("R$ 990");
-		expect(m?.botoes?.[0]?.map((b) => b.texto)).toEqual(["Enviar", "Editar", "Eu respondo"]);
+		const nota = t.cw.notas.at(-1);
+		expect(nota?.conversaId).toBe(conversaDe("amo"));
+		expect(nota?.texto).toContain("Quanto custa?");
+		expect(nota?.texto).toContain("R$ 990");
+		expect(nota?.texto).toMatch(/quarta às 10h/);
+		expect(t.cw.etiquetasDe("amo")).toEqual(expect.arrayContaining(["com-gabriel", "respondeu"]));
+		expect(t.cw.atribuidas).toEqual([conversaDe("amo")]);
+		expect(t.cw.status.at(-1)?.status).toBe("open");
+		expect(t.store.pendenciasAbertas()).toHaveLength(1);
 	});
 
-	it("áudio e ligação escalam com o rótulo", async () => {
+	it("áudio e ligação escalam com o rótulo, sem mensagem à clínica", async () => {
 		const t = await comAmoAguardando();
 		await t.diz("amo", null, "audio");
-		expect(t.tgMsgs.at(-1)?.texto).toContain("[áudio]");
-		await t.diz("amo", null, "ligacao");
-		expect(t.tgMsgs.at(-1)?.texto).toContain("[ligação perdida]");
+		expect(t.cw.notas.at(-1)?.texto).toContain("[áudio]");
+		await t.diz("interface", null, "ligacao"); // na mesma conversa, com com-gabriel, o robô já fica quieto
+		expect(t.cw.notas.at(-1)?.texto).toContain("[ligação perdida]");
 		expect(t.wa.enviados).toHaveLength(0);
 	});
 
-	it("mensagem depois do kit vai para o Gabriel", async () => {
+	it("mensagem depois do kit vai para o Gabriel; o kit ganha a etiqueta", async () => {
 		const t = await comAmoAguardando();
 		await t.diz("amo", "sim");
 		await t.rodar(10);
-		t.tgMsgs.length = 0;
+		expect(t.cw.etiquetasDe("amo")).toContain("kit-enviado");
+		const antes = t.cw.notas.length;
+		t.wa.enviados.length = 0;
 		await t.diz("amo", "sim, gostei");
-		expect(t.tgMsgs).toHaveLength(1);
-		expect(t.tgMsgs[0]?.botoes).toBeDefined();
+		expect(t.cw.notas).toHaveLength(antes + 1);
+		expect(t.wa.enviados).toHaveLength(0);
+	});
+
+	it("'não' põe nao-quer e resolve a conversa depois de agradecer", async () => {
+		const t = await comAmoAguardando();
+		await t.diz("amo", "pare, por favor");
+		await t.rodar(10);
+		expect(t.cw.etiquetasDe("amo")).toContain("nao-quer");
+		expect(t.cw.status.at(-1)).toEqual({ conversaId: conversaDe("amo"), status: "resolved" });
+	});
+
+	it("1ª mensagem ganha a etiqueta 1a-msg, mesmo se a conversa só aparecer depois", async () => {
+		const t = criar();
+		t.cw.estado.existe = false;
+		await t.liberar();
+		await t.rodar(3);
+		expect(t.cw.etiquetasDe("amo")).not.toContain("1a-msg");
+		t.cw.estado.existe = true;
+		await t.rodar(1);
+		expect(t.cw.etiquetasDe("amo")).toContain("1a-msg");
 	});
 });
 
-describe("botões da escalação", () => {
-	async function comPreco() {
-		const t = criar();
+describe("conversa no Chatwoot: etiquetas e fora da campanha", () => {
+	async function comAmoAguardando() {
+		const t = criar({ ritmo: { esperaRespostaMinMs: MIN, esperaRespostaMaxMs: MIN } });
 		await t.liberar();
 		await t.rodar(1);
 		t.wa.enviados.length = 0;
-		await t.diz("amo", "Quanto custa?");
 		return t;
 	}
 
-	it("Enviar manda o rascunho na hora, com dias úteis sugeridos", async () => {
-		const t = await comPreco();
-		await t.gabriel({ tipo: "botao", dado: "env:1" });
-		const e = textos(t.wa.enviados);
-		expect(e).toHaveLength(1);
-		expect(e[0]?.texto).toContain("R$ 990");
-		expect(e[0]?.texto).toMatch(/quarta às 10h/);
-		await t.gabriel({ tipo: "botao", dado: "env:1" }); // toque duplicado não repete
-		expect(textos(t.wa.enviados)).toHaveLength(1);
-	});
-
-	it("Editar: mostra prévia e só envia quando tocar Enviar de novo", async () => {
-		const t = await comPreco();
-		await t.gabriel({ tipo: "botao", dado: "edi:1" });
-		await t.gabriel({ tipo: "texto", texto: "Texto novo do Gabriel" });
-		expect(t.tgMsgs.at(-1)?.texto).toContain("Prévia");
+	it("conversa de quem não está na campanha: open, sem resposta e sem nota", async () => {
+		const t = criar();
+		await t.liberar();
+		t.wa.enviados.length = 0;
+		await t.robo.aoReceber({ jid: "5511999999999@s.whatsapp.net", texto: "sim", tipo: "texto", conversaId: 777 });
 		expect(t.wa.enviados).toHaveLength(0);
-		await t.gabriel({ tipo: "botao", dado: "env:1" });
-		expect(textos(t.wa.enviados).map((x) => x.texto)).toEqual(["Texto novo do Gabriel"]);
+		t.store.definirEstado("pausado", "1"); // só a conversa de fora é o que importa daqui para a frente
+		await t.rodar(30);
+		expect(t.cw.status).toEqual([{ conversaId: 777, status: "open" }]);
+		expect(t.cw.notas).toHaveLength(0);
+		expect(t.cw.atribuidas).toHaveLength(0);
+		expect(t.wa.enviados).toHaveLength(0);
+		await t.robo.aoReceber({ jid: "123@g.us", texto: "sim", tipo: "texto", conversaId: 778, grupo: true });
+		expect(t.cw.status).toHaveLength(1);
 	});
 
-	it("Eu respondo: clínica vira 'manual' e o robô para de escrever", async () => {
-		const t = await comPreco();
-		await t.gabriel({ tipo: "botao", dado: "eu:1" });
-		expect(t.store.clinica("amo").status).toBe("manual");
+	for (const etq of ["robo-pausado", "com-gabriel", "nao-quer"]) {
+		it(`com a etiqueta ${etq} o robô não escreve nada nem anota`, async () => {
+			const t = await comAmoAguardando();
+			t.cw.poeEtiqueta("amo", etq);
+			await t.diz("amo", "sim");
+			await t.diz("amo", "Quanto custa?");
+			await t.rodar(30);
+			expect(t.wa.enviados.filter((e) => e.jid === jidDe("amo"))).toHaveLength(0);
+			expect(t.cw.notas).toHaveLength(0);
+		});
+	}
+
+	it("etiqueta posta depois do 'sim' cancela o kit que estava na fila", async () => {
+		const t = await comAmoAguardando();
 		await t.diz("amo", "sim");
-		t.irPara("2026-11-30T09:00:00");
-		await t.rodar(8 * 60);
-		expect(t.wa.enviados.filter((e) => e.jid === jidDe("amo"))).toHaveLength(0);
+		t.cw.poeEtiqueta("amo", "robo-pausado");
+		await t.rodar(10);
+		expect(t.wa.enviados).toHaveLength(0);
+	});
+
+	it("robo-pausado na conversa bloqueia também o lembrete D3, só dessa clínica", async () => {
+		const t = criar({ ritmo: { intervaloMinMs: 0, intervaloMaxMs: 0 } });
+		await t.liberar();
+		await t.rodar(10);
+		t.wa.enviados.length = 0;
+		t.cw.poeEtiqueta("villaca", "robo-pausado");
+		t.irPara("2026-11-23T09:00:00");
+		await t.rodar(10 * 60);
+		const alvos = textos(t.wa.enviados).map((x) => x.jid);
+		expect(alvos).toHaveLength(4);
+		expect(alvos).not.toContain(jidDe("villaca"));
+	});
+
+	it("se o Chatwoot cair, o robô não escreve e tenta de novo depois", async () => {
+		const t = await comAmoAguardando();
+		await t.diz("amo", "sim");
+		t.cw.estado.falha = true;
+		await t.rodar(10);
+		expect(t.wa.enviados).toHaveLength(0);
+		t.cw.estado.falha = false;
+		await t.rodar(2);
+		expect(t.wa.enviados.map((e) => e.tipo)).toEqual(["texto", "video", "doc"]);
+	});
+
+	it("lembrete das 4h só vale sem resposta humana: se o Gabriel escreveu, não lembra", async () => {
+		const t = criar();
+		t.irPara("2026-11-18T17:00:00");
+		await t.diz("sencis", "Quanto custa?");
+		await t.robo.aoSaida({ conversaId: conversaDe("sencis"), humano: true, privada: false });
+		t.irPara("2026-11-19T12:00:00");
+		await t.robo.tick();
+		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete"))).toHaveLength(0);
+	});
+
+	it("4 horas comerciais sem resposta humana: lembra no Telegram e não envia nada", async () => {
+		const t = criar();
+		t.irPara("2026-11-18T17:00:00"); // quarta: 1h comercial na quarta + 3h na quinta
+		await t.diz("sencis", "Quanto custa?");
+		await t.robo.aoSaida({ conversaId: conversaDe("sencis"), humano: false, privada: false });
+		await t.robo.aoSaida({ conversaId: conversaDe("sencis"), humano: true, privada: true }); // nota privada não conta
+		t.irPara("2026-11-19T11:59:00");
+		await t.robo.tick();
+		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete"))).toHaveLength(0);
+		t.irPara("2026-11-19T12:00:00");
+		await t.robo.tick();
+		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete")).length).toBeGreaterThan(0);
+		expect(textos(t.wa.enviados)).toHaveLength(0);
 	});
 
 	it("o robô só obedece ao chat do Gabriel", async () => {
@@ -289,19 +371,43 @@ describe("botões da escalação", () => {
 		expect(t.store.estado("liberado")).toBeNull();
 		expect(t.tgMsgs).toHaveLength(0);
 	});
+});
 
-	it("4 horas comerciais sem toque: lembra o Gabriel e não envia nada", async () => {
-		const t = criar();
-		t.irPara("2026-11-18T17:00:00"); // quarta: 1h comercial na quarta + 3h na quinta
-		await t.diz("sencis", "Quanto custa?");
-		t.irPara("2026-11-19T11:59:00");
-		await t.robo.tick();
-		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete"))).toHaveLength(0);
-		t.irPara("2026-11-19T12:00:00");
-		await t.robo.tick();
-		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete")).length).toBeGreaterThan(0);
-		expect(textos(t.wa.enviados)).toHaveLength(0);
-		expect(t.store.pendenciasAbertas().length).toBeGreaterThan(0);
+describe("webhook do Chatwoot", () => {
+	const base = {
+		event: "message_created",
+		message_type: "incoming",
+		content: "Quanto custa?",
+		conversation: { id: 55, labels: ["1a-msg"], meta: { sender: { phone_number: "+5562999585353" } } },
+	};
+
+	it("traduz mensagem de entrada com telefone, conversa e etiquetas", () => {
+		const t = traduzir(base);
+		expect(t?.entrada).toEqual({
+			jid: "5562999585353@s.whatsapp.net",
+			texto: "Quanto custa?",
+			tipo: "texto",
+			conversaId: 55,
+			etiquetas: ["1a-msg"],
+		});
+	});
+
+	it("anexo vira áudio, imagem ou documento, sem texto", () => {
+		expect(traduzir({ ...base, content: null, attachments: [{ file_type: "audio" }] })?.entrada?.tipo).toBe("audio");
+		expect(traduzir({ ...base, content: "", attachments: [{ file_type: "image" }] })?.entrada?.tipo).toBe("imagem");
+		expect(traduzir({ ...base, attachments: [{ file_type: "file" }] })?.entrada?.texto).toBeNull();
+	});
+
+	it("mensagem de saída nunca vira entrada (sem loop): só diz se foi gente", () => {
+		const humano = traduzir({ ...base, message_type: "outgoing", sender: { type: "user" } });
+		expect(humano?.entrada).toBeUndefined();
+		expect(humano?.saida).toEqual({ conversaId: 55, humano: true, privada: false });
+		expect(traduzir({ ...base, message_type: "outgoing", sender: { type: "agent_bot" } })?.saida?.humano).toBe(false);
+	});
+
+	it("ignora outros eventos e grupos", () => {
+		expect(traduzir({ ...base, event: "conversation_status_changed" })).toBeNull();
+		expect(traduzir({ ...base, conversation: { id: 1, meta: { sender: { identifier: "123@g.us" } } } })).toBeNull();
 	});
 });
 
@@ -320,7 +426,7 @@ describe("pausa, trava e bloqueio", () => {
 		expect(t.wa.enviados.some((e) => e.tipo === "doc")).toBe(true);
 	});
 
-	it("trava do JID: número fora da campanha e grupos são recusados e ignorados", async () => {
+	it("trava do JID: número fora da campanha e grupos são recusados no envio", async () => {
 		const wa = waFalso();
 		const seguro = protegerWhatsApp(wa.port, campanha);
 		await expect(seguro.enviarTexto("5511999999999@s.whatsapp.net", "oi")).rejects.toThrow(/fora da campanha/);
@@ -330,12 +436,6 @@ describe("pausa, trava e bloqueio", () => {
 		expect(wa.enviados).toHaveLength(0);
 		expect(jidPermitido(campanha, jidDe("amo"))).toBe(true);
 
-		const t = criar();
-		await t.liberar();
-		await t.robo.aoReceber({ jid: "5511999999999@s.whatsapp.net", texto: "sim", tipo: "texto" });
-		await t.robo.aoReceber({ jid: "123@g.us", texto: "sim", tipo: "texto", grupo: true });
-		await t.rodar(30);
-		expect(t.tgMsgs.filter((m) => !/^(Liberado|Resumo)/.test(m.texto))).toHaveLength(0);
 	});
 
 	it("loggedOut/ban: pausa tudo, avisa e só volta com /retomar forcar", async () => {
@@ -356,14 +456,15 @@ describe("pausa, trava e bloqueio", () => {
 	it("queda comum de rede: avisa só depois de 10 minutos, uma vez", async () => {
 		const t = criar();
 		t.irPara("2026-11-21T10:00:00"); // sábado: sem resumo das 8h no meio
-		await t.robo.aoConexao({ estado: "fechada", permanente: false });
+		t.wa.ligar(false);
 		await t.rodar(9);
 		expect(t.tgMsgs).toHaveLength(0);
 		await t.rodar(3);
 		expect(t.tgMsgs.filter((m) => m.texto.includes("fora do ar"))).toHaveLength(1);
 		await t.rodar(30);
 		expect(t.tgMsgs.filter((m) => m.texto.includes("fora do ar"))).toHaveLength(1);
-		await t.robo.aoConexao({ estado: "aberta" });
+		t.wa.ligar(true);
+		await t.rodar(1);
 		expect(t.tgMsgs.at(-1)?.texto).toContain("voltou");
 	});
 

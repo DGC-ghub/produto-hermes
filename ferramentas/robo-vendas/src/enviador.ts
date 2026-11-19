@@ -69,3 +69,46 @@ export async function enviarKit(ctx: Ctx, clinicaId: string): Promise<boolean> {
 	}
 	return true;
 }
+
+export const ETIQUETAS_PARADA = ["com-gabriel", "nao-quer", "robo-pausado"];
+
+/** Conversa da clínica no Chatwoot: a gravada, ou a que a integração criou no 1º envio. */
+export async function conversaDe(ctx: Ctx, clinicaId: string): Promise<number | null> {
+	const row = ctx.store.clinica(clinicaId);
+	if (row.conversa_id !== null) return row.conversa_id;
+	const c = clinicaCfg(ctx, clinicaId);
+	if (!c.telefone) return null;
+	const id = await ctx.cw.acharConversa(c.telefone);
+	if (id !== null) ctx.store.atualizarClinica(clinicaId, { conversa_id: id });
+	return id;
+}
+
+/**
+ * O robô pode escrever nesta conversa? Lê as etiquetas no Chatwoot.
+ * `ignorar`: etiquetas que não bloqueiam este envio (ex.: o "pare" sai com `nao-quer`).
+ * "parado" = etiqueta de parada; "erro" = o Chatwoot não respondeu (não escreve e tenta no próximo ciclo).
+ */
+export async function podeEscrever(ctx: Ctx, clinicaId: string, ignorar: string[] = []): Promise<"ok" | "parado" | "erro"> {
+	try {
+		const conversa = await conversaDe(ctx, clinicaId);
+		if (conversa === null) return "ok";
+		const etq = await ctx.cw.etiquetas(conversa);
+		return etq.some((e) => ETIQUETAS_PARADA.includes(e) && !ignorar.includes(e)) ? "parado" : "ok";
+	} catch (e) {
+		ctx.log(`não consegui ler as etiquetas de ${clinicaId}: ${(e as Error).message}`);
+		return "erro";
+	}
+}
+
+/** Põe etiquetas na conversa. Devolve false se ainda não há conversa ou a API falhou. */
+export async function marcar(ctx: Ctx, clinicaId: string, etiquetas: string[]): Promise<boolean> {
+	try {
+		const conversa = await conversaDe(ctx, clinicaId);
+		if (conversa === null) return false;
+		await ctx.cw.adicionarEtiquetas(conversa, etiquetas);
+		return true;
+	} catch (e) {
+		ctx.log(`falha ao etiquetar ${clinicaId}: ${(e as Error).message}`);
+		return false;
+	}
+}

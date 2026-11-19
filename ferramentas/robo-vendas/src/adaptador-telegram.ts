@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, InputFile } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import type { Robo } from "./robo.ts";
 import type { Botao, TelegramPort } from "./types.ts";
 
@@ -15,9 +15,6 @@ export function criarTelegram(token: string, chatId: string): { port: TelegramPo
 				});
 			}
 			await bot.api.sendMessage(chatId, texto, teclado ? { reply_markup: teclado } : undefined);
-		},
-		async enviarImagem(png, legenda) {
-			await bot.api.sendPhoto(chatId, new InputFile(png, "qr.png"), { caption: legenda });
 		},
 	};
 	return { port, bot };
