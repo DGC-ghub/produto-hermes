@@ -1,0 +1,135 @@
+# Atendimento da DGC: Chatwoot + Evolution API (DGC-371). Só na VM trabalhadora.
+# Subir:  sudo docker compose --env-file ~/.config/dgc-atendimento/compose.env up -d
+# Portas só em 127.0.0.1. Dados em ~/.local/share/dgc-atendimento/.
+name: dgc-atendimento
+
+x-chatwoot-env: &chatwoot-env
+  RAILS_ENV: production
+  NODE_ENV: production
+  INSTALLATION_ENV: docker
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE:?defina no compose.env}
+  FRONTEND_URL: ${CHATWOOT_FRONTEND_URL:-https://trabalhadora.tail04b4ef.ts.net:8443}
+  FORCE_SSL: "false"
+  ENABLE_ACCOUNT_SIGNUP: "false"
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: chatwoot
+  POSTGRES_USERNAME: postgres
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina no compose.env}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?defina no compose.env}@redis:6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  RAILS_MAX_THREADS: "3"
+  WEB_CONCURRENCY: "1"
+  SIDEKIQ_CONCURRENCY: "3"
+  MALLOC_ARENA_MAX: "2"
+  ACTIVE_STORAGE_SERVICE: local
+  LOG_LEVEL: info
+  RAILS_LOG_TO_STDOUT: "true"
+  ENABLE_PUSH_RELAY_SERVER: "true"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    mem_limit: 400m
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: chatwoot
+    command: ["postgres", "-c", "shared_buffers=96MB", "-c", "max_connections=60", "-c", "work_mem=4MB"]
+    volumes:
+      - ${DATA_DIR:-~/.local/share/dgc-atendimento}/postgres:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?}", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    volumes:
+      - ${DATA_DIR:-~/.local/share/dgc-atendimento}/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  chatwoot-prepare:
+    image: chatwoot/chatwoot:v4.19.1-ce
+    restart: "no"
+    mem_limit: 700m
+    environment: *chatwoot-env
+    entrypoint: ["docker/entrypoints/rails.sh"]
+    command: ["bundle", "exec", "rails", "db:chatwoot_prepare"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  chatwoot-web:
+    image: chatwoot/chatwoot:v4.19.1-ce
+    restart: unless-stopped
+    mem_limit: 700m
+    environment: *chatwoot-env
+    entrypoint: ["docker/entrypoints/rails.sh"]
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:3010:3000"
+    volumes:
+      - ${DATA_DIR:-~/.local/share/dgc-atendimento}/chatwoot-storage:/app/storage
+    depends_on:
+      chatwoot-prepare: {condition: service_completed_successfully}
+
+  sidekiq:
+    image: chatwoot/chatwoot:v4.19.1-ce
+    restart: unless-stopped
+    mem_limit: 600m
+    environment: *chatwoot-env
+    entrypoint: ["docker/entrypoints/rails.sh"]
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    volumes:
+      - ${DATA_DIR:-~/.local/share/dgc-atendimento}/chatwoot-storage:/app/storage
+    depends_on:
+      chatwoot-prepare: {condition: service_completed_successfully}
+
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: unless-stopped
+    mem_limit: 400m
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: "8080"
+      SERVER_URL: http://127.0.0.1:8090
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:?}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
+      LOG_LEVEL: ERROR,WARN,INFO
+      DEL_INSTANCE: "false"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: dgc_evolution
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://:${REDIS_PASSWORD}@redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+      CHATWOOT_ENABLED: "true"
+      CHATWOOT_MESSAGE_DELETE: "true"
+      CONFIG_SESSION_PHONE_CLIENT: DGC Hub
+      CONFIG_SESSION_PHONE_NAME: Chrome
+      QRCODE_LIMIT: "30"
+    ports:
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ${DATA_DIR:-~/.local/share/dgc-atendimento}/evolution:/evolution/instances
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}

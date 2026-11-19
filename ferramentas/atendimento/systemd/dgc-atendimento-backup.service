@@ -1,0 +1,7 @@
+[Unit]
+Description=Backup diario do Postgres do atendimento (Chatwoot + Evolution)
+
+[Service]
+Type=oneshot
+ExecStart=%h/apps/atendimento-infra/ferramentas/atendimento/scripts/backup.sh
+EnvironmentFile=-%h/.config/dgc-atendimento/backup.env
