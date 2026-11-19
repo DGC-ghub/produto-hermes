@@ -1,0 +1,31 @@
+{
+  "video": "demo-recepcionista-ia-v2.mp4",
+  "textos": {
+    "robo": "Sou o assistente do Gabriel; ele mesmo te responde já já.",
+    "rascunhos": {
+      "interesse": "Que bom! Prefiro explicar falando, é rapidinho: 15 minutos, por ligação ou vídeo.\nPode ser {dia1} às 10h ou {dia2} às 15h?\nQuero mais entender como funciona o atendimento aí do que vender.\nUma pergunta antes: hoje vocês confirmam as consultas na véspera?",
+      "preco": "Depende do que a clínica precisa, por isso não gosto de passar preço seco por aqui.\nPara a 1ª clínica parceira temos uma condição de piloto: implantação de R$ 990 e o 1º mês grátis.\nDepois, R$ 690 por mês, mais a taxa do WhatsApp oficial, paga direto à Meta.\nTe explico tudo em 15 minutos. Pode ser {dia1} às 10h?",
+      "ja_tenho": "Faz sentido. A ideia não é trocar a secretária: é ajudar ela no que fica sem resposta, como mensagem à noite, no fim de semana e a confirmação de consulta.\nSe não for o momento, sem problema. Obrigado por responder!",
+      "golpe": "Pergunta justa! Sou o Gabriel, da DGC Hub. Peguei o número no site da clínica, onde ele aparece para contato.\nNão peço pagamento nem dado nenhum por aqui. Se preferir, te ligo e explico.\nSe não quiser receber mais mensagem, é só falar que eu paro.",
+      "lgpd": "Os dados continuam da clínica. A gente só usa nome, telefone e a conversa para marcar e confirmar consulta.\nNão pede exame nem prontuário, e quando o paciente fala de saúde a conversa vai para a recepção.\nNão usamos os dados para treinar IA nem para outra coisa, e assinamos um termo de LGPD com a clínica.",
+      "outro": null,
+      "midia": null
+    }
+  },
+  "clinicas": [
+    {
+      "id": "teste",
+      "nome": "Clínica de teste",
+      "leva": 1,
+      "ordem": 1,
+      "telefone": "",
+      "fonteTelefone": null,
+      "pdf": "amo-odontologia.pdf",
+      "primeira": "Oi, tudo bem? Aqui é o Gabriel, da DGC Hub.\nEstava olhando o site da Amo e vi que o atendimento é pelo WhatsApp, de segunda a sexta. Fiz um diagnóstico rápido da clínica e gravei 1 minuto mostrando como uma recepcionista de IA funcionaria aí.\nPosso mandar para o responsável pela clínica?",
+      "segunda": "Fechado! O vídeo mostra a IA atendendo um paciente fora do horário, e o PDF tem o diagnóstico em 1 página. Me diz o que achou, sem compromisso.",
+      "lembreteD3": "Oi! Só passando para saber se posso te mandar o diagnóstico. Se não for o momento, sem problema.",
+      "ultimoD7": "Oi! Última mensagem da minha parte: se um dia quiser ver o diagnóstico da clínica, é só responder aqui. Obrigado!",
+      "pare": "Entendido, obrigado por responder! Não vou mais mandar mensagem."
+    }
+  ]
+}
