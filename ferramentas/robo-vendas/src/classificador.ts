@@ -68,3 +68,8 @@ export function classificar(texto: string | null, aguardandoResposta: boolean): 
 	}
 	return { classe: "escalar", categoria: cat };
 }
+
+/** Pedido claro de parar ("pare", "sair", "remover", "não tenho interesse"...), em qualquer fase da conversa. */
+export function pedidoDeParar(texto: string | null): boolean {
+	return texto !== null && PARAR.test(normalizar(texto));
+}

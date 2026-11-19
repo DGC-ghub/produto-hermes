@@ -249,6 +249,30 @@ describe("respostas da clínica", () => {
 		expect(t.wa.enviados).toHaveLength(0);
 	});
 
+	it("sim e depois pare: o kit não sai, agradece e para", async () => {
+		const t = await comAmoAguardando();
+		await t.diz("amo", "sim");
+		await t.diz("amo", "pare, não quero mais");
+		await t.rodar(30);
+		const amo = t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		expect(amo.map((e) => e.tipo)).toEqual(["texto"]);
+		expect(amo[0]?.texto).toContain("Não vou mais mandar mensagem");
+		expect(t.store.clinica("amo").status).toBe("parou");
+		expect(t.cw.etiquetasDe("amo")).toContain("nao-quer");
+	});
+
+	it("'pare' depois do kit também marca parou e nao-quer", async () => {
+		const t = await comAmoAguardando();
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		t.cw.tiraEtiqueta("amo", "com-gabriel");
+		t.wa.enviados.length = 0;
+		await t.diz("amo", "pode parar de mandar");
+		await t.rodar(10);
+		expect(t.store.clinica("amo").status).toBe("parou");
+		expect(t.cw.etiquetasDe("amo")).toContain("nao-quer");
+	});
+
 	it("'não' põe nao-quer e resolve a conversa depois de agradecer", async () => {
 		const t = await comAmoAguardando();
 		await t.diz("amo", "pare, por favor");

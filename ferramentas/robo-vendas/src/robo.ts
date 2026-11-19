@@ -1,5 +1,5 @@
 import { dataBR } from "./calendario.ts";
-import { classificar, type Categoria } from "./classificador.ts";
+import { classificar, pedidoDeParar, type Categoria } from "./classificador.ts";
 import type { ClinicaRow } from "./db.ts";
 import { aleatorio, bloqueado, clinicaCfg, conversaDe, enviarKit, enviarTexto, enviarUnico, marcar, podeEscrever } from "./enviador.ts";
 import { jidPermitido } from "./seguro.ts";
@@ -81,7 +81,10 @@ export class Robo {
 			await this.escalar(cfg, "outro", `${mensagem}\n(Esta clínica pediu para parar. O robô não responde.)`, false);
 			return;
 		}
-		const r = classificar(e.texto, row.status === "aguardando");
+		// "Pare" vale em qualquer fase: depois do "sim", o kit na fila é cancelado.
+		const r = pedidoDeParar(e.texto)
+			? ({ classe: "nao", categoria: "outro" } as const)
+			: classificar(e.texto, row.status === "aguardando");
 		if (r.classe === "sim") {
 			ctx.store.atualizarClinica(cfg.id, { status: "kit_agendado" });
 			this.agendarResposta(cfg.id, "kit", null);
