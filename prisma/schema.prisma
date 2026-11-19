@@ -35,6 +35,7 @@ model Conversation {
   messages      Message[]
   lead          Lead?
   handoffEvents HandoffEvent[]
+  cobrancas     Cobranca[]
 }
 
 model Message {
@@ -72,6 +73,24 @@ model HandoffEvent {
   reason         String
   message        String?
   createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+}
+
+// M7 (demo): cobrança Pix de teste e a nota de homologação ligada a ela.
+model Cobranca {
+  id             String   @id @default(cuid())
+  conversationId String
+  paymentId      String   @unique
+  notaId         String?  @unique
+  servicoChave   String
+  valorCentavos  Int
+  status         String   @default("aguardando_pagamento") // aguardando_pagamento | nota_em_emissao | nota_autorizada | nota_rejeitada | erro
+  pdfUrl         String?
+  xmlUrl         String?
+  motivo         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id])
 }

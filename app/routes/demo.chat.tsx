@@ -1,6 +1,16 @@
 import { Form, Link, redirect } from 'react-router'
 import { db } from '../db.server'
 import { processIncomingMessage } from '../lib/conversation.server'
+import { iniciarCobranca } from '../lib/nota/fluxo'
+import {
+  criarDeps,
+  emissorEmModoFalso,
+  type ResultadoSimulado,
+  SemCobrancaError,
+  simularPagamentoENota,
+  temCobrancaAguardando,
+} from '../lib/nota/nota.server'
+import { SERVICO_PADRAO } from '../lib/nota/servicos'
 import { ensureInitialTenants, INITIAL_TENANTS } from '../lib/tenants.server'
 import type { Route } from './+types/demo.chat'
 
@@ -32,6 +42,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url)
   const tenantSlug = resolveTenantSlug(url.searchParams.get('tenant'))
   const conversationId = url.searchParams.get('conversationId')
+  const aviso = url.searchParams.get('aviso')
 
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } })
 
@@ -69,6 +80,9 @@ export async function loader({ request }: Route.LoaderArgs) {
       status: c.status,
       updatedAt: c.updatedAt.toISOString(),
     })),
+    modoFalso: emissorEmModoFalso(),
+    aviso: aviso ? aviso.slice(0, 200) : null,
+    cobrancaAguardando: selected ? await temCobrancaAguardando(selected.id) : false,
     selectedConversationId: selected?.id ?? null,
     selectedStatus: selected?.status ?? null,
     messages: messages.map((m) => ({
@@ -87,6 +101,48 @@ export async function action({ request }: Route.ActionArgs) {
   const message = String(formData.get('message') ?? '')
   const conversationIdRaw = formData.get('conversationId')
   const contactIdRaw = formData.get('contactId')
+  const intent = String(formData.get('intent') ?? 'mensagem')
+
+  // M7 (teste): fim do atendimento gera Pix de teste; no modo falso, simula pagamento e nota.
+  if (intent === 'cobrar' || intent === 'simular') {
+    const id = conversationIdRaw ? String(conversationIdRaw) : ''
+    const conversa = id ? await db.conversation.findUnique({ where: { id } }) : null
+    if (!conversa) {
+      return redirect(`/demo/chat?tenant=${tenantSlug}`)
+    }
+    const voltar = (aviso?: string) =>
+      redirect(
+        `/demo/chat?tenant=${tenantSlug}&conversationId=${id}${
+          aviso ? `&aviso=${encodeURIComponent(aviso)}` : ''
+        }`,
+      )
+    try {
+      if (intent === 'cobrar') {
+        const reais = Number(String(formData.get('valor') ?? '').replace(',', '.'))
+        const centavos = Math.round(reais * 100)
+        if (!Number.isFinite(centavos) || centavos <= 0) {
+          return voltar('Valor inválido. Digite um valor maior que zero, como 150,00.')
+        }
+        await iniciarCobranca(
+          { conversationId: id, servicoChave: SERVICO_PADRAO, valorCentavos: centavos },
+          criarDeps(),
+        )
+      } else {
+        const r = String(formData.get('resultado'))
+        const permitido: ResultadoSimulado[] = ['autorizada', 'rejeitada', 'rejeitada_sem_motivo']
+        if (permitido.includes(r as ResultadoSimulado)) {
+          await simularPagamentoENota(id, r as ResultadoSimulado)
+        }
+      }
+    } catch (erro) {
+      if (erro instanceof SemCobrancaError) {
+        return voltar('Gere o Pix de teste primeiro. Não há cobrança aguardando pagamento.')
+      }
+      console.warn('[nota] falha na demo', erro instanceof Error ? erro.message : erro)
+      return voltar('Não consegui concluir. Tente de novo.')
+    }
+    return voltar()
+  }
 
   // Mensagem vazia: volta sem processar (o textarea já tem `required`, isto é só defesa).
   if (message.trim().length === 0) {
@@ -112,8 +168,17 @@ export function meta(_args: Route.MetaArgs) {
 }
 
 export default function DemoChat({ loaderData }: Route.ComponentProps) {
-  const { tenantSlug, tenants, conversations, selectedConversationId, selectedStatus, messages } =
-    loaderData
+  const {
+    tenantSlug,
+    tenants,
+    conversations,
+    modoFalso,
+    aviso,
+    cobrancaAguardando,
+    selectedConversationId,
+    selectedStatus,
+    messages,
+  } = loaderData
   const needsHuman = selectedStatus === 'needs_human'
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
 
@@ -239,6 +304,67 @@ export default function DemoChat({ loaderData }: Route.ComponentProps) {
           Enviar
         </button>
       </Form>
+
+      {selectedConversationId && (
+        <section className="space-y-2 rounded border border-amber-300 bg-amber-50 p-3">
+          <h2 className="text-sm font-semibold text-amber-800">
+            Nota fiscal (TESTE, sem valor fiscal)
+          </h2>
+          <Form method="post" className="flex items-center gap-2">
+            <input type="hidden" name="tenantSlug" value={tenantSlug} />
+            <input type="hidden" name="conversationId" value={selectedConversationId} />
+            <input type="hidden" name="intent" value="cobrar" />
+            <input
+              name="valor"
+              defaultValue="150,00"
+              className="w-24 rounded border border-gray-300 p-1 text-sm"
+              aria-label="Valor em reais"
+            />
+            <button type="submit" className="rounded bg-amber-600 px-3 py-1 text-sm text-white">
+              Encerrar atendimento e gerar Pix de teste
+            </button>
+          </Form>
+          {aviso && (
+            <p role="alert" className="text-sm text-red-700">
+              {aviso}
+            </p>
+          )}
+          {modoFalso && cobrancaAguardando && (
+            <Form method="post" className="flex flex-wrap items-center gap-2 text-sm">
+              <input type="hidden" name="tenantSlug" value={tenantSlug} />
+              <input type="hidden" name="conversationId" value={selectedConversationId} />
+              <input type="hidden" name="intent" value="simular" />
+              <span className="text-gray-600">
+                Sem chave: simular pagamento e resposta da prefeitura:
+              </span>
+              <button
+                type="submit"
+                name="resultado"
+                value="autorizada"
+                className="rounded border px-2 py-1"
+              >
+                Nota autorizada
+              </button>
+              <button
+                type="submit"
+                name="resultado"
+                value="rejeitada"
+                className="rounded border px-2 py-1"
+              >
+                Nota rejeitada
+              </button>
+              <button
+                type="submit"
+                name="resultado"
+                value="rejeitada_sem_motivo"
+                className="rounded border px-2 py-1"
+              >
+                Rejeitada sem motivo
+              </button>
+            </Form>
+          )}
+        </section>
+      )}
     </main>
   )
 }
