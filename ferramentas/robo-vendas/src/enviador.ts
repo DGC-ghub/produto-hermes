@@ -52,7 +52,7 @@ export async function enviarTexto(ctx: Ctx, clinicaId: string, texto: string) {
 	await ctx.wa.enviarTexto(jidDe(c.telefone), texto, digitar(ctx));
 }
 
-/** Envia o kit em 3 passos, cada um com a sua chave. Devolve true se os 3 já saíram. */
+/** Envia o kit em 3 passos, cada um com a sua chave. Antes de cada passo confere status e etiquetas. Devolve true se os 3 já saíram. */
 export async function enviarKit(ctx: Ctx, clinicaId: string): Promise<boolean> {
 	const c = clinicaCfg(ctx, clinicaId);
 	if (!c.telefone) throw new Error("clínica sem telefone");
@@ -65,6 +65,9 @@ export async function enviarKit(ctx: Ctx, clinicaId: string): Promise<boolean> {
 	for (const [nome, acao] of passos) {
 		const chave = `${clinicaId}:${nome}`;
 		if (ctx.store.temEnvio(chave)) continue;
+		// Entre os passos, olha de novo: a conversa pode ter mudado (pare, etiqueta, Gabriel assumiu).
+		if (ctx.store.clinica(clinicaId).status !== "kit_agendado") return false;
+		if ((await podeEscrever(ctx, clinicaId)) !== "ok") return false;
 		if (!(await enviarUnico(ctx, chave, clinicaId, nome, acao))) return false;
 	}
 	return true;

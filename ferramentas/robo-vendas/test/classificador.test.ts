@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classificar } from "../src/classificador.ts";
+import { classificar, pedidoDeParar } from "../src/classificador.ts";
 
 const c = (t: string | null, aguardando = true) => classificar(t, aguardando);
 
@@ -49,5 +49,43 @@ describe("classificador", () => {
 
 	it("não com pergunta, na dúvida, escala", () => {
 		expect(c("não entendi, quem é?").classe).toBe("escalar");
+	});
+
+	it.each([
+		"pare",
+		"Para de me mandar mensagem",
+		"não tenho interesse",
+		"Não quero",
+		"Não quero, obrigado",
+		"me tira da lista",
+		"Me tire da lista por favor",
+		"sair da lista",
+		"sair",
+		"remover",
+	])("pedido claro de parar: %s", (t) => {
+		expect(pedidoDeParar(t)).toBe(true);
+	});
+
+	it.each([
+		"Não quero perder isso, me liga amanhã",
+		"Recebi! Vou sair agora, depois vejo",
+		"A gente para de atender às 18h",
+		"Não quero agora, mas me manda o vídeo",
+		"Pode me ligar para marcar? Não tenho tempo hoje",
+		"vou parar de atender e já te retorno",
+		"Eu vou sair",
+		"Sair agora, depois vejo",
+		"Para amanhã, pode ser?",
+	])("NÃO é pedido de parar: %s", (t) => {
+		expect(pedidoDeParar(t)).toBe(false);
+		expect(c(t).classe).toBe("escalar");
+	});
+
+	it("'não quero agora, mas me manda o vídeo' passa ao Gabriel, não responde", () => {
+		expect(c("Não quero agora, mas me manda o vídeo").classe).toBe("escalar");
+	});
+
+	it("pedidoDeParar de mídia (sem texto) é falso", () => {
+		expect(pedidoDeParar(null)).toBe(false);
 	});
 });

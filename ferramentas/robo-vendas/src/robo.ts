@@ -81,10 +81,12 @@ export class Robo {
 			await this.escalar(cfg, "outro", `${mensagem}\n(Esta clínica pediu para parar. O robô não responde.)`, false);
 			return;
 		}
-		// "Pare" vale em qualquer fase: depois do "sim", o kit na fila é cancelado.
-		const r = pedidoDeParar(e.texto)
-			? ({ classe: "nao", categoria: "outro" } as const)
-			: classificar(e.texto, row.status === "aguardando");
+		// Fora de `aguardando`, um pedido de parar não dispara resposta automática: o Gabriel decide.
+		if (row.status !== "aguardando" && pedidoDeParar(e.texto)) {
+			await this.suspeitaDeParar(cfg, mensagem);
+			return;
+		}
+		const r = classificar(e.texto, row.status === "aguardando");
 		if (r.classe === "sim") {
 			ctx.store.atualizarClinica(cfg.id, { status: "kit_agendado" });
 			this.agendarResposta(cfg.id, "kit", null);
@@ -109,6 +111,15 @@ export class Robo {
 		} else {
 			await this.escalar(cfg, r.categoria, mensagem, true);
 		}
+	}
+
+	/** "Pare" depois do "sim" (ou do kit): cancela o que está na fila, não escreve nada à clínica e passa ao Gabriel. */
+	private async suspeitaDeParar(cfg: ClinicaConfig, mensagem: string) {
+		const { ctx } = this;
+		ctx.store.cancelarSaidasDaClinica(cfg.id);
+		ctx.store.atualizarClinica(cfg.id, { status: "manual" });
+		await this.escalar(cfg, "outro", mensagem, true, "Atenção: parece pedido para parar, confira. O robô não respondeu e cancelou o que estava na fila.");
+		await this.tg(`${cfg.nome}: parece pedido para parar ("${mensagem}"). Não respondi e cancelei a fila. Confira no Chatwoot.`);
 	}
 
 	/** Um humano (Gabriel ou Danilo) escreveu na conversa: encerra o lembrete das 4h. */
@@ -154,11 +165,11 @@ export class Robo {
 	 * Passa ao humano, sem escrever à clínica: nota privada com o rascunho,
 	 * etiqueta `com-gabriel` (quando `parar`), atribuição ao Gabriel e status `open`.
 	 */
-	private async escalar(cfg: ClinicaConfig, categoria: Categoria | "robo", mensagem: string, marcarGabriel: boolean) {
+	private async escalar(cfg: ClinicaConfig, categoria: Categoria | "robo", mensagem: string, marcarGabriel: boolean, aviso?: string) {
 		const { ctx } = this;
 		const row = ctx.store.clinica(cfg.id);
 		const conversa = row.conversa_id ?? (await conversaDe(ctx, cfg.id));
-		const rascunho = this.rascunho(categoria);
+		const rascunho = aviso ? null : this.rascunho(categoria);
 		if (marcarGabriel || categoria === "robo") {
 			ctx.store.criarPendencia({ clinica_id: cfg.id, categoria, mensagem, rascunho, agora: ctx.agora() });
 		}
@@ -167,7 +178,7 @@ export class Robo {
 			return;
 		}
 		const nota = [
-			`Passei para você: ${categoria}.`,
+			aviso ?? `Passei para você: ${categoria}.`,
 			"",
 			`A clínica disse: ${mensagem}`,
 			"",
@@ -208,7 +219,17 @@ export class Robo {
 				if (pode === "parado") ctx.store.concluirSaida(s.id);
 				if (pode !== "ok") continue;
 				if (s.tipo === "kit") {
+					// A conversa mudou desde o "sim" (pare, Gabriel assumiu): o kit não sai.
+					if (ctx.store.clinica(s.clinica_id).status !== "kit_agendado") {
+						ctx.store.concluirSaida(s.id);
+						continue;
+					}
 					if (await enviarKit(ctx, s.clinica_id)) {
+						// Só vira kit_enviado se nada mudou durante o envio (nunca troca `parou`).
+						if (ctx.store.clinica(s.clinica_id).status !== "kit_agendado") {
+							ctx.store.concluirSaida(s.id);
+							continue;
+						}
 						ctx.store.atualizarClinica(s.clinica_id, { status: "kit_enviado" });
 						ctx.store.concluirSaida(s.id);
 						await marcar(ctx, s.clinica_id, ["kit-enviado"]);
@@ -349,12 +370,26 @@ export class Robo {
 		const { ctx } = this;
 		const agora = ctx.agora();
 		for (const p of ctx.store.pendenciasAbertas()) {
+			if (await this.clinicaPediuParar(p.clinica_id)) continue;
 			if (ctx.cal.minutosComerciais(p.ultimo_aviso_em, agora) >= ctx.ritmo.lembretePendenciaMin) {
 				ctx.store.atualizarPendencia(p.id, { ultimo_aviso_em: agora });
 				await this.tg(
 					`Lembrete: ${this.nome(p.clinica_id)} (${p.categoria}) espera a sua resposta no Chatwoot há mais de 4 horas comerciais. Não enviei nada.`,
 				);
 			}
+		}
+	}
+
+	/** `parou` ou etiqueta `nao-quer`: nenhum lembrete de pendência para essa clínica. */
+	private async clinicaPediuParar(id: string): Promise<boolean> {
+		const { ctx } = this;
+		if (ctx.store.clinica(id).status === "parou") return true;
+		try {
+			const conversa = await conversaDe(ctx, id);
+			return conversa !== null && (await ctx.cw.etiquetas(conversa)).includes("nao-quer");
+		} catch (e) {
+			ctx.log(`não consegui ler as etiquetas de ${id}: ${(e as Error).message}`);
+			return false;
 		}
 	}
 

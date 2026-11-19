@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { carregarCampanha } from "../src/config.ts";
 import { Store } from "../src/db.ts";
 import { jidPermitido, protegerWhatsApp } from "../src/seguro.ts";
-import { traduzir } from "../src/webhook.ts";
+import { criarWebhook, traduzir } from "../src/webhook.ts";
 import { campanha, conversaDe, criar, jidDe, MIN, textos, waFalso } from "./helpers.ts";
 
 const ordem1 = ["amo", "interface", "villaca", "expodonto", "sencis"];
@@ -249,28 +249,122 @@ describe("respostas da clínica", () => {
 		expect(t.wa.enviados).toHaveLength(0);
 	});
 
-	it("sim e depois pare: o kit não sai, agradece e para", async () => {
+	it("sim e depois pare: o kit não sai, nada vai à clínica, o Gabriel decide", async () => {
 		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
 		await t.diz("amo", "sim");
 		await t.diz("amo", "pare, não quero mais");
 		await t.rodar(30);
-		const amo = t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
-		expect(amo.map((e) => e.tipo)).toEqual(["texto"]);
-		expect(amo[0]?.texto).toContain("Não vou mais mandar mensagem");
-		expect(t.store.clinica("amo").status).toBe("parou");
-		expect(t.cw.etiquetasDe("amo")).toContain("nao-quer");
+		expect(amo()).toHaveLength(0);
+		expect(t.store.clinica("amo").status).toBe("manual");
+		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+		expect(t.cw.etiquetasDe("amo")).not.toContain("nao-quer");
+		expect(t.cw.notas.at(-1)?.texto).toContain("parece pedido para parar, confira");
+		expect(t.cw.atribuidas).toContain(conversaDe("amo"));
+		expect(t.cw.status.at(-1)).toEqual({ conversaId: conversaDe("amo"), status: "open" });
 	});
 
-	it("'pare' depois do kit também marca parou e nao-quer", async () => {
+	it("'pare' depois do kit: sem resposta automática, nota privada e com-gabriel", async () => {
 		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
 		await t.diz("amo", "sim");
 		await t.rodar(10);
 		t.cw.tiraEtiqueta("amo", "com-gabriel");
 		t.wa.enviados.length = 0;
 		await t.diz("amo", "pode parar de mandar");
 		await t.rodar(10);
+		expect(amo()).toHaveLength(0);
+		expect(t.store.clinica("amo").status).not.toBe("parou");
+		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+		expect(t.cw.notas.at(-1)?.texto).toContain("parece pedido para parar, confira");
+	});
+
+	it("depois do kit, 'Não quero perder isso, me liga amanhã': nada para a clínica, nota e com-gabriel", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		t.cw.tiraEtiqueta("amo", "com-gabriel");
+		t.wa.enviados.length = 0;
+		const notas = t.cw.notas.length;
+		await t.diz("amo", "Não quero perder isso, me liga amanhã");
+		await t.rodar(10);
+		expect(amo()).toHaveLength(0);
+		expect(t.cw.notas).toHaveLength(notas + 1);
+		expect(t.cw.notas.at(-1)?.texto).not.toContain("parece pedido para parar");
+		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+		expect(t.cw.etiquetasDe("amo")).not.toContain("nao-quer");
+		expect(t.store.clinica("amo").status).toBe("kit_enviado");
+		expect(t.cw.status.at(-1)).toEqual({ conversaId: conversaDe("amo"), status: "open" });
+	});
+
+	it("'Não quero agora, mas me manda o vídeo' (aguardando): passa ao Gabriel e não responde", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		await t.diz("amo", "Não quero agora, mas me manda o vídeo");
+		await t.rodar(10);
+		expect(amo()).toHaveLength(0);
+		expect(t.store.clinica("amo").status).toBe("aguardando");
+		expect(t.cw.etiquetasDe("amo")).toContain("com-gabriel");
+	});
+
+	it("corrida: o 'pare' chega no meio do envio do vídeo e o PDF não sai", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		const video = t.wa.port.enviarVideo;
+		t.wa.port.enviarVideo = async (jid, arq, l) => {
+			await video(jid, arq, l);
+			t.cw.poeEtiqueta("amo", "com-gabriel");
+			await t.diz("amo", "pare");
+		};
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		expect(amo().map((e) => e.tipo)).toEqual(["texto", "video"]);
+		expect(t.store.clinica("amo").status).not.toBe("kit_enviado");
+		expect(t.cw.etiquetasDe("amo")).not.toContain("kit-enviado");
+		await t.rodar(30);
+		expect(amo().map((e) => e.tipo)).toEqual(["texto", "video"]);
+	});
+
+	it("corrida só de etiqueta (nao-quer posta no meio do envio): o PDF não sai", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		const video = t.wa.port.enviarVideo;
+		t.wa.port.enviarVideo = async (jid, arq, l) => {
+			await video(jid, arq, l);
+			t.cw.poeEtiqueta("amo", "nao-quer");
+		};
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		expect(amo().map((e) => e.tipo)).toEqual(["texto", "video"]);
+		expect(t.store.clinica("amo").status).not.toBe("kit_enviado");
+	});
+
+	it("corrida só de status (Gabriel assumiu no meio do envio): o PDF não sai", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		const video = t.wa.port.enviarVideo;
+		t.wa.port.enviarVideo = async (jid, arq, l) => {
+			await video(jid, arq, l);
+			t.store.atualizarClinica("amo", { status: "manual" });
+		};
+		await t.diz("amo", "sim");
+		await t.rodar(10);
+		expect(amo().map((e) => e.tipo)).toEqual(["texto", "video"]);
+		expect(t.store.clinica("amo").status).toBe("manual");
+	});
+
+	it("corrida: se virou 'parou' durante o envio, o status nunca volta para kit_enviado", async () => {
+		const t = await comAmoAguardando();
+		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
+		const pdf = t.wa.port.enviarDocumento;
+		t.wa.port.enviarDocumento = async (jid, arq, n) => {
+			await pdf(jid, arq, n);
+			t.store.atualizarClinica("amo", { status: "parou" });
+		};
+		await t.diz("amo", "sim");
+		await t.rodar(10);
 		expect(t.store.clinica("amo").status).toBe("parou");
-		expect(t.cw.etiquetasDe("amo")).toContain("nao-quer");
 	});
 
 	it("'não' põe nao-quer e resolve a conversa depois de agradecer", async () => {
@@ -387,6 +481,18 @@ describe("conversa no Chatwoot: etiquetas e fora da campanha", () => {
 		expect(textos(t.wa.enviados)).toHaveLength(0);
 	});
 
+	it("lembrete das 4h: nenhum para clínica parou ou com nao-quer", async () => {
+		const t = criar();
+		t.irPara("2026-11-18T17:00:00");
+		await t.diz("sencis", "Quanto custa?");
+		await t.diz("interface", "Quanto custa?");
+		t.store.atualizarClinica("sencis", { status: "parou" });
+		t.cw.poeEtiqueta("interface", "nao-quer");
+		t.irPara("2026-11-19T12:00:00");
+		await t.robo.tick();
+		expect(t.tgMsgs.filter((m) => m.texto.startsWith("Lembrete"))).toHaveLength(0);
+	});
+
 	it("o robô só obedece ao chat do Gabriel", async () => {
 		const t = criar();
 		await t.robo.aoTelegram("999", { tipo: "comando", nome: "pausar" });
@@ -432,6 +538,24 @@ describe("webhook do Chatwoot", () => {
 	it("ignora outros eventos e grupos", () => {
 		expect(traduzir({ ...base, event: "conversation_status_changed" })).toBeNull();
 		expect(traduzir({ ...base, conversation: { id: 1, meta: { sender: { identifier: "123@g.us" } } } })).toBeNull();
+	});
+});
+
+describe("token do webhook", () => {
+	it("aceita só o token exato (comparação em tempo constante)", async () => {
+		const t = criar();
+		const srv = criarWebhook(t.robo, "segredo-certo", () => {});
+		await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", ok));
+		const porta = (srv.address() as { port: number }).port;
+		const post = (q: string) => fetch(`http://127.0.0.1:${porta}/chatwoot${q}`, { method: "POST", body: "{}" }).then((r) => r.status);
+		try {
+			expect(await post("")).toBe(401);
+			expect(await post("?token=errado")).toBe(401);
+			expect(await post("?token=segredo-certo-")).toBe(401);
+			expect(await post("?token=segredo-certo")).toBe(200);
+		} finally {
+			srv.close();
+		}
 	});
 });
 

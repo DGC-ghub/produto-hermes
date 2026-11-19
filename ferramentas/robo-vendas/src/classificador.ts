@@ -16,7 +16,23 @@ export function normalizar(t: string): string {
 		.trim();
 }
 
-const PARAR = /\b(pare|parar|para de|sair|remover|remova|me tire|tire meu|descadastr\w*|nao tenho interesse|sem interesse|nao quero|nao me mande|nao mande|nao envie)\b/;
+/**
+ * Pedido de parar: só vale quando é claro. Na dúvida, não conta (o robô passa ao Gabriel).
+ * Frases inteiras ("pare", "sair"), "não quero" sozinho ou no fim, "me tira da lista", "para de me mandar".
+ */
+const PARAR = new RegExp(
+	[
+		"^(pare|parar|para|sair|remover|remova|descadastrar|descadastre)( por favor| pf| pfv| obrigad[oa])?$",
+		"\\b(pare|parar|para) de (me )?(mandar|enviar|escrever|chamar|incomodar)\\b",
+		"\\b(me tire|me tira|tire meu|tira meu) (d[aoe]s? |dessa |desse )?(sua |essa |nossa )?(lista|contato|cadastro|numero)\\b",
+		"\\b(sair|remover|remova|me remova|me remove) d[aoe]s? (lista|cadastro|contatos?|mensagens)\\b",
+		"\\bdescadastr\\w*",
+		"\\bnao tenho interesse\\b",
+		"\\bsem interesse$",
+		"\\bnao (me )?(mande|mandem|envie|enviem|escreva|escrevam)\\b",
+		"(^| )nao quero( mais)?( obrigad[oa])?$",
+	].join("|"),
+);
 const ROBO =
 	/\b(e|eh|voce e|vc e|isso e|sera que e) (um |uma )?(robo|bot|chatbot|ia|inteligencia artificial|automatic\w*|maquina|pessoa|gente|humano|real)\b|\bchatbot\b|\bresposta automatica\b|\b(robo|bot)\b/;
 const PRECO = /\b(quanto|preco|valor|valores|custa|custo|mensalidade|investimento|orcamento|cobram|cobra)\b/;

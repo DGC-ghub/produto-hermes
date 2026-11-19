@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Robo } from "./robo.ts";
 import type { Entrada, SaidaVista, TipoMidia } from "./types.ts";
@@ -49,6 +50,12 @@ export function traduzir(ev: Evento): { entrada?: Entrada; saida?: SaidaVista } 
 	};
 }
 
+/** Compara em tempo constante (o hash iguala o tamanho antes). */
+function tokenIgual(recebido: string | null, segredo: string): boolean {
+	const h = (v: string) => createHash("sha256").update(v).digest();
+	return timingSafeEqual(h(recebido ?? ""), h(segredo)) && recebido !== null;
+}
+
 /**
  * Servidor do webhook do agent bot. Preso em 127.0.0.1; exige `?token=` com o segredo.
  * Responde 200 logo e trata o evento em seguida (o Chatwoot não espera o robô).
@@ -60,7 +67,7 @@ export function criarWebhook(robo: Robo, segredo: string, log: (m: string) => vo
 			res.writeHead(404).end();
 			return;
 		}
-		if (url.searchParams.get("token") !== segredo) {
+		if (!tokenIgual(url.searchParams.get("token"), segredo)) {
 			res.writeHead(401).end();
 			return;
 		}
