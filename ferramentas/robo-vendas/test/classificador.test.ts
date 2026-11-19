@@ -99,6 +99,9 @@ describe("classificador", () => {
 		"Tira meu número antigo e coloca esse",
 		"tenho nao quero",
 		"Não agora",
+		"Não entendi",
+		"Não sei",
+		"Não por enquanto",
 	])("1ª resposta: NÃO vira 'não' (vai ao Gabriel): %s", (t) => {
 		expect(pedidoDeParar(t)).toBe(false);
 		expect(c(t).classe).not.toBe("nao");

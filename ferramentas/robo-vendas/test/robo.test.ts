@@ -312,9 +312,11 @@ describe("respostas da clínica", () => {
 		const t = await comAmoAguardando();
 		const amo = () => t.wa.enviados.filter((e) => e.jid === jidDe("amo"));
 		const etq = t.cw.port.etiquetas;
+		let n = 0;
 		t.cw.port.etiquetas = async (id) => {
 			const r = await etq(id);
-			t.store.atualizarClinica("amo", { status: "manual" });
+			// só na 2ª chamada (a do enviarKit); a 1ª é a de executarSaidas
+			if (++n === 2) t.store.atualizarClinica("amo", { status: "manual" });
 			return r;
 		};
 		await t.diz("amo", "sim");

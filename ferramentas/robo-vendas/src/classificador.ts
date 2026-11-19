@@ -96,8 +96,8 @@ export function classificar(texto: string | null, aguardandoResposta: boolean): 
 	if (ehPararClaro(n)) return { classe: "nao", categoria: "outro" };
 	if (ROBO.test(n)) return { classe: "robo", categoria: "outro" };
 	if (ehSim(n)) return { classe: "sim", categoria: "interesse" };
-	const palavras = n.split(" ").filter(Boolean);
-	if (palavras[0] === "nao" && palavras.length <= 3 && !n.includes("?") && !RESSALVA.test(n) && cat === "outro") {
+	const miolo = nucleo(n);
+	if ((miolo === "nao" || miolo === "nao nao") && !n.includes("?") && !RESSALVA.test(n) && cat === "outro") {
 		return { classe: "nao", categoria: "outro" };
 	}
 	return { classe: "escalar", categoria: cat };
