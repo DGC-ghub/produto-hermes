@@ -27,12 +27,24 @@ function asString(value: unknown): string | null {
  * Handshake de verificação do webhook (GET). A Meta chama com hub.mode/verify_token/
  * challenge; devolvemos o challenge só se o verify_token bater com o nosso. Pura.
  */
+function igualEmTempoConstante(a: string, b: string): boolean {
+  const ha = createHmac('sha256', 'cmp').update(a).digest()
+  const hb = createHmac('sha256', 'cmp').update(b).digest()
+  return timingSafeEqual(ha, hb)
+}
+
 export function verifyWebhookChallenge(params: URLSearchParams): string | null {
   const mode = params.get('hub.mode')
   const token = params.get('hub.verify_token')
   const challenge = params.get('hub.challenge')
   const expected = process.env.WHATSAPP_VERIFY_TOKEN
-  if (mode === 'subscribe' && expected && token === expected && challenge) {
+  if (
+    mode === 'subscribe' &&
+    expected &&
+    token !== null &&
+    igualEmTempoConstante(token, expected) &&
+    challenge
+  ) {
     return challenge
   }
   return null

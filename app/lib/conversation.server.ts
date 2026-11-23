@@ -4,7 +4,7 @@ import { agendaDoTenant, tratarRespostaConfirmacao } from './agenda/registro'
 import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
 import { activeProviderName, generateAttendantReply } from './attendant'
 import { buildCompanyRules } from './attendant/rules'
-import { safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
+import { optInHabilitado, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
 import { checkBillingGate } from './billing-gate.server'
 import { isHumanHandling } from './conversation-status'
@@ -742,7 +742,7 @@ async function runIncomingMessage(
   // Opt-in (DGC-348), só com a flag do tenant e efeitos reais. "Parar"/"sair" vale a qualquer
   // momento; sim/não só quando a ÚLTIMA fala da assistente foi a pergunta (e a decisão ainda
   // não existe). Vem ANTES da confirmação: um "sim" a esta pergunta não pode confirmar consulta.
-  const optInAtivo = operationalEffects && configEfetiva.optIn?.enabled === true
+  const optInAtivo = operationalEffects && optInHabilitado(configEfetiva)
   const registroOptIn = optInAtivo
     ? await timer.step('optin', () => lerOptIn(tenant.id, contactId))
     : null

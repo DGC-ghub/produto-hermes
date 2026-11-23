@@ -41,7 +41,7 @@ export async function action({ request }: Route.ActionArgs) {
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
   if (!verifyWebhookSignature(rawBody, signature)) {
-    return new Response('Invalid signature', { status: 401 })
+    return new Response('Forbidden', { status: 403 })
   }
 
   let payload: unknown
