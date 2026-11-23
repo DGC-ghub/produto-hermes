@@ -29,11 +29,6 @@ export interface Campanha {
 	clinicas: ClinicaConfig[];
 }
 
-export interface Botao {
-	texto: string;
-	dado: string;
-}
-
 /** Evolution API. Só envia o que o núcleo já validou contra campanha.json (ver seguro.ts). */
 export interface WhatsAppPort {
 	enviarTexto(jid: string, texto: string, opts?: { digitarMs?: number }): Promise<void>;
@@ -59,8 +54,19 @@ export interface ChatwootPort {
 	acharConversa(telefone: string): Promise<number | null>;
 }
 
-export interface TelegramPort {
-	enviar(texto: string, botoes?: Botao[][]): Promise<void>;
+/** Avisos ao Gabriel pelo WhatsApp. Função separada da de envio às clínicas: só aceita NUMEROS_COMANDO (ver seguro.ts). */
+export interface ComandoWhatsAppPort {
+	enviarTexto(jid: string, texto: string): Promise<void>;
+}
+
+/** Canal reserva: mensagem de entrada na conversa fixa da caixa "Alertas do robô" (Chatwoot, canal API). */
+export interface ReservaPort {
+	postar(texto: string): Promise<void>;
+}
+
+/** Aviso ao Gabriel. `critico` (ban, queda longa) vai também para a reserva; qualquer falha no WhatsApp cai nela. */
+export interface AvisoPort {
+	enviar(texto: string, opts?: { critico?: boolean }): Promise<void>;
 }
 
 export type TipoMidia = "texto" | "audio" | "ligacao" | "imagem" | "documento" | "outro";
@@ -115,7 +121,9 @@ export interface Ctx {
 	store: import("./db.ts").Store;
 	wa: WhatsAppPort;
 	cw: ChatwootPort;
-	tg: TelegramPort;
+	avisos: AvisoPort;
+	/** Números de comando (canônicos). Nunca clínica; conversa deles não entra no funil. */
+	numerosComando: string[];
 	cal: Calendario;
 	ritmo: Ritmo;
 	campanha: Campanha;

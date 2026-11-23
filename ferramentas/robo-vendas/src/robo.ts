@@ -2,14 +2,14 @@ import { dataBR } from "./calendario.ts";
 import { classificar, pedidoDeParar, type Categoria } from "./classificador.ts";
 import type { ClinicaRow } from "./db.ts";
 import { aleatorio, bloqueado, clinicaCfg, conversaDe, enviarKit, enviarTexto, enviarUnico, marcar, podeEscrever } from "./enviador.ts";
-import { jidPermitido } from "./seguro.ts";
+import { jidPermitido, ehNumeroDeComando } from "./seguro.ts";
 import { canonico, mascarar } from "./telefone.ts";
-import type { Botao, ClinicaConfig, Ctx, Entrada, SaidaVista } from "./types.ts";
+import type { ClinicaConfig, Ctx, Entrada, SaidaVista } from "./types.ts";
 
-export type EventoTelegram =
-	| { tipo: "comando"; nome: string; arg?: string }
-	| { tipo: "texto"; texto: string }
-	| { tipo: "botao"; dado: string };
+const MIN = 60_000;
+/** O /liberar só vale até 30 min depois do /podeir. */
+export const VALIDADE_PODEIR_MS = 30 * MIN;
+const AJUDA = "Comandos: /podeir (prévia da 1ª leva) · /liberar · /cancelar · /pausar · /retomar · /funil · /status · /leva2 sim ou /leva2 nao.";
 
 export type EventoConexao = { estado: "aberta" } | { estado: "fechada"; permanente: boolean; motivo?: string };
 
@@ -23,11 +23,9 @@ const ROTULO_MIDIA: Record<string, string> = {
 
 export class Robo {
 	readonly ctx: Ctx;
-	private readonly chatId: string;
 
-	constructor(ctx: Ctx, chatId: string) {
+	constructor(ctx: Ctx) {
 		this.ctx = ctx;
-		this.chatId = chatId;
 	}
 
 	// ---------- utilidades ----------
@@ -42,8 +40,9 @@ export class Robo {
 		return clinicaCfg(this.ctx, id).nome;
 	}
 
-	private tg(texto: string, botoes?: Botao[][]) {
-		return this.ctx.tg.enviar(texto, botoes);
+	/** Aviso ao Gabriel pelo WhatsApp (e pela reserva, se crítico ou se o WhatsApp falhar). Nunca é envio à clínica. */
+	private avisar(texto: string, critico = false) {
+		return this.ctx.avisos.enviar(texto, { critico });
 	}
 
 	private rascunho(categoria: string): string | null {
@@ -58,6 +57,8 @@ export class Robo {
 	async aoReceber(e: Entrada): Promise<void> {
 		const { ctx } = this;
 		if (e.grupo) return;
+		// A conversa do número de comando nunca é clínica: sem etiqueta, kit, rascunho, nota, atribuição ou funil.
+		if (ehNumeroDeComando(ctx.numerosComando, e.jid)) return this.aoComando(e.texto);
 		const cfg = this.cfgPorTelefone(e.jid);
 		if (!cfg) {
 			// Fora da campanha: o robô não responde e tira a conversa de `pending`, sem atribuir.
@@ -90,12 +91,12 @@ export class Robo {
 		if (r.classe === "sim") {
 			ctx.store.atualizarClinica(cfg.id, { status: "kit_agendado" });
 			this.agendarResposta(cfg.id, "kit", null);
-			await this.tg(`${cfg.nome}: respondeu "${mensagem}". O kit sai em alguns minutos.`);
+			await this.avisar(`${cfg.nome}: respondeu "${mensagem}". O kit sai em alguns minutos.`);
 		} else if (r.classe === "nao") {
 			ctx.store.atualizarClinica(cfg.id, { status: "parou" });
 			ctx.store.cancelarSaidasDaClinica(cfg.id);
 			this.agendarResposta(cfg.id, "pare", cfg.pare);
-			await this.tg(`${cfg.nome}: pediu para parar ("${mensagem}"). Vou agradecer e não escrevo mais.`);
+			await this.avisar(`${cfg.nome}: pediu para parar ("${mensagem}"). Vou agradecer e não escrevo mais.`);
 		} else if (r.classe === "robo" && !ctx.store.temEnvio(`${cfg.id}:robo`)) {
 			ctx.store.agendarSaida({
 				chave: `${cfg.id}:robo`,
@@ -107,7 +108,7 @@ export class Robo {
 			});
 			await this.executarSaidas();
 			await this.escalar(cfg, "robo", mensagem, false);
-			await this.tg(`${cfg.nome} perguntou se é robô: "${mensagem}". Respondi com a frase de honestidade e passei a conversa para você, no Chatwoot.`);
+			await this.avisar(`${cfg.nome} perguntou se é robô: "${mensagem}". Respondi com a frase de honestidade e passei a conversa para você, no Chatwoot.`);
 		} else {
 			await this.escalar(cfg, r.categoria, mensagem, true);
 		}
@@ -119,7 +120,7 @@ export class Robo {
 		ctx.store.cancelarSaidasDaClinica(cfg.id);
 		ctx.store.atualizarClinica(cfg.id, { status: "manual" });
 		await this.escalar(cfg, "outro", mensagem, true, "Atenção: parece pedido para parar, confira. O robô não respondeu e cancelou o que estava na fila.");
-		await this.tg(`${cfg.nome}: parece pedido para parar ("${mensagem}"). Não respondi e cancelei a fila. Confira no Chatwoot.`);
+		await this.avisar(`${cfg.nome}: parece pedido para parar ("${mensagem}"). Não respondi e cancelei a fila. Confira no Chatwoot.`);
 	}
 
 	/** Um humano (Gabriel ou Danilo) escreveu na conversa: encerra o lembrete das 4h. */
@@ -174,7 +175,7 @@ export class Robo {
 			ctx.store.criarPendencia({ clinica_id: cfg.id, categoria, mensagem, rascunho, agora: ctx.agora() });
 		}
 		if (conversa === null) {
-			await this.tg(`${cfg.nome} (${categoria}): não achei a conversa no Chatwoot. A clínica disse: ${mensagem}`);
+			await this.avisar(`${cfg.nome} (${categoria}): não achei a conversa no Chatwoot. A clínica disse: ${mensagem}`);
 			return;
 		}
 		const nota = [
@@ -233,7 +234,7 @@ export class Robo {
 						ctx.store.atualizarClinica(s.clinica_id, { status: "kit_enviado" });
 						ctx.store.concluirSaida(s.id);
 						await marcar(ctx, s.clinica_id, ["kit-enviado"]);
-						await this.tg(`${this.nome(s.clinica_id)}: kit enviado (texto, vídeo e PDF).`);
+						await this.avisar(`${this.nome(s.clinica_id)}: kit enviado (texto, vídeo e PDF).`);
 					}
 				} else {
 					const texto = s.texto ?? "";
@@ -356,12 +357,7 @@ export class Robo {
 		if (estado === "liberada") return l2[0];
 		if (estado === null) {
 			ctx.store.definirEstado("leva2", "perguntada");
-			await this.tg("A 1ª leva não teve resposta. Começar a 2ª leva (CCO, OdontoSin, Angela, Vintage e Stoá)?", [
-				[
-					{ texto: "Começar 2ª leva", dado: "leva2:sim" },
-					{ texto: "Não agora", dado: "leva2:nao" },
-				],
-			]);
+			await this.avisar("A 1ª leva não teve resposta. Começar a 2ª leva (CCO, OdontoSin, Angela, Vintage e Stoá)? Responda /leva2 sim ou /leva2 nao.");
 		}
 		return undefined;
 	}
@@ -373,7 +369,7 @@ export class Robo {
 			if (await this.clinicaPediuParar(p.clinica_id)) continue;
 			if (ctx.cal.minutosComerciais(p.ultimo_aviso_em, agora) >= ctx.ritmo.lembretePendenciaMin) {
 				ctx.store.atualizarPendencia(p.id, { ultimo_aviso_em: agora });
-				await this.tg(
+				await this.avisar(
 					`Lembrete: ${this.nome(p.clinica_id)} (${p.categoria}) espera a sua resposta no Chatwoot há mais de 4 horas comerciais. Não enviei nada.`,
 				);
 			}
@@ -412,7 +408,7 @@ export class Robo {
 			"",
 			saiHoje.length ? `Sai hoje:\n${saiHoje.join("\n")}` : "Sai hoje: nada.",
 		];
-		await this.tg(partes.join("\n"));
+		await this.avisar(partes.join("\n"));
 	}
 
 	private async avisarQueda() {
@@ -421,7 +417,7 @@ export class Robo {
 		if (desde === null || ctx.store.estado("queda_avisada") === "1") return;
 		if (ctx.agora() - Number(desde) >= ctx.ritmo.quedaAvisoMs) {
 			ctx.store.definirEstado("queda_avisada", "1");
-			await this.tg("O WhatsApp está fora do ar há mais de 10 minutos. Estou tentando reconectar sozinho.");
+			await this.avisar("O WhatsApp está fora do ar há mais de 10 minutos. Estou tentando reconectar sozinho.", true);
 		}
 	}
 
@@ -433,27 +429,28 @@ export class Robo {
 			const avisou = ctx.store.estado("queda_avisada") === "1";
 			ctx.store.definirEstado("caiu_em", null);
 			ctx.store.definirEstado("queda_avisada", null);
-			if (avisou) await this.tg("O WhatsApp voltou.");
+			if (avisou) await this.avisar("O WhatsApp voltou.");
 			return;
 		}
 		if (ev.permanente) {
 			ctx.store.definirEstado("ban", "1");
 			ctx.store.definirEstado("pausado", "1");
-			await this.tg(
+			await this.avisar(
 				"Número desconectado ou bloqueado. Parei tudo. Não troque de chip sem decisão dos sócios.",
+				true,
 			);
 			return;
 		}
 		if (ctx.store.estado("caiu_em") === null) ctx.store.definirEstado("caiu_em", String(ctx.agora()));
 	}
 
-	// ---------- Telegram (só o chat do Gabriel) ----------
+	// ---------- comandos do Gabriel (WhatsApp, pelo webhook do Chatwoot) ----------
 
-	async aoTelegram(chatId: string, ev: EventoTelegram): Promise<void> {
-		if (String(chatId) !== String(this.chatId)) return;
-		if (ev.tipo === "comando") return this.comando(ev.nome, ev.arg);
-		if (ev.tipo === "botao") return this.botao(ev.dado);
-		await this.tg("Use os comandos: /podeir /pausar /retomar /funil /status.");
+	/** Mensagem vinda de um número de comando. Só `/comando` age; o resto recebe a lista. */
+	private async aoComando(texto: string | null): Promise<void> {
+		const m = texto ? /^\/(\w+)(?:\s+(.*))?$/s.exec(texto.trim()) : null;
+		if (!m) return this.avisar(AJUDA);
+		return this.comando((m[1] as string).toLowerCase(), m[2]?.trim().toLowerCase());
 	}
 
 	private async comando(nome: string, arg?: string) {
@@ -461,31 +458,38 @@ export class Robo {
 		switch (nome) {
 			case "podeir":
 				return this.podeir();
+			case "liberar":
+				return this.liberar();
+			case "cancelar":
+				ctx.store.definirEstado("podeir_em", null);
+				return this.avisar("Cancelado. Nada foi liberado.");
 			case "pausar":
 				ctx.store.definirEstado("pausado", "1");
-				return this.tg("Pausado. Nada sai, nem o que estava na fila. /retomar para voltar.");
+				return this.avisar("Pausado. Nada sai, nem o que estava na fila. /retomar para voltar.");
 			case "retomar":
 				if (ctx.store.estado("ban") === "1") {
 					if (arg !== "forcar") {
-						return this.tg("O número foi bloqueado ou desconectado. Só retome depois de decisão dos sócios, com /retomar forcar.");
+						return this.avisar("O número foi bloqueado ou desconectado. Só retome depois de decisão dos sócios, com /retomar forcar.");
 					}
 					ctx.store.definirEstado("ban", null);
 				}
 				ctx.store.definirEstado("pausado", null);
-				return this.tg("Retomado.");
+				return this.avisar("Retomado.");
 			case "funil":
-				return this.tg(this.funil());
+				return this.avisar(this.funil());
 			case "status":
-				return this.tg(this.status());
+				return this.avisar(this.status());
+			case "leva2":
+				return this.leva2(arg);
 			default:
-				return this.tg("Comando desconhecido. Use /podeir /pausar /retomar /funil /status.");
+				return this.avisar(`Comando desconhecido. ${AJUDA}`);
 		}
 	}
 
 	private async podeir() {
 		const { ctx } = this;
-		if (ctx.store.estado("ban") === "1") return this.tg("O número está bloqueado. Veja /status.");
-		if (ctx.store.estado("liberado") === "1") return this.tg("Já está liberado. Use /status para ver a fila.");
+		if (ctx.store.estado("ban") === "1") return this.avisar("O número está bloqueado. Veja /status.");
+		if (ctx.store.estado("liberado") === "1") return this.avisar("Já está liberado. Use /status para ver a fila.");
 		const linhas = new Map(ctx.store.clinicas().map((r) => [r.id, r]));
 		const leva = ctx.campanha.clinicas.filter((c) => c.leva === 1).sort((a, b) => a.ordem - b.ordem);
 		const blocos = leva.map((c) =>
@@ -493,37 +497,36 @@ export class Robo {
 				? `${c.ordem}. ${c.nome}: SEM TELEFONE, não será enviada.`
 				: `${c.ordem}. ${c.nome} (${mascarar(c.telefone)})\n${c.primeira}`,
 		);
-		await this.tg(
-			`Prévia da 1ª leva. Nada sai sem o seu toque.\nAté ${ctx.ritmo.maxPrimeirasPorDia} por dia, em dia útil, das 9h às 17h, com 20 a 60 min entre elas.\n\n${blocos.join("\n\n")}`,
-			[
-				[
-					{ texto: "Liberar", dado: "lib:1" },
-					{ texto: "Cancelar", dado: "lib:0" },
-				],
-			],
+		ctx.store.definirEstado("podeir_em", String(ctx.agora()));
+		await this.avisar(
+			`Prévia da 1ª leva. Nada sai sem o seu /liberar.\nAté ${ctx.ritmo.maxPrimeirasPorDia} por dia, em dia útil, das 9h às 17h, com 20 a 60 min entre elas.\n\n${blocos.join("\n\n")}\n\nPara liberar, mande /liberar (vale por 30 minutos). Para desistir, /cancelar.`,
 		);
 	}
 
-	private async botao(dado: string) {
+	private async liberar() {
 		const { ctx } = this;
-		const [acao = "", arg = ""] = dado.split(":");
-		if (acao === "lib") {
-			if (arg !== "1") return this.tg("Cancelado. Nada foi liberado.");
-			if (ctx.store.estado("ban") === "1") return this.tg("O número está bloqueado. Não liberei.");
-			ctx.store.definirEstado("liberado", "1");
-			return this.tg("Liberado. A 1ª mensagem sai na próxima janela (dia útil, 9h às 17h).");
-		}
-		if (acao === "leva2") {
-			if (arg === "sim") {
-				ctx.store.definirEstado("leva2", "liberada");
-				return this.tg("2ª leva liberada. Começa na próxima janela.");
-			}
-			ctx.store.definirEstado("leva2", "recusada");
-			return this.tg("Ok, a 2ª leva não começa.");
-		}
+		if (ctx.store.estado("ban") === "1") return this.avisar("O número está bloqueado. Não liberei.");
+		const em = Number(ctx.store.estado("podeir_em") ?? 0);
+		if (!em) return this.avisar("Antes do /liberar, mande /podeir para ver a prévia.");
+		ctx.store.definirEstado("podeir_em", null);
+		if (ctx.agora() - em > VALIDADE_PODEIR_MS) return this.avisar("O /podeir passou de 30 minutos. Nada foi liberado. Mande /podeir de novo.");
+		ctx.store.definirEstado("liberado", "1");
+		return this.avisar("Liberado. A 1ª mensagem sai na próxima janela (dia útil, 9h às 17h).");
 	}
 
-	// ---------- textos para o Telegram ----------
+	private async leva2(arg?: string) {
+		const { ctx } = this;
+		if (arg !== "sim" && arg !== "nao") return this.avisar("Use /leva2 sim ou /leva2 nao.");
+		if (ctx.store.estado("leva2") !== "perguntada") return this.avisar("Não há pergunta da 2ª leva aberta.");
+		if (arg === "sim") {
+			ctx.store.definirEstado("leva2", "liberada");
+			return this.avisar("2ª leva liberada. Começa na próxima janela.");
+		}
+		ctx.store.definirEstado("leva2", "recusada");
+		return this.avisar("Ok, a 2ª leva não começa.");
+	}
+
+	// ---------- textos dos avisos ----------
 
 	private proximoPasso(c: ClinicaConfig, r: ClinicaRow): { texto: string; quando: number | null } {
 		const { ctx } = this;

@@ -1,9 +1,10 @@
 # Robô de vendas da DGC (agent bot do Chatwoot + Evolution API)
 
-Manda a 1ª mensagem às clínicas da campanha, faz o acompanhamento (lembretes no 3º e no 7º dia útil) e passa ao Gabriel, **dentro do Chatwoot**, tudo o que for de venda. Plano: DGC-367 (v2). Roda **só na VM trabalhadora**, nunca na Pi.
+Manda a 1ª mensagem às clínicas da campanha, faz o acompanhamento (lembretes no 3º e no 7º dia útil) e passa ao Gabriel, **dentro do Chatwoot**, tudo o que for de venda. Plano: DGC-367 (v3). **O Telegram saiu (DGC-414): o robô fala com o Gabriel pelo WhatsApp.** Roda **só na VM trabalhadora**, nunca na Pi.
 
 ```
-WhatsApp ⇅ Evolution API ──▶ Chatwoot ──webhook──▶ robô (este serviço) ──▶ Telegram (8h, alertas, /pausar)
+WhatsApp ⇅ Evolution API ──▶ Chatwoot ──webhook──▶ robô (este serviço) ──▶ WhatsApp do Gabriel (8h, alertas, comandos)
+                                                        └─▶ reserva: caixa "Alertas do robô" no Chatwoot
                  ▲                                      │ API do Chatwoot (nota, etiqueta, atribuição, status)
                  └──────── sendText / sendMedia ────────┘ SQLite (agendador e idempotência)
 ```
@@ -13,7 +14,9 @@ WhatsApp ⇅ Evolution API ──▶ Chatwoot ──webhook──▶ robô (este
 - **Conversa de fora da campanha**: o robô não responde e põe `open`, sem atribuir.
 - **Etiquetas** (funil): `1a-msg`, `respondeu`, `kit-enviado`, `com-gabriel`, `nao-quer` (robô), `conversa-marcada` (só humano), `robo-pausado` (humano; congela só aquela conversa).
 - Com `com-gabriel`, `nao-quer` ou `robo-pausado`, o robô não escreve nada na conversa e cancela o que estava na fila dela. Se o Chatwoot não responder, ele também não escreve e tenta no ciclo seguinte.
-- Telegram (grammy): resumo das 8h, alertas, lembrete das 4h comerciais e `/podeir`, `/pausar`, `/retomar`, `/status`, `/funil`.
+- **Avisos ao Gabriel** (resumo das 8h, alertas, lembrete das 4h comerciais, toque da 2ª leva e respostas dos comandos): saem do número da DGC pela Evolution, por uma função **separada** da de envio às clínicas, que só aceita `NUMEROS_COMANDO` (`src/seguro.ts`, `src/avisos.ts`). Não contam no limite de 5 por dia, não seguem a janela de horário nem a pausa.
+- **Canal reserva** (`src/adaptador-chatwoot.ts`, `criarReserva`): mensagem de entrada na conversa fixa da caixa "Alertas do robô" (canal API do Chatwoot). Entra **junto com o WhatsApp** em três casos: ban ou desconexão, queda de mais de 10 min e falha ao mandar um aviso pelo WhatsApp. Se `CHATWOOT_RESERVA_CONVERSA_ID` faltar, o robô sobe mesmo assim e registra no log que está sem reserva.
+- **Comandos** chegam pelo webhook do Chatwoot: texto que começa com `/`, vindo de um número de `NUMEROS_COMANDO`. `/` de qualquer outro número é mensagem comum. Mensagem do número de comando sem `/` recebe a lista de comandos. **A conversa do número de comando nunca é clínica**: sem etiqueta, kit, rascunho, nota, atribuição, lembrete, resumo ou funil.
 - Código `.ts` roda direto no Node 24 (`node src/main.ts`), sem build. Estado: `node:sqlite`.
 - Isolado do produto: pasta própria, `package.json` próprio. A infra (compose do Chatwoot e da Evolution) é da DGC-371, em `ferramentas/atendimento/`.
 
@@ -54,7 +57,9 @@ Variáveis do `robo.env` (nunca no Git, nunca em log):
 
 | Variável | Para quê |
 |---|---|
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram (quem grava é o Gabriel) |
+| `NUMEROS_COMANDO` | números que dão comando e recebem os avisos (lista separada por vírgula, `55` + DDD + número). **O robô não sobe** se algum estiver no `campanha.json`. Valor só no `robo.env`, nunca no Git |
+| `CHATWOOT_RESERVA_CONVERSA_ID` | id da conversa fixa da caixa "Alertas do robô" (criada pelo DevOps, DGC-370). Usa `CHATWOOT_CONTA` e `CHATWOOT_URL` |
+| `CHATWOOT_RESERVA_TOKEN` | opcional: token para postar na reserva; se faltar, usa `CHATWOOT_BOT_TOKEN` |
 | `WEBHOOK_SECRET` | segredo do webhook (`?token=`), gerado pelo DevOps |
 | `EVOLUTION_API_KEY` | chave da Evolution (`EVOLUTION_URL`, padrão `http://127.0.0.1:8080`; `EVOLUTION_INSTANCIA`, padrão `dgc`) |
 | `CHATWOOT_BOT_TOKEN` | token do agent bot (`CHATWOOT_URL`, padrão `http://127.0.0.1:3000`; `CHATWOOT_CONTA`, padrão `1`) |
@@ -87,7 +92,7 @@ systemctl --user daemon-reload && systemctl --user enable --now dgc-robo-vendas
 journalctl --user -u dgc-robo-vendas -f
 ```
 
-O robô **começa travado**: nada sai até o Gabriel mandar `/podeir` e tocar em **Liberar**.
+O robô **começa travado**: nada sai até o Gabriel mandar `/podeir` e depois `/liberar`.
 
 ## Ligar o agent bot à caixa (DevOps)
 
@@ -95,14 +100,21 @@ O robô **começa travado**: nada sai até o Gabriel mandar `/podeir` e tocar em
 2. Ligar o bot à caixa do WhatsApp **só depois** de o robô estar de pé; senão as conversas ficam presas em `pending`.
 3. Anotar o id do agente Gabriel em `CHATWOOT_GABRIEL_ID`.
 
-## Comandos do Telegram (só o `TELEGRAM_CHAT_ID`)
+## Comandos (só de `NUMEROS_COMANDO`, pelo WhatsApp)
 
-`/podeir` prévia + Liberar/Cancelar · `/pausar` · `/retomar` · `/funil` · `/status`. Se o número for bloqueado, `/retomar` recusa; só `/retomar forcar`, depois de decisão dos sócios.
+| Comando | O que faz |
+|---|---|
+| `/podeir` | prévia da 1ª leva; abre 30 min para o `/liberar` |
+| `/liberar` | libera o envio. Só vale até 30 min depois do `/podeir`; sem `/podeir`, não libera |
+| `/cancelar` | desiste do `/podeir`; nada é liberado |
+| `/pausar`, `/retomar` | para e volta. Com o número banido, só `/retomar forcar`, depois de decisão dos sócios |
+| `/status`, `/funil` | situação e funil |
+| `/leva2 sim`, `/leva2 nao` | resposta ao toque da 2ª leva |
 
 ## Testar
 
 ```bash
-npm test          # vitest: relógio falso, Evolution, Chatwoot e Telegram falsos; nada fala com o mundo real
+npm test          # vitest: relógio falso, Evolution e Chatwoot falsos; números de teste falsos; nada fala com o mundo real
 npm run typecheck
 ```
 
@@ -112,7 +124,8 @@ npm run typecheck
 
 ## Travas no código
 
-- Só envia para número que está em `campanha.json` (`src/seguro.ts`); grupos e outros contatos são ignorados.
+- Só envia às clínicas para número que está em `campanha.json` (`src/seguro.ts`); grupos e outros contatos são ignorados. Os avisos só vão para `NUMEROS_COMANDO`, por outra função.
+- Número de comando dentro da campanha: o robô não sobe.
 - Idempotência: cada envio tem a chave `clinica:tipo`, gravada antes de enviar. Reiniciar não repete.
 - Pausa total quando a Evolution mostra 401/403 (deslogado ou banido); não reconecta com outra sessão.
 - Na dúvida, passa ao Gabriel.

@@ -1,4 +1,4 @@
-import type { ChatwootPort } from "./types.ts";
+import type { ChatwootPort, ReservaPort } from "./types.ts";
 
 type Fetch = typeof fetch;
 
@@ -52,6 +52,29 @@ export function criarChatwoot(
 			const convs = (await chamar("GET", `/contacts/${contato.id}/conversations`)) as { payload?: { id: number }[] };
 			const ids = (convs.payload ?? []).map((c) => c.id);
 			return ids.length ? Math.max(...ids) : null;
+		},
+	};
+}
+
+/**
+ * Canal reserva (seção 6a do plano): mensagem de ENTRADA na conversa fixa da caixa "Alertas do robô"
+ * (canal API do Chatwoot), para o Gabriel ser avisado pelo app mesmo com o WhatsApp fora do ar.
+ * Não escreve em conversa de clínica. O token nunca entra em log.
+ */
+export function criarReserva(
+	cfg: { url: string; token: string; conta: number; conversaId: number },
+	f: Fetch = fetch,
+): ReservaPort {
+	const url = `${cfg.url.replace(/\/$/, "")}/api/v1/accounts/${cfg.conta}/conversations/${cfg.conversaId}/messages`;
+	return {
+		async postar(texto) {
+			const r = await f(url, {
+				method: "POST",
+				headers: { api_access_token: cfg.token, "content-type": "application/json" },
+				body: JSON.stringify({ content: texto, message_type: "incoming", private: false }),
+				signal: AbortSignal.timeout(20_000),
+			});
+			if (!r.ok) throw new Error(`Chatwoot reserva -> ${r.status}`);
 		},
 	};
 }

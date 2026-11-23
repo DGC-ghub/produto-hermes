@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Robô de vendas da DGC: agent bot do Chatwoot + Evolution API, com avisos no Telegram",
+  "description": "Robô de vendas da DGC: agent bot do Chatwoot + Evolution API, com avisos no WhatsApp do Gabriel",
   "engines": {
     "node": ">=24"
   },
@@ -11,9 +11,6 @@
     "start": "node src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "grammy": "1.46.0"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

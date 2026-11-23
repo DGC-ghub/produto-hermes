@@ -5,9 +5,10 @@ import { calendarioReal } from "../src/calendario.ts";
 import { Store } from "../src/db.ts";
 import { ritmoDe } from "../src/config.ts";
 import { Robo } from "../src/robo.ts";
-import { protegerWhatsApp } from "../src/seguro.ts";
+import { criarAvisos } from "../src/avisos.ts";
+import { protegerComando, protegerWhatsApp } from "../src/seguro.ts";
 import { canonico } from "../src/telefone.ts";
-import type { Botao, Campanha, ChatwootPort, Ctx, Ritmo, Status_, WhatsAppPort } from "../src/types.ts";
+import type { Campanha, ChatwootPort, Ctx, Ritmo, Status_, WhatsAppPort } from "../src/types.ts";
 
 export const MIN = 60_000;
 export const HORA = 60 * MIN;
@@ -92,23 +93,49 @@ export function cwFalso() {
 	};
 }
 
-export interface MsgTg {
+/** Números FALSOS de teste (nunca um número real). */
+export const NUM_COMANDO = "5511900000001";
+export const NUM_OUTRO = "5511900000002";
+export const JID_COMANDO = `${NUM_COMANDO}@s.whatsapp.net`;
+
+export interface MsgAviso {
 	texto: string;
-	botoes?: Botao[][];
 }
 
 export function criar(opts: { agora?: number; rand?: number; ritmo?: Partial<Ritmo>; caminho?: string } = {}) {
 	const relogio = { t: opts.agora ?? TER_9H };
 	const wa = waFalso();
 	const cw = cwFalso();
-	const tgMsgs: MsgTg[] = [];
+	const avisos: MsgAviso[] = [];
+	const reserva: MsgAviso[] = [];
+	const avisoWa = { falha: false, jids: [] as string[] };
+	const comandoWa = {
+		enviarTexto: async (jid: string, texto: string) => {
+			if (avisoWa.falha) throw new Error("evolution fora do ar");
+			avisoWa.jids.push(jid);
+			avisos.push({ texto });
+		},
+	};
+	const reservaFalsa = { falha: false };
+	const reservaPort = {
+		postar: async (texto: string) => {
+			if (reservaFalsa.falha) throw new Error("chatwoot fora do ar");
+			reserva.push({ texto });
+		},
+	};
 	const store = new Store(opts.caminho ?? ":memory:");
 	store.semear(campanha);
 	const ctx: Ctx = {
 		store,
 		wa: protegerWhatsApp(wa.port, campanha),
 		cw: cw.port,
-		tg: { enviar: async (texto, botoes) => void tgMsgs.push({ texto, botoes }) },
+		avisos: criarAvisos({
+			wa: protegerComando(comandoWa, [NUM_COMANDO]),
+			numeros: [NUM_COMANDO],
+			reserva: reservaPort,
+			log: () => {},
+		}),
+		numerosComando: [NUM_COMANDO],
 		cal: calendarioReal(),
 		ritmo: { ...ritmoDe(false), ...opts.ritmo },
 		campanha,
@@ -117,21 +144,27 @@ export function criar(opts: { agora?: number; rand?: number; ritmo?: Partial<Rit
 		midiaDir: "/midia",
 		log: () => {},
 	};
-	const robo = new Robo(ctx, "42");
+	const robo = new Robo(ctx);
 	return {
 		ctx,
 		robo,
 		store,
 		wa,
 		cw,
-		tgMsgs,
+		avisos,
+		reserva,
+		avisoWa,
+		reservaFalsa,
 		relogio,
 		avancar: (ms: number) => void (relogio.t += ms),
 		irPara: (iso: string) => void (relogio.t = em(iso)),
-		/** Gabriel, no chat certo. */
-		gabriel: (ev: Parameters<Robo["aoTelegram"]>[1]) => robo.aoTelegram("42", ev),
+		/** Mensagem do número de comando (Gabriel) pelo webhook do Chatwoot. */
+		gabriel: (texto: string | null, jid = JID_COMANDO) =>
+			robo.aoReceber({ jid, texto, tipo: texto === null ? "audio" : "texto", conversaId: 900, etiquetas: [] }),
+		/** /podeir e /liberar, como o Gabriel faz. */
 		liberar: async () => {
-			await robo.aoTelegram("42", { tipo: "botao", dado: "lib:1" });
+			await robo.aoReceber({ jid: JID_COMANDO, texto: "/podeir", tipo: "texto", conversaId: 900, etiquetas: [] });
+			await robo.aoReceber({ jid: JID_COMANDO, texto: "/liberar", tipo: "texto", conversaId: 900, etiquetas: [] });
 		},
 		/** Roda o agendador minuto a minuto. */
 		rodar: async (minutos: number) => {
