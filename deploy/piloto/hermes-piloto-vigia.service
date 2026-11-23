@@ -1,0 +1,7 @@
+[Unit]
+Description=Vigia do Hermes piloto (aviso de queda e de volta)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/hermes-piloto/vigia.env
+ExecStart=%h/hermes-piloto/shared/vigia-hermes.sh
