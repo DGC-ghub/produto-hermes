@@ -66,8 +66,11 @@ const cert = readFileSync('certs/dev-cert.pem')
 const port = Number(process.env.PORT ?? 5173)
 
 const server = createServer({ key, cert }, app)
-server.listen(port, () => {
-  console.log(`[hermes] produção (HTTPS, sem HMR) em https://localhost:${port}`)
+// HOST restringe a interface (ex.: 127.0.0.1 no piloto, atrás do `tailscale serve`).
+// Sem HOST, escuta em todas as interfaces, como sempre foi.
+const host = process.env.HOST || undefined
+server.listen(port, host, () => {
+  console.log(`[hermes] produção (HTTPS, sem HMR) em https://${host ?? 'localhost'}:${port}`)
 })
 
 // Encerramento limpo quando o systemd reinicia/para o serviço. Fecha os sockets Baileys

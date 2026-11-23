@@ -7,6 +7,7 @@
 set -euo pipefail
 
 DEPLOY="${HERMES_DEPLOY:-/home/pi/hermes-deploy}"
+UNIT="${HERMES_UNIT:-hermes}"   # piloto: HERMES_UNIT=hermes-piloto
 [ -L "$DEPLOY/current" ] || { echo "[rollback] $DEPLOY/current não existe (fez o cutover?)" >&2; exit 1; }
 
 cur="$(readlink -f "$DEPLOY/current")"
@@ -20,6 +21,6 @@ mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"
 
 if [ "${RESTART:-1}" = "1" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-  systemctl --user restart hermes
+  systemctl --user restart "$UNIT"
 fi
 echo "[rollback] OK: current -> $prev"
