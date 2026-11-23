@@ -70,4 +70,48 @@ describe('webhook WhatsApp', () => {
     expect(r.status).toBe(403)
     expect(persistInbound).not.toHaveBeenCalled()
   })
+
+  it('M2: corpo de 2 MB recebe 413 e nada é persistido', async () => {
+    const { action } = await import('./webhook.whatsapp')
+    const grande = 'x'.repeat(2 * 1024 * 1024)
+    const r = await action({
+      request: new Request('https://x.test/webhook/whatsapp', {
+        method: 'POST',
+        body: grande,
+        headers: { 'x-hub-signature-256': assinar(grande) },
+      }),
+    } as never)
+    expect(r.status).toBe(413)
+    expect(persistInbound).not.toHaveBeenCalled()
+  })
+
+  it('M2: Content-Length declarado acima do teto recebe 413 sem ler o corpo', async () => {
+    const { action } = await import('./webhook.whatsapp')
+    const r = await action({ request: post({ 'content-length': '5000000' }) } as never)
+    expect(r.status).toBe(413)
+  })
+
+  it('M3: rajada de inválidos não bloqueia um pedido válido depois', async () => {
+    process.env.RATE_LIMIT_MAX = '3'
+    const { action } = await import('./webhook.whatsapp')
+    for (let i = 0; i < 20; i++) {
+      const r = await action({ request: post({ 'x-hub-signature-256': 'sha256=00' }) } as never)
+      expect(r.status).toBe(403)
+    }
+    const ok = await action({ request: post({ 'x-hub-signature-256': assinar(BODY) }) } as never)
+    expect(ok.status).toBe(200)
+  })
+
+  it('M3: o limite global continua valendo para pedidos válidos', async () => {
+    process.env.RATE_LIMIT_MAX = '2'
+    process.env.RATE_LIMIT_WINDOW_MS = '3600000'
+    vi.resetModules()
+    const { action } = await import('./webhook.whatsapp')
+    const sig = { 'x-hub-signature-256': assinar(BODY) }
+    const status: number[] = []
+    for (let i = 0; i < 3; i++) {
+      status.push((await action({ request: post(sig) } as never)).status)
+    }
+    expect(status).toEqual([200, 200, 429])
+  })
 })
