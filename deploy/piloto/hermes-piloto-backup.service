@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup diario do banco do Hermes piloto (SQLite + rclone crypt)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/hermes-piloto/backup.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/hermes-piloto/current/scripts/backup-db.sh

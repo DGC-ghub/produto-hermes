@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes piloto (Recepcionista) - so 127.0.0.1:5190, atras do tailscale serve
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hermes-piloto/current
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --env-file-if-exists=.env server.js
+Restart=always
+RestartSec=5
+MemoryMax=900M
+
+[Install]
+WantedBy=default.target
