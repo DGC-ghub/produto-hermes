@@ -3,6 +3,7 @@ import { executarPedido, horariosParaOferecer } from './agenda/pedido'
 import { agendaDoTenant, tratarRespostaConfirmacao } from './agenda/registro'
 import { reportDegradation, reportSensitiveHandoff } from './alarm.server'
 import { activeProviderName, generateAttendantReply } from './attendant'
+import { comAvisoDeAssistente } from './attendant/aviso'
 import { buildCompanyRules } from './attendant/rules'
 import { optInHabilitado, safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
@@ -788,7 +789,12 @@ async function runIncomingMessage(
           ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
           : null)
   if (atalho) {
-    const reply = atalho.reply
+    const reply = atalho.optIn
+      ? atalho.reply
+      : comAvisoDeAssistente(atalho.reply, {
+          config: configEfetiva,
+          primeiraMensagem: history.length === 0,
+        })
     // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
     // o cérebro), mas o invariante é o mesmo — nenhuma mensagem de assistente entra numa
     // conversa que um humano conduz — e um invariante protegido em um caminho só vira bug no
@@ -975,7 +981,11 @@ async function runIncomingMessage(
     pedidoResolvido: resultadoAgenda?.ok === true || pacienteEncerrouPedido(message),
     precisaHumano: needsHuman,
   })
-  const reply = perguntarOptIn ? `${replyDoCerebro}\n\n${OPT_IN_QUESTION}` : replyDoCerebro
+  const replyComAviso = comAvisoDeAssistente(replyDoCerebro, {
+    config: configEfetiva,
+    primeiraMensagem: history.length === 0,
+  })
+  const reply = perguntarOptIn ? `${replyComAviso}\n\n${OPT_IN_QUESTION}` : replyComAviso
   const confidence = decision.confidence
   const sources: ProcessIncomingMessageSource[] = retrieved.map((chunk) => ({
     fileName: chunk.fileName,

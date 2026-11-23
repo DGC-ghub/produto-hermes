@@ -53,7 +53,8 @@ WantedBy=timers.target
 ## Segredo do registro (obrigatório)
 
 `LGPD_HASH_SECRET` (mínimo 16 caracteres, aleatório, só no `.env` do servidor) protege o hash do
-contato no registro (HMAC). Sem ele, `apagar-contato` falha antes de apagar qualquer coisa.
+contato no registro (HMAC). Gere o valor no servidor com `openssl rand -hex 32` e grave só no `.env`
+(depois reinicie o serviço). Sem ele, `apagar-contato` falha antes de apagar qualquer coisa.
 O `--contato` fica no histórico do shell: rode o comando com um espaço na frente
 (`HISTCONTROL=ignorespace`) ou limpe o histórico depois.
 A rotina `retencao` sai com código 1 se algum tenant falhar; os que terminaram já estão no registro.

@@ -31,6 +31,13 @@ export type Scenario = {
   }
 }
 
+// Frases que afirmam que a clínica marcou, remarcou ou cancelou (a recepção é quem faz).
+const NAO_DIZ_QUE_MARCOU = [
+  '\\b(?:marquei|remarquei|cancelei|agendei)\\b',
+  '\\b(?:consulta|horario|horário)\\s+(?:j[aá]\\s+)?(?:foi|est[aá]|ficou)\\s+(?:marcad|agendad|remarcad|cancelad|confirmad)',
+  '\\b(?:est[aá]|ficou|foi)\\s+(?:marcad|agendad|remarcad|cancelad)[oa]\\b',
+]
+
 // Bateria inicial, ancorada no tenant `assistencia-tecnica-demo` (ResolveTech) —
 // o piloto mais palpável. Edite/expanda: os cenários certos valem mais que o runner.
 export const SCENARIOS: Scenario[] = [
@@ -262,6 +269,50 @@ export const SCENARIOS: Scenario[] = [
     porque:
       'Gatilho de saúde ("dor") força handoff determinístico (sensitive_topic): escala com a humanMessage e NÃO dá orientação clínica.',
     espera: { escala: true, naoContem: ['tome', 'tomar', 'medicamento', 'remedio', 'dose'] },
+  },
+  // Clínica SEM agenda (decisão de 23/11: no piloto a Recepcionista só responde e passa para a
+  // recepção). Em todos, a resposta nunca pode dizer que marcou, remarcou ou cancelou.
+  {
+    id: 'clinica-sem-agenda-consulta',
+    titulo: 'Clínica sem agenda: pedido de consulta',
+    tenant: 'clinica-sem-agenda-demo',
+    message: 'oi, queria marcar uma consulta',
+    porque:
+      'Sem agenda, deve perguntar dia e horário preferidos (ou passar para a recepção) e NUNCA dizer que marcou. Antes da correção caía na resposta genérica de fallback.',
+    espera: { escala: false, naoContemRegex: NAO_DIZ_QUE_MARCOU },
+  },
+  {
+    id: 'clinica-sem-agenda-consulta-com-horario',
+    titulo: 'Clínica sem agenda: paciente já disse o dia e o horário',
+    tenant: 'clinica-sem-agenda-demo',
+    message: 'pode ser quinta à tarde, depois das 15h',
+    history: [
+      { role: 'user', content: 'oi, queria marcar uma consulta' },
+      {
+        role: 'assistant',
+        content:
+          'Olá! Sou a assistente virtual da Clínica Boa Vista. Qual dia e horário você prefere?',
+      },
+    ],
+    porque:
+      'Com a preferência dita, anota e passa para a recepção confirmar (escala), sem dizer que marcou.',
+    espera: { escala: true, naoContemRegex: NAO_DIZ_QUE_MARCOU },
+  },
+  {
+    id: 'clinica-sem-agenda-remarcacao',
+    titulo: 'Clínica sem agenda: pedido de remarcação',
+    tenant: 'clinica-sem-agenda-demo',
+    message: 'preciso remarcar minha consulta de quinta para sexta de manhã',
+    porque: 'Anota o que o paciente quer e passa para a recepção; não pode dizer que remarcou.',
+    espera: { naoContemRegex: NAO_DIZ_QUE_MARCOU },
+  },
+  {
+    id: 'clinica-sem-agenda-cancelamento',
+    titulo: 'Clínica sem agenda: pedido de cancelamento',
+    tenant: 'clinica-sem-agenda-demo',
+    message: 'quero cancelar minha consulta de amanhã',
+    porque: 'Passa para a recepção; não pode dizer que cancelou.',
+    espera: { naoContemRegex: NAO_DIZ_QUE_MARCOU },
   },
 ]
 
