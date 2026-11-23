@@ -152,7 +152,7 @@ export function buildPrompt(input: AttendantInput): string {
     ? 'Você pode PROPOR uma ação. Para "abrir_chamado": proponha SÓ depois que o cliente confirmar que quer agendar ou registrar (um "sim" claro). Enquanto ele não confirmar, ofereça e pergunte, e use "action": null. QUANDO ele confirmar, a action abrir_chamado vem NESSE MESMO JSON — detalhe que faltar entra na description como "a confirmar". NUNCA escreva que registrou/abriu algo com "action": null: sem a action, nada é registrado.'
     : podeAgendar
       ? 'Este atendimento não abre chamados. Agendamento segue só o bloco HORÁRIOS LIVRES; qualquer outro pedido, passe para uma pessoa do time com needsHuman=true.'
-      : 'Este atendimento não registra chamados nem agendamentos: use SEMPRE "action": null. NUNCA escreva que registrou, abriu, agendou ou marcou algo — nada disso acontece de verdade aqui. Se o cliente pedir para registrar ou agendar, diga que vai passar para uma pessoa do time e use needsHuman=true.'
+      : 'Este atendimento não registra chamados nem agendamentos: use SEMPRE "action": null. NUNCA escreva que registrou, abriu, agendou ou marcou algo — nada disso acontece de verdade aqui. Se o cliente pedir para registrar ou agendar e ainda não disse o dia e o horário que prefere, PERGUNTE o dia e o horário antes de passar (needsHuman=false nesse turno); com a preferência dita, diga que a recepção vai confirmar e use needsHuman=true.'
 
   // O FORMATO é capability-aware junto com a instrução, e não só ela: o modelo preenche
   // o que o schema mostra. Anunciar o objeto da action a quem não tem a ferramenta é

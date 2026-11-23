@@ -78,6 +78,8 @@ export type TenantConfig = {
   // conversa fica exatamente como era (a demo gravada não muda). `limiteDiario` é o teto de
   // conversas que a empresa abre por dia numa reativação (ver docs/whatsapp-oficial-notas.md).
   optIn?: { enabled: boolean; limiteDiario?: number }
+  // Aviso fixo "sou a assistente virtual" na 1ª mensagem da conversa (o balcão acrescenta, não o modelo).
+  avisoAssistente?: boolean
 }
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
@@ -190,6 +192,7 @@ export function parseTenantConfig(slug: string, raw: unknown): TenantConfig {
         ? root.nextStepPrompt
         : undefined,
     optIn: parseOptIn(root.optIn),
+    avisoAssistente: root.avisoAssistente === true ? true : undefined,
   }
 }
 

@@ -22,6 +22,12 @@ const TICKET_RULES = [
 const NO_TICKET_TOOL_RULE =
   'Este atendimento não registra chamados nem agendamentos. NUNCA diga que registrou, abriu, agendou ou marcou algo — nada disso acontece de verdade aqui. Se o cliente pedir para registrar ou agendar, diga que vai passar para uma pessoa do time cuidar disso e encaminhe (needsHuman).'
 
+// Quem não tem agenda (nem chamado): pedido de consulta, remarcação ou cancelamento NÃO é
+// recusado de cara. Primeiro pergunta o dia e o horário que o paciente prefere (a recepção
+// confirma depois); só então passa para a recepção. Nunca diz que marcou, remarcou ou cancelou.
+export const NO_AGENDA_RULE =
+  'Esta regra vale sobre a anterior no caso de horário. Se o cliente pedir para marcar consulta ou horário e ainda não disse o dia e o período preferidos, PERGUNTE o dia e o horário que ele prefere (e o nome) e use needsHuman=false nesse turno. Quando ele responder, diga que anotou o pedido e que a recepção vai confirmar o horário com ele, e use needsHuman=true com handoffReason "pedido_de_horario". Remarcação e cancelamento: anote o que ele quer e passe direto para a recepção (needsHuman=true). NUNCA diga que marcou, remarcou, cancelou ou confirmou horário: quem faz isso é a recepção.'
+
 // Uma linha de persona derivada do businessProfile: dá ao cérebro a identidade
 // e o tom DAQUELA empresa (antes só chegava o tom genérico das BASE_RULES).
 function personaRule(config: TenantConfig): string {
@@ -40,9 +46,15 @@ export function hasTicketTool(config: TenantConfig): boolean {
   return config.tools.some((tool) => tool.name === 'abrir_chamado' && tool.enabled)
 }
 
+/** A empresa tem a ferramenta de agenda LIGADA? */
+export function hasAgendaTool(config: TenantConfig): boolean {
+  return config.tools.some((tool) => tool.name === 'pedir_agendamento' && tool.enabled)
+}
+
 export function buildCompanyRules(config: TenantConfig): string[] {
   const rules = [personaRule(config), ...BASE_RULES]
   rules.push(...(hasTicketTool(config) ? TICKET_RULES : [NO_TICKET_TOOL_RULE]))
+  if (!hasTicketTool(config) && !hasAgendaTool(config)) rules.push(NO_AGENDA_RULE)
   if (config.knowledge.sourcePolicy === 'answer_only_from_knowledge') {
     rules.push(
       'Responda somente com base nas informações da empresa. Se algo não estiver na base, diga que vai verificar ou encaminhar — não invente.',

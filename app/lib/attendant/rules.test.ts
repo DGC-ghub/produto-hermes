@@ -99,3 +99,24 @@ describe('buildCompanyRules', () => {
     expect(buildCompanyRules(empty).some((r) => r.includes('NÃO atende'))).toBe(false)
   })
 })
+
+describe('regra de quem não tem agenda nem chamado (DGC-442)', () => {
+  it('manda perguntar dia e horário antes de passar, sem dizer que marcou', () => {
+    const rule = buildCompanyRules(configWith()).find((r) =>
+      r.includes('PERGUNTE o dia e o horário'),
+    )
+    expect(rule).toBeDefined()
+    expect(rule).toContain('NUNCA diga que marcou')
+    expect(rule).toContain('recepção')
+  })
+
+  it('não entra para quem tem agenda ou chamado', () => {
+    const comAgenda: TenantConfig = {
+      ...configWith(),
+      tools: [{ name: 'pedir_agendamento', enabled: true }],
+    }
+    for (const c of [comAgenda, withTicketTool(configWith())]) {
+      expect(buildCompanyRules(c).some((r) => r.includes('PERGUNTE o dia e o horário'))).toBe(false)
+    }
+  })
+})
