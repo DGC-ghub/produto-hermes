@@ -15,6 +15,7 @@ DEPLOY="${HERMES_DEPLOY:-/home/pi/hermes-deploy}"          # raiz do deploy vers
 SHARED="$DEPLOY/shared"                                    # estado que persiste
 KEEP="${HERMES_KEEP:-5}"                                   # releases a manter
 REF="${1:-HEAD}"
+UNIT="${HERMES_UNIT:-hermes}"                            # serviço systemd (user): piloto = hermes-piloto
 
 command -v git >/dev/null || { echo "[release] git ausente" >&2; exit 1; }
 [ -d "$SHARED" ] || { echo "[release] falta $SHARED — rode o setup inicial (deploy/releases.md)" >&2; exit 1; }
@@ -54,7 +55,7 @@ if [ "${RESTART:-1}" = "1" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
   # Migração precisa do banco LIVRE (lock do SQLite) → serviço parado; e precisa correr
   # ANTES do serviço subir com o código novo (que espera as colunas novas).
-  systemctl --user stop hermes
+  systemctl --user stop "$UNIT"
 
   # (a) Snapshot do banco ANTES do migrate: uma migração PARCIAL que falha NÃO é desfeita
   # reapontando o symlink (o schema avança órfão à frente do código, e o _prisma_migrations
@@ -67,10 +68,10 @@ if [ "${RESTART:-1}" = "1" ]; then
   fi
 
   if ( cd "$DEPLOY/current" && npx prisma migrate deploy ); then
-    systemctl --user start hermes || true
+    systemctl --user start "$UNIT" || true
     # (c) Falha do start NÃO pode ser engolida: sem isto o script sairia 0 com o serviço
     # no chão E ainda rotacionaria releases.
-    if ! systemctl --user is-active --quiet hermes; then
+    if ! systemctl --user is-active --quiet "$UNIT"; then
       echo "[release] FALHOU: serviço não subiu após o deploy — NÃO rotaciono releases" >&2
       exit 1
     fi
@@ -90,7 +91,7 @@ if [ "${RESTART:-1}" = "1" ]; then
       # Migrations do Hermes são ADITIVAS (ADD COLUMN): código VELHO ignora coluna nova,
       # então subir o release anterior mantém o piloto no ar. Alerta pra CONFERIR o schema.
       ln -sfn "$prev" "$DEPLOY/current.tmp"; mv -T "$DEPLOY/current.tmp" "$DEPLOY/current"
-      systemctl --user start hermes || true
+      systemctl --user start "$UNIT" || true
       echo "[release] revertido pro release anterior ($prev) — CONFIRA _prisma_migrations" >&2
     else
       # (b) Sem release anterior válido: NÃO sobe código novo contra schema falho.
