@@ -1,98 +1,74 @@
-# Hermes: como ver se caiu e como voltar
+# Hermes piloto: como ver se caiu e como voltar
 
-Uma página, para quem está de plantão. Itens `<PREENCHER>` dependem do servidor do Danilo
-e do Uptime Kuma; o Arquiteto/sócio completa antes do piloto (DGC-349).
-Nunca cole token, senha ou chave nesta página.
+Uma página, para quem está de plantão. Itens `<PREENCHER>` o sócio completa antes do piloto (DGC-349).
+Nunca cole token, senha ou chave aqui.
+
+O piloto roda na **VM trabalhadora** (não no servidor do Danilo): serviço de usuário
+`hermes-piloto.service`, porta `127.0.0.1:5190` (HTTPS), atrás do `tailscale serve`; só `/webhook/whatsapp`
+fica público (Funnel). Infra: DGC-422.
 
 ## 1. Como saber se caiu
 
-- **Aviso automático:** o Uptime Kuma manda mensagem no Telegram quando um monitor cai
-  ("DOWN") e quando volta ("UP"). Os monitores estão na seção 6.
-- **Teste manual (de qualquer lugar com acesso):**
+- **Aviso automático:** o vigia (`hermes-piloto-vigia.timer`, a cada 60 s) manda mensagem no **WhatsApp do sócio**
+  e na caixa **"Alertas do robô"** do Chatwoot: "FORA" depois de 2 falhas seguidas (~2 min) e "VOLTOU".
+- **Teste manual:**
   ```bash
-  curl -s -o /dev/null -w '%{http_code}\n' https://<HOST_PUBLICO>/health
-  # 200 = vivo e banco respondendo. 503 = app de pé, banco com problema. Sem resposta = caiu.
-  curl -s -o /dev/null -w '%{http_code}\n' "https://<HOST_PUBLICO>/webhook/whatsapp"
-  # 403 = saudável (a rota recusa GET sem o token de verificação da Meta). Outro código = problema.
+  curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:5190/health   # na VM: 200 = vivo e banco ok
+  curl -s -o /dev/null -w '%{http_code}\n' https://trabalhadora.tail04b4ef.ts.net/webhook/whatsapp   # 403 = saudável
   ```
-- `/health` responde só `{"status":"ok"}` ou `{"status":"degraded"}`; não expõe versão nem dados.
+  `/health` 503 = app de pé, banco com problema. Sem resposta = caiu. Webhook 403 sem token é o normal.
 
-## 2. Subir de novo
-
-Hoje o serviço é um unit systemd de usuário chamado `hermes` (ver `deploy/hermes.service`).
-No servidor do Danilo: `<CONFIRMAR: systemd de usuário, ou Docker?>`
+## 2. Subir de novo (na VM, usuário `dgc`)
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-systemctl --user status hermes        # está ativo?
-systemctl --user restart hermes       # subir de novo
-sleep 5; curl -sk -o /dev/null -w '%{http_code}\n' https://localhost:5173/health   # espera 200
+systemctl --user status hermes-piloto
+systemctl --user restart hermes-piloto
+sleep 5; curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:5190/health   # espera 200
 ```
-
-Se o problema começou logo depois de uma atualização, volte a versão anterior (segundos,
-sem rebuild; ver `deploy/rollback.sh`):
-
-```bash
-deploy/rollback.sh
-```
-
-Se for Docker (`<CONFIRMAR>`): `docker ps -a | grep hermes` e `docker restart <container>`.
-
-Não faça deploy novo nem mexa no `.env` durante a queda sem avisar um sócio.
+Logo depois de atualização: `HERMES_UNIT=hermes-piloto deploy/rollback.sh` (volta a versão anterior em segundos; ver `deploy/releases.md`).
+Não faça deploy nem mexa no `.env` durante a queda sem avisar um sócio.
+Se o webhook público falha mas o `/health` local está 200: confira `tailscale serve status` e o Funnel (`tailscale funnel status`).
 
 ## 3. Onde ver o log
 
-- systemd/arquivo: `tail -n 100 <CAMINHO>/hermes.log` (no Pi: `~/projects/produto-hermes/hermes.log`).
-- Docker: `docker logs --tail 100 <container>`.
-- Log não deve ter token nem conteúdo de conversa; se tiver, avise o Arquiteto sem colar o trecho.
+`journalctl --user -u hermes-piloto -n 100 --no-pager`. Não deve ter token nem conversa; se tiver, avise o Arquiteto sem colar o trecho.
 
 ## 4. Se o WhatsApp desconectar
 
 1. Confirme que o Hermes está de pé (seção 1). Se estiver, o problema é a conexão do número.
-2. Abra o painel do operador, página **Canais** (`/canais`), e veja o status da conexão.
-3. Número pelo QR (Baileys): quem tem o celular do número escaneia o QR novo na página.
-   Número pela API oficial (Meta): veja o status do número e do token no painel da Meta; não troque
-   token sem um sócio.
-4. Se não reconectar em 15 minutos, ligue para quem está na seção 5 e avise a clínica que
-   as mensagens estão sendo atendidas por pessoa.
+2. Painel do operador, página **Canais** (`/canais`): veja o status.
+3. API oficial (Meta): veja número e token no painel da Meta; não troque token sem um sócio.
+4. Sem reconectar em 15 minutos: ligue para quem está na seção 5 e avise que a clínica será atendida por pessoa.
 
 ## 5. Quem tem acesso e para quem ligar
 
 | O quê | Quem | Contato |
 |---|---|---|
-| Servidor do Danilo (SSH/painel) | `<PREENCHER>` | `<PREENCHER>` |
-| Uptime Kuma (admin) | `<PREENCHER>` | `<PREENCHER>` |
-| Bot de Telegram do alerta | `<PREENCHER>` | `<PREENCHER>` |
+| VM trabalhadora (SSH, serviço) | `<PREENCHER>` | `<PREENCHER>` |
+| Tailscale (ACL/Funnel) | Gabriel | `<PREENCHER>` |
+| Chatwoot ("Alertas do robô") | `<PREENCHER>` | `<PREENCHER>` |
 | Painel da Meta / número do WhatsApp | `<PREENCHER>` | `<PREENCHER>` |
-| Decisão de negócio (sócio de plantão) | `<PREENCHER>` | `<PREENCHER>` |
+| Sócio de plantão | `<PREENCHER>` | `<PREENCHER>` |
 
-Ordem de ligação: 1) sócio de plantão, 2) Danilo (servidor), 3) Arquiteto.
-Quem recebe o aviso do Telegram: `<PREENCHER, grupo ou pessoa>`.
+Ordem: 1) sócio de plantão, 2) Arquiteto. Quem recebe o aviso: `<PREENCHER números, em ALERTA_NUMEROS>`.
 
-## 6. Monitores no Uptime Kuma (configuração para criar)
+## 6. O vigia (como está montado)
 
-Usar o Kuma que já existe no servidor. Nada de serviço novo.
+Arquivos: `scripts/vigia-hermes.sh`, `deploy/piloto/hermes-piloto-vigia.{service,timer}`.
+Credenciais só em `~/.config/hermes-piloto/vigia.env` (`chmod 600`, fora do Git), variáveis:
+`VIGIA_PUBLIC_URL`, `CHATWOOT_URL/TOKEN/ACCOUNT/CONVERSA`, `EVOLUTION_URL/KEY/INSTANCIA`, `ALERTA_NUMEROS`.
+Instalar (precisa do aval dos sócios): copiar os dois units para `~/.config/systemd/user/`,
+`systemctl --user daemon-reload && systemctl --user enable --now hermes-piloto-vigia.timer`.
+Teste sem enviar nada: `VIGIA_DRY_RUN=1 scripts/vigia-hermes.sh`.
+**Limite:** se a VM inteira cair, o vigia cai junto. Por isso o Kuma do Danilo entra depois, de fora, com os
+mesmos dois endereços (`/health` por HTTPS e o webhook com 403 aceito).
 
-| Monitor | Tipo | URL | Intervalo | Retentativas | Critério de saúde |
+## 7. Teste de queda (registrar depois de feito)
+
+| Combinado | Parou às | Aviso FORA às | Voltou às | Aviso VOLTOU às | Evidência |
 |---|---|---|---|---|---|
-| Hermes saúde | HTTP(s) | `https://<HOST_PUBLICO>/health` | 60 s | 2 | código 200 |
-| Hermes webhook WhatsApp | HTTP(s) | `https://<HOST_PUBLICO>/webhook/whatsapp` | 60 s | 2 | código aceito: **403** (GET sem token é recusado de propósito) |
-| Hermes processo (opcional) | Docker container ou Push | `<CONFIRMAR>` | 60 s | 2 | container rodando |
+| `<PENDENTE>` | | | | | print sem dado sensível, em DGC-349 |
 
-Notas:
-- Com 60 s e 2 retentativas, o aviso de queda chega em cerca de 3 minutos.
-- Marcar notificar ao voltar (UP) e reenviar a cada 30 min enquanto estiver fora.
-- **Notificação Telegram** (Settings > Notifications > Telegram): o *Bot Token* e o *Chat ID*
-  são digitados direto na tela do Kuma, que os guarda no próprio banco. Nunca em arquivo do
-  repositório, comentário de tarefa ou print. Criar o bot no @BotFather é feito por um sócio.
-- Se o Kuma estiver na mesma máquina do Hermes, pode usar `https://localhost:5173` com
-  "Ignorar erro de TLS" apenas nesse monitor local.
-
-## 7. Teste de queda (registrar aqui depois de feito)
-
-| Data/hora combinada | Parou às | Aviso DOWN chegou às | Voltou às | Aviso UP chegou às | Evidência |
-|---|---|---|---|---|---|
-| `<PENDENTE>` | | | | | print sem dado sensível, na tarefa DGC-349 |
-
-Procedimento: avisar o sócio e a clínica, `systemctl --user stop hermes`, esperar 3 min,
-conferir o DOWN no Telegram, `systemctl --user start hermes`, conferir o UP.
+Procedimento: avisar o sócio, `systemctl --user stop hermes-piloto`, esperar 3 min, conferir o aviso de queda,
+`systemctl --user start hermes-piloto`, conferir o de volta. Não pare o piloto com atendimento real em curso.
