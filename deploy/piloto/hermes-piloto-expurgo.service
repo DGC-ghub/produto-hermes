@@ -1,0 +1,10 @@
+[Unit]
+Description=Expurgo LGPD do Hermes piloto (apaga conversas alem do prazo de cada empresa, 90 dias)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/hermes-piloto/current
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LGPD_LOG=%h/hermes-piloto/data/lgpd-apagados.jsonl
+ExecStart=/usr/bin/npm run lgpd:retencao -- --confirmar
+MemoryMax=400M

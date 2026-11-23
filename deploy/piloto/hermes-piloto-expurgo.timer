@@ -1,0 +1,9 @@
+[Unit]
+Description=Expurgo LGPD do Hermes piloto, diario as 03:30 (antes do backup das 03:45)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
