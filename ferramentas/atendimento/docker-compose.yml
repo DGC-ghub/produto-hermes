@@ -26,6 +26,8 @@ x-chatwoot-env: &chatwoot-env
   LOG_LEVEL: info
   RAILS_LOG_TO_STDOUT: "true"
   ENABLE_PUSH_RELAY_SERVER: "true"
+  # Libera o webhook do Chatwoot para a Evolution pela rede interna do Docker (sem isso, o init e as respostas não saem).
+  SAFE_FETCH_ALLOW_PRIVATE_NETWORK: "true"
 
 services:
   postgres:

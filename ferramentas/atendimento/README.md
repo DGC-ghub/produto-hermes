@@ -87,3 +87,5 @@ Instância `dgc-vendas` (Baileys, conexão por QR como aparelho conectado). A ch
 - Agent bot `Robo de vendas DGC` criado, token em `~/.config/dgc-atendimento/robo.env`, **sem caixa ligada** (DGC-370).
 - RAM com 1 conversa (a do QR): evolution 143 MiB, sidekiq 583 MiB (limite 600: apertado), web 395, postgres 114, redis 15. VM com 5,2 GB disponíveis.
 - Novos usuários: `scripts/criar-usuario.sh "Nome" email` (senha digitada na VM, sem eco).
+- **Armadilha 2 (22/11, número conectado):** o Chatwoot v4 bloqueia webhook para endereço privado (`SafeFetch`, erro `Hostname 'evolution' has no public ip addresses`), então o `init` e toda resposta enviada pelo Chatwoot ao WhatsApp não saíam. Correção: `SAFE_FETCH_ALLOW_PRIVATE_NETWORK: "true"` no `x-chatwoot-env` (aprovada pelo Gabriel; a rede é interna do Docker). Depois disso a instância `dgc-vendas` ficou `open`.
+- RAM com o número conectado: chatwoot-web 604/700 MiB, sidekiq 530/600 MiB (apertado), evolution 154 MiB. VM com ~5,4 GB disponíveis. Se o sidekiq estourar, subir o limite para 800M.
