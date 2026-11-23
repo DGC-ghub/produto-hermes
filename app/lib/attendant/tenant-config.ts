@@ -103,6 +103,19 @@ function asStringArray(value: unknown): string[] {
     : []
 }
 
+/**
+ * O opt-in vale? Config explícita do tenant manda (inclusive `enabled: false`). Sem config,
+ * em PRODUÇÃO o padrão é LIGADO (DGC-423): sem opt-in, nada de mensagem ativa. Fora de
+ * produção segue desligado, para a demo e os testes não mudarem.
+ */
+export function optInHabilitado(
+  config: Pick<TenantConfig, 'optIn'>,
+  env: { NODE_ENV?: string } = process.env,
+): boolean {
+  if (config.optIn) return config.optIn.enabled === true
+  return env.NODE_ENV === 'production'
+}
+
 function parseOptIn(value: unknown): TenantConfig['optIn'] {
   if (value === undefined || value === null) return undefined
   const o = asObject(value, 'optIn')

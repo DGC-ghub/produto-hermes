@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { loadTenantConfig, parseTenantConfig, serializeTenantConfig } from './tenant-config'
+import {
+  loadTenantConfig,
+  optInHabilitado,
+  parseTenantConfig,
+  serializeTenantConfig,
+} from './tenant-config'
 
 describe('loadTenantConfig', () => {
   it('carrega o config da Prestacon do arquivo', () => {
@@ -101,5 +106,18 @@ describe('optIn no TenantConfig', () => {
     expect(() =>
       parseTenantConfig('x', { ...base, optIn: { enabled: true, limiteDiario: 0 } }),
     ).toThrow()
+  })
+})
+
+describe('optInHabilitado (padrão de produção, DGC-423)', () => {
+  it('produção sem config: ligado', () => {
+    expect(optInHabilitado({}, { NODE_ENV: 'production' })).toBe(true)
+  })
+  it('fora de produção sem config: desligado', () => {
+    expect(optInHabilitado({}, { NODE_ENV: 'test' })).toBe(false)
+  })
+  it('config explícita manda, mesmo em produção', () => {
+    expect(optInHabilitado({ optIn: { enabled: false } }, { NODE_ENV: 'production' })).toBe(false)
+    expect(optInHabilitado({ optIn: { enabled: true } }, { NODE_ENV: 'test' })).toBe(true)
   })
 })
