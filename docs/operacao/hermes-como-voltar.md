@@ -1,6 +1,6 @@
 # Hermes piloto: como ver se caiu e como voltar
 
-Uma página, para quem está de plantão. Itens `<PREENCHER>` o sócio completa antes do piloto (DGC-349).
+Uma página, para quem está de plantão. 
 Nunca cole token, senha ou chave aqui.
 
 O piloto roda na **VM trabalhadora** (não no servidor do Danilo): serviço de usuário
@@ -45,20 +45,20 @@ Se o webhook público falha mas o `/health` local está 200: confira `tailscale 
 
 | O quê | Quem | Contato |
 |---|---|---|
-| VM trabalhadora (SSH, serviço) | `<PREENCHER>` | `<PREENCHER>` |
-| Tailscale (ACL/Funnel) | Gabriel | `<PREENCHER>` |
-| Chatwoot ("Alertas do robô") | `<PREENCHER>` | `<PREENCHER>` |
-| Painel da Meta / número do WhatsApp | `<PREENCHER>` | `<PREENCHER>` |
-| Sócio de plantão | `<PREENCHER>` | `<PREENCHER>` |
+| VM trabalhadora (SSH, serviço) | Gabriel | 5562999517799 |
+| Tailscale (ACL/Funnel) | Gabriel | 5562999517799 |
+| Chatwoot ("Alertas do robô") | Gabriel | 5562999517799 |
+| Painel da Meta / número do WhatsApp | Gabriel | 5562999517799 |
+| Servidor do Danilo e Kuma (vigia de fora) | Danilo | 5562995008936 |
 
-Ordem: 1) sócio de plantão, 2) Arquiteto. Quem recebe o aviso: `<PREENCHER números, em ALERTA_NUMEROS>`.
+Ordem: 1) Gabriel, 2) Danilo. Quem recebe o aviso: os números dos sócios em `ALERTA_NUMEROS` (valores só no `vigia.env`).
 
 ## 6. O vigia (como está montado)
 
 Arquivos: `scripts/vigia-hermes.sh`, `deploy/piloto/hermes-piloto-vigia.{service,timer}`.
 Credenciais só em `~/.config/hermes-piloto/vigia.env` (`chmod 600`, fora do Git), variáveis:
 `VIGIA_PUBLIC_URL`, `CHATWOOT_URL/TOKEN/ACCOUNT/CONVERSA`, `EVOLUTION_URL/KEY/INSTANCIA`, `ALERTA_NUMEROS`.
-Instalar (precisa do aval dos sócios): copiar os dois units para `~/.config/systemd/user/`,
+Instalado em 23/11/2026 (aval do Gabriel). O script fica em `~/hermes-piloto/shared/vigia-hermes.sh` (fora do release). O vigia só avisa, não reinicia nada. Para reinstalar: copiar os dois units para `~/.config/systemd/user/`,
 `systemctl --user daemon-reload && systemctl --user enable --now hermes-piloto-vigia.timer`.
 Teste sem enviar nada: `VIGIA_DRY_RUN=1 scripts/vigia-hermes.sh`.
 **Limite:** se a VM inteira cair, o vigia cai junto. Por isso o Kuma do Danilo entra depois, de fora, com os
