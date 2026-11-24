@@ -35,6 +35,23 @@ export type ToolConfig = {
   }
 }
 
+export type FixedReply = {
+  id: string
+  triggers: string[]
+  reply: string
+  // Se a MESMA resposta já foi dada na conversa, a pessoa insistiu: passa para um humano.
+  escalateIfRepeated?: boolean
+  // Registra no log de transbordo mesmo sem passar para humano (ex.: pediu para parar).
+  register?: boolean
+}
+
+export type TransbordoConfig = {
+  enabled: boolean
+  // Resposta que o sócio recebe como sugestão, por tema (primeiro que casar vale).
+  recomendacoes: { triggers: string[]; resposta: string }[]
+  respostaPadrao: string
+}
+
 export type TenantConfig = {
   slug: string
   businessProfile: {
@@ -67,7 +84,15 @@ export type TenantConfig = {
     triggers: string[]
     defaultReason: string
     humanMessage: string
+    // Desliga os gatilhos sensíveis GLOBAIS (contrato, lgpd...) para este tenant, que passa a
+    // valer só pelos `triggers` acima. Para vendas, onde contrato e LGPD são assunto normal.
+    ignoreGlobalTriggers?: boolean
   }
+  // Respostas em TEXTO FIXO, decididas no balcão (sem cérebro): o que a IA nunca pode
+  // reescrever, como preço. Cada uma casa por gatilho; o texto sai exatamente como está aqui.
+  fixedReplies?: FixedReply[]
+  // Registro de transbordo em arquivo (demo, antes do canal real). Ausente = não registra.
+  transbordo?: TransbordoConfig
   // Regras livres por empresa (o TENANT_RULES de hoje, agora como dado).
   extraRules?: string[]
   // Orientação de "próximo passo" quando o cliente sinaliza um problema/pedido —
@@ -101,6 +126,42 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
     ? (value as string[])
     : []
+}
+
+function parseFixedReplies(value: unknown): FixedReply[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) throw new Error('TenantConfig.fixedReplies deve ser um array')
+  return value.map((item, index) => {
+    const o = asObject(item, `fixedReplies[${index}]`)
+    const triggers = asStringArray(o.triggers)
+    if (triggers.length === 0) {
+      throw new Error(`TenantConfig.fixedReplies[${index}].triggers não pode ser vazio`)
+    }
+    return {
+      id: asString(o.id, `fixedReplies[${index}].id`),
+      triggers,
+      reply: asString(o.reply, `fixedReplies[${index}].reply`),
+      escalateIfRepeated: o.escalateIfRepeated === true ? true : undefined,
+      register: o.register === true ? true : undefined,
+    }
+  })
+}
+
+function parseTransbordo(value: unknown): TransbordoConfig | undefined {
+  if (value === undefined || value === null) return undefined
+  const o = asObject(value, 'transbordo')
+  const recomendacoes = Array.isArray(o.recomendacoes) ? o.recomendacoes : []
+  return {
+    enabled: o.enabled === true,
+    recomendacoes: recomendacoes.map((item, index) => {
+      const r = asObject(item, `transbordo.recomendacoes[${index}]`)
+      return {
+        triggers: asStringArray(r.triggers),
+        resposta: asString(r.resposta, `transbordo.recomendacoes[${index}].resposta`),
+      }
+    }),
+    respostaPadrao: asString(o.respostaPadrao, 'transbordo.respostaPadrao'),
+  }
 }
 
 function parseOptIn(value: unknown): TenantConfig['optIn'] {
@@ -170,7 +231,10 @@ export function parseTenantConfig(slug: string, raw: unknown): TenantConfig {
       triggers: asStringArray(escalation.triggers),
       defaultReason: asString(escalation.defaultReason, 'escalationPolicy.defaultReason'),
       humanMessage: asString(escalation.humanMessage, 'escalationPolicy.humanMessage'),
+      ignoreGlobalTriggers: escalation.ignoreGlobalTriggers === true ? true : undefined,
     },
+    fixedReplies: parseFixedReplies(root.fixedReplies),
+    transbordo: parseTransbordo(root.transbordo),
     extraRules: root.extraRules !== undefined ? asStringArray(root.extraRules) : undefined,
     nextStepPrompt:
       typeof root.nextStepPrompt === 'string' && root.nextStepPrompt.trim().length > 0

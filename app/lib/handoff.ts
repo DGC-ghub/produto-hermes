@@ -56,6 +56,18 @@ function includesAny(value: string, phrases: string[]): boolean {
 }
 
 /**
+ * Algum dos gatilhos aparece na mensagem? Mesma regra do guard (sem acento, minúsculas,
+ * palavra inteira, plural simples). Função pura, para quem precisa casar gatilhos de
+ * configuração fora do `decideHandoff` (respostas fixas, recomendação de transbordo).
+ */
+export function matchesAnyTrigger(message: string, triggers: string[]): boolean {
+  return includesAny(
+    normalizeText(message),
+    triggers.map((trigger) => normalizeText(trigger)),
+  )
+}
+
+/**
  * Decide se o Hermes deve passar a conversa para um humano.
  * Função pura e determinística — sem banco, fs, API ou LLM.
  *
@@ -65,6 +77,9 @@ export function decideHandoff(input: {
   message: string
   retrievedCount: number
   extraSensitiveTriggers?: string[]
+  // Tenant que fala de contrato/LGPD como assunto normal (ex.: vendas) liga isto e declara
+  // os próprios gatilhos em `extraSensitiveTriggers`. Default: gatilhos globais valem.
+  ignoreGlobalSensitive?: boolean
 }): HandoffDecision {
   const message = normalizeText(input.message)
 
@@ -72,10 +87,11 @@ export function decideHandoff(input: {
     return { needsHuman: true, reason: 'requested_human' }
   }
   // Gatilhos sensíveis globais + os declarados no TenantConfig (escalationPolicy).
+  const globais = input.ignoreGlobalSensitive ? [] : SENSITIVE_PHRASES
   const sensitive =
     input.extraSensitiveTriggers && input.extraSensitiveTriggers.length > 0
-      ? [...SENSITIVE_PHRASES, ...input.extraSensitiveTriggers.map(normalizeText)]
-      : SENSITIVE_PHRASES
+      ? [...globais, ...input.extraSensitiveTriggers.map(normalizeText)]
+      : globais
   if (includesAny(message, sensitive)) {
     return { needsHuman: true, reason: 'sensitive_topic' }
   }

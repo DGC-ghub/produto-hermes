@@ -8,6 +8,7 @@ import { safeDefaultConfig, type TenantConfig } from './attendant/tenant-config'
 import { resolveTenantConfig } from './attendant/tenant-config-db.server'
 import { checkBillingGate } from './billing-gate.server'
 import { isHumanHandling } from './conversation-status'
+import { matchFixedReply } from './fixed-replies'
 import { decideHandoff } from './handoff'
 import type { KnowledgeDocument } from './knowledge.server'
 import { resolveKnowledge } from './knowledge-db.server'
@@ -29,6 +30,7 @@ import { retrieveRelevantChunks } from './retrieval'
 import { comRetry } from './setup/retry'
 import { resolveTenant } from './tenants.server'
 import { hasDuplicateOpenTicket } from './ticket'
+import { registrarTransbordo } from './transbordo.server'
 
 /**
  * Os três modos de execução do motor (spec §7.2). OBRIGATÓRIO: omitir é erro de tipo.
@@ -412,6 +414,25 @@ export async function processIncomingMessage(
   }
 }
 
+/**
+ * Anota o transbordo em arquivo quando o tenant liga `transbordo`. Best-effort: falha de
+ * disco nunca derruba a resposta ao cliente. Só depois da transação, como o alarme: se a
+ * tomada humana venceu, o transbordo não aconteceu.
+ */
+async function anotarTransbordo(
+  config: TenantConfig,
+  dados: Omit<Parameters<typeof registrarTransbordo>[0], 'config'>,
+): Promise<void> {
+  if (!config.transbordo?.enabled) {
+    return
+  }
+  try {
+    await registrarTransbordo({ ...dados, config: config.transbordo })
+  } catch (error) {
+    console.error('[hermes] não consegui registrar o transbordo', error)
+  }
+}
+
 async function runIncomingMessage(
   input: ProcessIncomingMessageInput,
   perfil: PerfilDoModo,
@@ -730,6 +751,7 @@ async function runIncomingMessage(
       message,
       retrievedCount: retrieved.length,
       extraSensitiveTriggers: configEfetiva.escalationPolicy.triggers,
+      ignoreGlobalSensitive: configEfetiva.escalationPolicy.ignoreGlobalTriggers,
     }),
   )
   const guardForcesSafe = guard.reason === 'requested_human' || guard.reason === 'sensitive_topic'
@@ -764,7 +786,18 @@ async function runIncomingMessage(
         )
       : null
   const humanMessage = configEfetiva.escalationPolicy.humanMessage
-  type Atalho = { reply: string; needsHuman: boolean; reason: string; optIn?: 'sim' | 'nao' }
+  // Texto fixo do tenant (ex.: preço de vendas): só vale se nenhum gatilho de humano disparou,
+  // e sai exatamente como está na config — a IA não reescreve nem calcula nada aqui.
+  const respostaFixa = guardForcesSafe
+    ? null
+    : matchFixedReply(configEfetiva.fixedReplies, message, ultimaFala?.content)
+  type Atalho = {
+    reply: string
+    needsHuman: boolean
+    reason: string
+    optIn?: 'sim' | 'nao'
+    registrar?: boolean
+  }
   const atalhoOptIn: Atalho | null = optInDecidido
     ? {
         reply:
@@ -782,11 +815,20 @@ async function runIncomingMessage(
     atalhoOptIn ??
     (guardForcesSafe
       ? { reply: humanMessage, needsHuman: true, reason: guard.reason ?? 'unknown' }
-      : confirmacao?.kind === 'humano'
-        ? { reply: humanMessage, needsHuman: true, reason: 'confirmacao_fora_do_padrao' }
-        : confirmacao?.kind === 'resposta'
-          ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
-          : null)
+      : respostaFixa
+        ? respostaFixa.escalate
+          ? { reply: humanMessage, needsHuman: true, reason: `${respostaFixa.id}_insistente` }
+          : {
+              reply: respostaFixa.reply,
+              needsHuman: false,
+              reason: respostaFixa.id,
+              registrar: respostaFixa.register,
+            }
+        : confirmacao?.kind === 'humano'
+          ? { reply: humanMessage, needsHuman: true, reason: 'confirmacao_fora_do_padrao' }
+          : confirmacao?.kind === 'resposta'
+            ? { reply: confirmacao.reply, needsHuman: false, reason: 'confirmacao' }
+            : null)
   if (atalho) {
     const reply = atalho.reply
     // Mesma autorização do caminho longo. A janela aqui é de milissegundos (o guard não chama
@@ -859,6 +901,15 @@ async function runIncomingMessage(
     // aconteceu. Estava antes, e era a mesma assimetria que a revisão apontou no outro alarme.
     if (guard.reason === 'sensitive_topic' && operationalEffects) {
       void reportSensitiveHandoff(input.tenantSlug)
+    }
+    if (atalho.needsHuman || atalho.registrar) {
+      await anotarTransbordo(configEfetiva, {
+        tenantSlug: tenant.slug,
+        conversationId,
+        motivo: atalho.reason,
+        mensagem: message,
+        historico: history,
+      })
     }
     ctx.outcome = atalho.needsHuman ? 'guard_handoff' : 'ok'
     return {
@@ -1093,6 +1144,16 @@ async function runIncomingMessage(
       userMessage.id,
       finalizacao.motivo,
     )
+  }
+
+  if (needsHuman) {
+    await anotarTransbordo(configEfetiva, {
+      tenantSlug: tenant.slug,
+      conversationId,
+      motivo: handoffReason ?? 'unknown',
+      mensagem: message,
+      historico: history,
+    })
   }
 
   // Alarme só agora: se o cérebro CAIU no fallback, o cliente recebeu a resposta genérica —
