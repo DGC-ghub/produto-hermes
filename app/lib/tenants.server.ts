@@ -9,6 +9,7 @@ export const INITIAL_TENANTS = [
   { slug: 'dgc', name: 'DGC Hub' },
   { slug: 'assistencia-tecnica-demo', name: 'ResolveTech Assistência (Demo)' },
   { slug: 'prestacon', name: 'Prestacon Contabilidade' },
+  { slug: 'dgc-vendas', name: 'DGC Hub — agente de vendas (demo)' },
   { slug: 'csmed', name: 'Carvalho Serviços Médicos (CS MED)' },
 ] as const
 
@@ -16,7 +17,11 @@ export const INITIAL_TENANTS = [
 // separada de INITIAL_TENANTS de propósito: registrar um cliente REAL no array
 // acima não pode publicá-lo na demo — visitante lendo a base do cliente e
 // escrevendo no banco de produção dele era o item 3 do SECURITY-BACKLOG.
-export const DEMO_TENANT_SLUGS: readonly string[] = ['dgc', 'assistencia-tecnica-demo']
+export const DEMO_TENANT_SLUGS: readonly string[] = [
+  'dgc',
+  'assistencia-tecnica-demo',
+  'dgc-vendas',
+]
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
 

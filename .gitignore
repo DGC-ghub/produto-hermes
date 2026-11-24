@@ -46,3 +46,6 @@ eval-report.md
 
 # Registro LGPD de exclusões (contagens e ids, sem conteúdo)
 /logs/
+
+# Log de transbordo da demo de vendas (DGC-265)
+/data/transbordos/
