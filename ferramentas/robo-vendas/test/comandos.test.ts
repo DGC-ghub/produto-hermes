@@ -105,6 +105,19 @@ describe("comandos do Gabriel pelo WhatsApp", () => {
 		expect(t.avisos.at(-1)?.texto).toContain("/liberar");
 	});
 
+	it("texto que começa com '/' mas não é comando válido responde 'Comando desconhecido'", async () => {
+		const t = criar();
+		const malformados = ["/", "/?", "//", "/pausar!", "/pausar.", "/açao", "/ pausar", "  /  "];
+		for (const texto of malformados) {
+			const antes = t.avisos.length;
+			await t.gabriel(texto);
+			expect(t.avisos, texto).toHaveLength(antes + 1);
+			expect(t.avisos.at(-1)?.texto, texto).toContain("Comando desconhecido");
+		}
+		expect(t.store.estado("pausado")).toBeNull();
+		expect(t.wa.enviados).toHaveLength(0);
+	});
+
 	it("mensagem enviada pelo outro aparelho na conversa de comando não mexe no funil", async () => {
 		const t = criar();
 		t.irPara("2026-11-18T17:00:00");

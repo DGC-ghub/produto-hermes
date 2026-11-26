@@ -448,8 +448,10 @@ export class Robo {
 
 	/** Mensagem vinda de um número de comando. Só `/comando` age; o resto fica sem resposta. */
 	private async aoComando(texto: string | null): Promise<void> {
-		const m = texto ? /^\/(\w+)(?:\s+(.*))?$/s.exec(texto.trim()) : null;
-		if (!m) return; // texto livre de sócio é do Hermes (terceiro cérebro)
+		const t = texto?.trim() ?? "";
+		if (!t.startsWith("/")) return; // texto livre de sócio é do Hermes (terceiro cérebro)
+		const m = /^\/(\w+)(?:\s+(.*))?$/s.exec(t);
+		if (!m) return this.avisar(`Comando desconhecido. ${AJUDA}`);
 		return this.comando((m[1] as string).toLowerCase(), m[2]?.trim().toLowerCase());
 	}
 
