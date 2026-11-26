@@ -89,14 +89,49 @@ describe("comandos do Gabriel pelo WhatsApp", () => {
 		expect(t.cw.notas).toHaveLength(1); // passou ao Gabriel como qualquer mensagem
 	});
 
-	it("mensagem sem '/' do número de comando recebe a lista de comandos", async () => {
+	it("texto sem barra do sócio fica sem resposta (é do Hermes)", async () => {
 		const t = criar();
-		await t.gabriel("oi, tudo bem?");
-		expect(t.avisos.at(-1)?.texto).toContain("/podeir");
+		await t.gabriel("fiz a conta da B2");
+		await t.gabriel("  oi, tudo bem?  ");
 		await t.gabriel(null);
-		expect(t.avisos).toHaveLength(2);
-		await t.gabriel("/inventado");
+		expect(t.avisos).toHaveLength(0);
+		expect(t.wa.enviados).toHaveLength(0);
+		expect(t.store.estado("pausado")).toBeNull();
+		expect(t.store.estado("liberado")).toBeNull();
+		await t.gabriel("  /inventado");
+		expect(t.avisos).toHaveLength(1);
 		expect(t.avisos.at(-1)?.texto).toContain("Comando desconhecido");
+		await t.gabriel("/podeir");
+		expect(t.avisos.at(-1)?.texto).toContain("/liberar");
+	});
+
+	it("texto que começa com '/' mas não é comando válido responde 'Comando desconhecido'", async () => {
+		const t = criar();
+		const malformados = ["/", "/?", "//", "/pausar!", "/pausar.", "/açao", "/ pausar", "  /  "];
+		for (const texto of malformados) {
+			const antes = t.avisos.length;
+			await t.gabriel(texto);
+			expect(t.avisos, texto).toHaveLength(antes + 1);
+			expect(t.avisos.at(-1)?.texto, texto).toContain("Comando desconhecido");
+		}
+		expect(t.store.estado("pausado")).toBeNull();
+		expect(t.wa.enviados).toHaveLength(0);
+	});
+
+	it("mensagem enviada pelo outro aparelho na conversa de comando não mexe no funil", async () => {
+		const t = criar();
+		t.irPara("2026-11-18T17:00:00");
+		await t.diz("sencis", "Quanto custa?");
+		const antes = t.store.pendenciasAbertas();
+		expect(antes).toHaveLength(1);
+		// O Hermes escreve pelo 2º aparelho na conversa do número de comando (conversa 900): saída humana, não privada.
+		await t.robo.aoSaida({ conversaId: 900, humano: true, privada: false });
+		expect(t.store.pendenciasAbertas()).toEqual(antes); // o lembrete das 4h continua de pé
+		t.irPara("2026-11-19T12:00:00");
+		await t.robo.tick();
+		expect(t.avisos.filter((m) => m.texto.startsWith("Lembrete"))).toHaveLength(1);
+		expect(t.wa.enviados).toHaveLength(0);
+		expect(t.store.saidasPendentes()).toHaveLength(0);
 	});
 
 	it("a conversa do número de comando nunca é clínica: sem etiqueta, nota, atribuição, status, kit, funil", async () => {
